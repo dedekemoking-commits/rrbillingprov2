@@ -245,23 +245,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         users[user.username] = user.copy(passwordHash = hash, resetCode = "", resetCodeExpiry = 0)
         _state.value = _state.value.copy(users = users)
         StorageUtil.saveUsers(users)
-        // Also update Firebase password if email exists
+        // Kirim Firebase password reset email agar password di Firebase juga berubah
         if (user.email.isNotBlank()) {
             viewModelScope.launch {
-                try { updateFirebasePassword(user.email, newPassword) } catch (_: Exception) { }
+                try { sendFirebasePasswordReset(user.email) } catch (_: Exception) { }
             }
         }
         return AuthResult(true, "Password berhasil direset! Silakan login.")
     }
 
-    private suspend fun updateFirebasePassword(email: String, newPassword: String) {
+    private suspend fun sendFirebasePasswordReset(email: String) {
         try {
-            firebaseAuth.signInWithEmailAndPassword(email, newPassword)
-                .addOnSuccessListener { result ->
-                    result.user?.updatePassword(newPassword)
-                        ?.addOnSuccessListener { Log.i("MainVM", "Firebase password updated for $email") }
-                        ?.addOnFailureListener { Log.i("MainVM", "Firebase password update failed: ${it.message}") }
-                }
+            firebaseAuth.sendPasswordResetEmail(email)
+                .addOnSuccessListener { Log.i("MainVM", "Firebase password reset email sent to $email") }
+                .addOnFailureListener { Log.i("MainVM", "Firebase password reset email failed: ${it.message}") }
         } catch (_: Exception) { }
     }
 
@@ -292,6 +289,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     currentRole = sessionUser.role,
                 )
                 return AuthResult(true, "")
+            }
+            // Firebase gagal — fallback ke cek password lokal
+            val fallbackUser = matchingEmailUser ?: localUser
+            if (fallbackUser != null) {
+                val hash = sha256(password)
+                if (fallbackUser.passwordHash == hash) {
+                    StorageUtil.saveCurrentSession(fallbackUser.username, fallbackUser.role)
+                    _state.value = _state.value.copy(
+                        isLoggedIn = true,
+                        currentUser = fallbackUser.username,
+                        currentRole = fallbackUser.role,
+                    )
+                    return AuthResult(true, "")
+                }
             }
             return firebaseResult
         }

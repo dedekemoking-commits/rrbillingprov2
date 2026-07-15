@@ -375,8 +375,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                 }
-                if (!firebaseOk && email.isBlank()) {
-                    _state.value = _state.value.copy(isBusy = false, statusMessage = "Gagal verifikasi Google")
+                if (!firebaseOk) {
+                    _state.value = _state.value.copy(isBusy = false, statusMessage = "Gagal verifikasi Google. Coba lagi.")
                     return@launch
                 }
                 val users = _state.value.users

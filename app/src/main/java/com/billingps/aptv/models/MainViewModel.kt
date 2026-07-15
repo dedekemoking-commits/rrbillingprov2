@@ -95,7 +95,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun ensureSuperAdmin() {
         val users = _state.value.users.toMutableMap()
         if (!users.containsKey("rrgaming")) {
-            val hash = sha256("rrcctv5555")
+            val hash = sha256("q7fmvVOw6hUtWPAF")
             users["rrgaming"] = UserData(
                 username = "rrgaming",
                 passwordHash = hash,

@@ -2,16 +2,34 @@ package com.billingps.aptv.utils
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import com.billingps.aptv.models.*
 import org.json.JSONArray
 import org.json.JSONObject
 
 object StorageUtil {
     private const val PREFS_NAME = "billingps_data"
+    private const val PREFS_SENSITIVE = "billingps_sensitive"
     private lateinit var prefs: SharedPreferences
+    private lateinit var securePrefs: SharedPreferences
 
     fun init(context: Context) {
         prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        try {
+            val masterKey = MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            securePrefs = EncryptedSharedPreferences.create(
+                context,
+                PREFS_SENSITIVE,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+            )
+        } catch (_: Exception) {
+            securePrefs = context.getSharedPreferences(PREFS_SENSITIVE, Context.MODE_PRIVATE)
+        }
     }
 
     // ── Users ──────────────────────────────────────────────
@@ -210,7 +228,7 @@ object StorageUtil {
 
     // ── SMTP ───────────────────────────────────────────────
     fun saveSmtp(cfg: SmtpConfig) {
-        prefs.edit()
+        securePrefs.edit()
             .putString("smtpHost", cfg.host)
             .putInt("smtpPort", cfg.port)
             .putString("smtpUser", cfg.user)
@@ -219,10 +237,10 @@ object StorageUtil {
     }
 
     fun loadSmtp(): SmtpConfig = SmtpConfig(
-        host = prefs.getString("smtpHost", "") ?: "",
-        port = prefs.getInt("smtpPort", 587),
-        user = prefs.getString("smtpUser", "") ?: "",
-        pass = prefs.getString("smtpPass", "") ?: "",
+        host = securePrefs.getString("smtpHost", "") ?: "",
+        port = securePrefs.getInt("smtpPort", 587),
+        user = securePrefs.getString("smtpUser", "") ?: "",
+        pass = securePrefs.getString("smtpPass", "") ?: "",
     )
 
     // ── Kode Generasi ───────────────────────────────────────

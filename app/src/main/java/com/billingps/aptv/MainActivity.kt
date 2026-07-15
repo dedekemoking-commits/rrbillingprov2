@@ -19,17 +19,23 @@ import com.billingps.aptv.ui.screens.*
 import com.billingps.aptv.ui.theme.*
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        try {
-            if (!Python.isStarted()) {
-                Python.start(AndroidPlatform(this))
+        // Init Python di background agar tidak blokir UI thread (fix ANR)
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                if (!Python.isStarted()) {
+                    Python.start(AndroidPlatform(this@MainActivity))
+                }
+            } catch (e: Exception) {
+                Log.e("BillingPS", "Python start failed", e)
             }
-        } catch (e: Exception) {
-            Log.e("BillingPS", "Python start failed", e)
         }
         setContent {
             BillingPSTheme {

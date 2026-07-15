@@ -23,6 +23,7 @@ import com.chaquo.python.android.AndroidPlatform
 class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         try {
             if (!Python.isStarted()) {
                 Python.start(AndroidPlatform(this))

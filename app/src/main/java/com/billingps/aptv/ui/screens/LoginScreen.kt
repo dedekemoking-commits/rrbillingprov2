@@ -275,6 +275,7 @@ fun LoginScreen(
                                     regMsgOk = result.success
                                     if (result.success) {
                                         regUser = ""; regPass = ""; regEmail = ""
+                                        showReg = false
                                     }
                                 }
                                 regLoading = false
@@ -404,6 +405,7 @@ fun LoginScreen(
             var verMsg by remember { mutableStateOf("") }
             var verOk by remember { mutableStateOf(false) }
             var codeResent by remember { mutableStateOf(false) }
+            var resendLoading by remember { mutableStateOf(false) }
             Box(
                 modifier = Modifier.fillMaxSize().background(Color(0xCC000000)),
                 contentAlignment = Alignment.Center,
@@ -426,7 +428,7 @@ fun LoginScreen(
                         }
                         if (codeResent) {
                             Spacer(Modifier.height(4.dp))
-                            Text("Kode baru telah dibuat. Cek catatan Anda.", style = MaterialTheme.typography.bodySmall, color = NeonGreen, textAlign = TextAlign.Center)
+                            Text("Kode baru telah dikirim ke email!", style = MaterialTheme.typography.bodySmall, color = NeonGreen, textAlign = TextAlign.Center)
                         }
                         Spacer(Modifier.height(12.dp))
                         Button(onClick = {
@@ -444,6 +446,23 @@ fun LoginScreen(
                             }
                         }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground)) { Text("Verifikasi") }
                         Spacer(Modifier.height(6.dp))
+                        TextButton(
+                            onClick = {
+                                resendLoading = true
+                                viewModel.resendCode(pendingUser)
+                                codeResent = true
+                                resendLoading = false
+                            },
+                            enabled = !resendLoading,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (resendLoading) {
+                                CircularProgressIndicator(modifier = Modifier.size(14.dp), color = NeonCyan, strokeWidth = 2.dp)
+                            } else {
+                                Text("Kirim ulang kode", style = MaterialTheme.typography.bodySmall, color = NeonCyan)
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
                         TextButton(onClick = {
                             viewModel.clearPendingVerify()
                             verCode = ""; verMsg = ""; verOk = false; codeResent = false

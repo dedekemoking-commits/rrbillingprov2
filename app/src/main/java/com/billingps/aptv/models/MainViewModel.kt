@@ -429,14 +429,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(users = newUsers)
         StorageUtil.saveUsers(newUsers)
 
-        if (normalizedEmail.isNotBlank()) {
+        val emailSent = if (normalizedEmail.isNotBlank()) {
+            var sent = false
             sendEmail(normalizedEmail,
                 "Kode Verifikasi RR Billing Pro",
                 "Halo $key,\n\nKode verifikasi akun RR Billing Pro Anda: $verificationCode\n\nKode berlaku 10 menit.\n\nTerima kasih.",
             ) { ok, msg ->
+                sent = ok
                 if (!ok) Log.i("MainVM", "Failed to send verification email: $msg")
             }
-        }
+            sent
+        } else false
 
         // Set trial 3 hari untuk admin pertama
         if (role == "admin" && _state.value.users.size <= 1 && _state.value.trialBatas == 0L) {
@@ -446,10 +449,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             StorageUtil.saveLicense(_state.value.licenseStatus.copy(maxTv = 2))
         }
 
+        if (normalizedEmail.isNotBlank()) {
+            _state.value = _state.value.copy(pendingVerifyUser = key)
+        }
+
         return if (normalizedEmail.isBlank()) {
             AuthResult(true, "Akun berhasil dibuat! Silakan login.")
-        } else {
+        } else if (emailSent) {
             AuthResult(true, "Akun berhasil dibuat! Kode verifikasi telah dikirim ke email Anda.")
+        } else {
+            AuthResult(true, "Akun berhasil dibuat! Kode verifikasi: $verificationCode")
         }
     }
 
@@ -475,6 +484,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         users[username] = user.copy(verificationCode = newCode)
         _state.value = _state.value.copy(users = users)
         StorageUtil.saveUsers(users)
+        if (user.email.isNotBlank()) {
+            sendEmail(user.email,
+                "Kode Verifikasi RR Billing Pro",
+                "Halo $username,\n\nKode verifikasi akun RR Billing Pro Anda: $newCode\n\nKode berlaku 10 menit.\n\nTerima kasih.",
+            ) { ok, msg ->
+                if (!ok) Log.i("MainVM", "Failed to resend verification email: $msg")
+            }
+        }
         return newCode
     }
 

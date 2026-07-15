@@ -1,0 +1,55 @@
+{
+  "project_info": {
+    "project_number": "291349089700",
+    "project_id": "rrbillingpro",
+    "storage_bucket": "rrbillingpro.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:291349089700:android:07c7229ad3a24bbf378531",
+        "android_client_info": {
+          "package_name": "com.billingps.aptv"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "291349089700-3mbhk7kojg8o7n84d6l4jf3dvk5rt3um.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.billingps.aptv",
+            "certificate_hash": "57797eb041aff1d4fa11886f96330d50a643d516"
+          }
+        },
+        {
+          "client_id": "291349089700-qfbo6m0kh6hs79104blp33ku0rlb21i9.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.billingps.aptv",
+            "certificate_hash": "18563f78725b36c3b7470810bb1153396976c64e"
+          }
+        },
+        {
+          "client_id": "291349089700-9ndql598pqktq5edspdtimfppv9erj4l.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAqOxWEBD9_AqaMiMtFwbyTvh-d_mdVofQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "291349089700-9ndql598pqktq5edspdtimfppv9erj4l.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

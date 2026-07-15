@@ -58,6 +58,7 @@ data class AppUiState(
     val statusMessage: String = "",
     val pendingVerifyUser: String = "",
     val updateInfo: UpdateInfo? = null,
+    val updateChecked: Boolean = false,
     val downloadProgress: Int = -1, // -1 = idle, 0-100 = downloading
     val appVersionName: String = APP_VERSION,
 )
@@ -75,7 +76,7 @@ fun defaultPaketDurasi(): Map<String, Int> = mapOf(
     "2 Jam" to 120, "3 Jam" to 180, "Main Bebas" to 0,
 )
 
-const val APP_VERSION = "1.0.8"
+    const val APP_VERSION = "1.0.9"
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -511,6 +512,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun checkForUpdate() {
         viewModelScope.launch {
+            _state.value = _state.value.copy(updateChecked = false, updateInfo = null)
             try {
                 val json = withContext(Dispatchers.IO) {
                     URL(githubApiUrl).readText()
@@ -524,11 +526,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 if (tagName > APP_VERSION && apkUrl.isNotBlank()) {
                     _state.value = _state.value.copy(
-                        updateInfo = UpdateInfo(tagName, apkUrl, changelog)
+                        updateInfo = UpdateInfo(tagName, apkUrl, changelog),
+                        updateChecked = true,
                     )
+                } else {
+                    _state.value = _state.value.copy(updateChecked = true)
                 }
             } catch (e: Exception) {
                 Log.i("MainVM", "checkForUpdate failed: ${e.message}")
+                _state.value = _state.value.copy(updateChecked = true)
             }
         }
     }

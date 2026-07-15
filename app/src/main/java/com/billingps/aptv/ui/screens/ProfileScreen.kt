@@ -317,6 +317,7 @@ fun ProfileScreen(
                     Text("PERIKSA PEMBARUAN", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
                     Spacer(Modifier.height(8.dp))
                     val updateInfo = state.updateInfo
+                    val updateChecked = state.updateChecked
                     if (updateInfo != null) {
                         Text("Versi ${updateInfo.versionName} tersedia!", style = MaterialTheme.typography.bodyMedium, color = NeonGreen)
                         Spacer(Modifier.height(8.dp))
@@ -325,11 +326,24 @@ fun ProfileScreen(
                             Spacer(Modifier.height(4.dp))
                             Text("Download: ${state.downloadProgress}%", style = MaterialTheme.typography.bodySmall, color = NeonGreen)
                         } else {
-                            Button(onClick = { viewModel.downloadAndInstall(ctx) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("Download & Install") }
+                            Button(onClick = { viewModel.downloadAndInstall(ctx) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) {
+                                Text("Download & Install v${updateInfo.versionName}")
+                            }
                         }
-                    } else {
-                        Button(onClick = { viewModel.checkForUpdate(); Toast.makeText(ctx, "Memeriksa...", Toast.LENGTH_SHORT).show() }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("Cek Update") }
+                    } else if (updateChecked) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("✓", color = NeonGreen, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Versi terbaru (v${state.appVersionName})", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                        }
+                        Spacer(Modifier.height(8.dp))
                     }
+                    Button(
+                        onClick = { viewModel.checkForUpdate(); Toast.makeText(ctx, "Memeriksa...", Toast.LENGTH_SHORT).show() },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
+                    ) { Text("Cek Update") }
                 }
             }
 

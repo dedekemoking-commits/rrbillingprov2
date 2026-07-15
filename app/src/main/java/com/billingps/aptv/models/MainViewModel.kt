@@ -57,6 +57,9 @@ data class AppUiState(
     val isBusy: Boolean = false,
     val statusMessage: String = "",
     val pendingVerifyUser: String = "",
+    val pendingVerifyCode: String = "",
+    val pendingResetCode: String = "",
+    val needsSmtpSetup: Boolean = false,
     val updateInfo: UpdateInfo? = null,
     val updateChecked: Boolean = false,
     val downloadProgress: Int = -1, // -1 = idle, 0-100 = downloading
@@ -206,16 +209,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val expiry = System.currentTimeMillis() + 600_000 // 10 menit
         val newUsers = users.toMutableMap()
         newUsers[user.username] = user.copy(resetCode = code, resetCodeExpiry = expiry)
-        _state.value = _state.value.copy(users = newUsers)
+        _state.value = _state.value.copy(users = newUsers, pendingResetCode = code)
         StorageUtil.saveUsers(newUsers)
         Log.i("MainVM", "Reset code for ${user.username}: $code")
-        sendEmail(user.email,
-            "Kode Reset Password RR Billing Pro",
-            "Halo ${user.username},\n\nKode reset password RR Billing Pro Anda: $code\n\nKode berlaku 10 menit.\n\nTerima kasih.",
-        ) { ok, msg ->
-            if (!ok) Log.i("MainVM", "Failed to send reset email: $msg")
+        val cfg = _state.value.smtp
+        if (cfg.user.isNotBlank() && cfg.pass.isNotBlank()) {
+            sendEmail(user.email,
+                "Kode Reset Password RR Billing Pro",
+                "Halo ${user.username},\n\nKode reset password RR Billing Pro Anda: $code\n\nKode berlaku 10 menit.\n\nTerima kasih.",
+            ) { ok, msg ->
+                if (!ok) Log.i("MainVM", "Failed to send reset email: $msg")
+            }
+            return AuthResult(true, "Kode verifikasi telah dikirim ke email Anda.")
+        } else {
+            return AuthResult(true, "Kode verifikasi: $code")
         }
-        return AuthResult(true, "Kode verifikasi telah dikirim ke email Anda.")
     }
 
     fun verifyResetCode(usernameOrEmail: String, code: String): AuthResult {
@@ -244,7 +252,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!newPassword.any { it.isDigit() }) return AuthResult(false, "Password harus mengandung angka")
         val hash = sha256(newPassword)
         users[user.username] = user.copy(passwordHash = hash, resetCode = "", resetCodeExpiry = 0)
-        _state.value = _state.value.copy(users = users)
+        _state.value = _state.value.copy(users = users, pendingResetCode = "")
         StorageUtil.saveUsers(users)
         // Kirim Firebase password reset email agar password di Firebase juga berubah
         if (user.email.isNotBlank()) {
@@ -284,10 +292,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val sessionUser = effectiveUser ?: UserData(username = input, role = "admin", email = input)
                 StorageUtil.saveCurrentSession(sessionUser.username, sessionUser.role)
+                val smtp = _state.value.smtp
                 _state.value = _state.value.copy(
                     isLoggedIn = true,
                     currentUser = sessionUser.username,
                     currentRole = sessionUser.role,
+                    needsSmtpSetup = smtp.user.isBlank() || smtp.pass.isBlank(),
                 )
                 return AuthResult(true, "")
             }
@@ -297,10 +307,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val hash = sha256(password)
                 if (fallbackUser.passwordHash == hash) {
                     StorageUtil.saveCurrentSession(fallbackUser.username, fallbackUser.role)
+                    val smtp = _state.value.smtp
                     _state.value = _state.value.copy(
                         isLoggedIn = true,
                         currentUser = fallbackUser.username,
                         currentRole = fallbackUser.role,
+                        needsSmtpSetup = smtp.user.isBlank() || smtp.pass.isBlank(),
                     )
                     return AuthResult(true, "")
                 }
@@ -312,10 +324,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val hash = sha256(password)
         if (localUser.passwordHash != hash) return AuthResult(false, "Username/Password salah")
         StorageUtil.saveCurrentSession(localUser.username, localUser.role)
+        val smtp = _state.value.smtp
         _state.value = _state.value.copy(
             isLoggedIn = true,
             currentUser = localUser.username,
             currentRole = localUser.role,
+            needsSmtpSetup = smtp.user.isBlank() || smtp.pass.isBlank(),
         )
         // After successful login, pull remote transaksi for this user
         viewModelScope.launch {
@@ -441,17 +455,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(users = newUsers)
         StorageUtil.saveUsers(newUsers)
 
-        val emailSent = if (normalizedEmail.isNotBlank()) {
-            var sent = false
+        val cfg = _state.value.smtp
+        val smtpReady = cfg.user.isNotBlank() && cfg.pass.isNotBlank()
+        if (normalizedEmail.isNotBlank() && smtpReady) {
             sendEmail(normalizedEmail,
                 "Kode Verifikasi RR Billing Pro",
                 "Halo $key,\n\nKode verifikasi akun RR Billing Pro Anda: $verificationCode\n\nKode berlaku 10 menit.\n\nTerima kasih.",
             ) { ok, msg ->
-                sent = ok
                 if (!ok) Log.i("MainVM", "Failed to send verification email: $msg")
             }
-            sent
-        } else false
+        }
 
         // Set trial 3 hari untuk admin pertama
         if (role == "admin" && _state.value.users.size <= 1 && _state.value.trialBatas == 0L) {
@@ -462,15 +475,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         if (normalizedEmail.isNotBlank()) {
-            _state.value = _state.value.copy(pendingVerifyUser = key)
+            _state.value = _state.value.copy(
+                pendingVerifyUser = key,
+                pendingVerifyCode = if (smtpReady) "" else verificationCode,
+            )
         }
 
         return if (normalizedEmail.isBlank()) {
             AuthResult(true, "Akun berhasil dibuat! Silakan login.")
-        } else if (emailSent) {
-            AuthResult(true, "Akun berhasil dibuat! Kode verifikasi telah dikirim ke email Anda.")
         } else {
-            AuthResult(true, "Akun berhasil dibuat! Kode verifikasi: $verificationCode")
+            AuthResult(true, "Akun berhasil dibuat!${if (smtpReady) " Kode verifikasi telah dikirim ke email Anda." else " Kode verifikasi: $verificationCode"}")
         }
     }
 
@@ -480,13 +494,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val user = users[username] ?: return false
         if (user.verificationCode != code) return false
         users[username] = user.copy(emailVerified = true, verificationCode = "")
-        _state.value = _state.value.copy(users = users, pendingVerifyUser = "")
+        _state.value = _state.value.copy(users = users, pendingVerifyUser = "", pendingVerifyCode = "")
         StorageUtil.saveUsers(users)
         return true
     }
 
     fun clearPendingVerify() {
-        _state.value = _state.value.copy(pendingVerifyUser = "")
+        _state.value = _state.value.copy(pendingVerifyUser = "", pendingVerifyCode = "")
     }
 
     fun resendCode(username: String): String {
@@ -773,8 +787,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveSmtp(cfg: SmtpConfig) {
-        _state.value = _state.value.copy(smtp = cfg)
+        _state.value = _state.value.copy(smtp = cfg, needsSmtpSetup = false)
         StorageUtil.saveSmtp(cfg)
+    }
+
+    fun clearNeedsSmtpSetup() {
+        _state.value = _state.value.copy(needsSmtpSetup = false)
     }
 
     fun sendEmail(recipient: String, subject: String, body: String, onResult: (Boolean, String) -> Unit) {

@@ -342,9 +342,14 @@ fun LoginScreen(
                         } else {
                             Text("RESET PASSWORD", style = MaterialTheme.typography.titleLarge, color = NeonCyan)
                             Spacer(Modifier.height(8.dp))
-                            Text("Kode verifikasi telah dikirim ke email Anda.", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
-                            Spacer(Modifier.height(4.dp))
-                            Text("Cek email Anda (termasuk folder Spam)", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                            if (state.pendingResetCode.isNotEmpty()) {
+                                Text("Kode reset Anda: ${state.pendingResetCode}", style = MaterialTheme.typography.titleMedium, color = NeonGreen, fontWeight = FontWeight.Bold)
+                                Text("(Jika email tidak masuk, gunakan kode di atas)", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                            } else {
+                                Text("Kode verifikasi telah dikirim ke email Anda.", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                                Spacer(Modifier.height(4.dp))
+                                Text("Cek email Anda (termasuk folder Spam)", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                            }
                             Spacer(Modifier.height(16.dp))
                             OutlinedTextField(value = forgotCode, onValueChange = { forgotCode = it; forgotMsg = "" }, label = { Text("Kode Verifikasi") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
                             Spacer(Modifier.height(8.dp))
@@ -420,6 +425,11 @@ fun LoginScreen(
                         Text("VERIFIKASI EMAIL", style = MaterialTheme.typography.titleLarge, color = NeonCyan)
                         Spacer(Modifier.height(8.dp))
                         Text("Masukkan kode verifikasi yang dikirim ke email Anda.", style = MaterialTheme.typography.bodySmall, color = TextSecondary, textAlign = TextAlign.Center)
+                        if (state.pendingVerifyCode.isNotEmpty()) {
+                            Spacer(Modifier.height(8.dp))
+                            Text("Kode verifikasi Anda: ${state.pendingVerifyCode}", style = MaterialTheme.typography.titleMedium, color = NeonGreen, fontWeight = FontWeight.Bold)
+                            Text("(Jika email tidak masuk, gunakan kode di atas)", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                        }
                         Spacer(Modifier.height(12.dp))
                         OutlinedTextField(value = verCode, onValueChange = { verCode = it; verMsg = "" }, label = { Text("Kode Verifikasi") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
                         if (verMsg.isNotEmpty()) {

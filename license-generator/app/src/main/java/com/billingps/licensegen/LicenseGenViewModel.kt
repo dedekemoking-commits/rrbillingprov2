@@ -2,6 +2,9 @@ package com.billingps.licensegen
 
 import android.app.Application
 import android.util.Log
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.auth.FirebaseAuth
@@ -21,12 +24,11 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
     private val firestore = FirebaseFirestore.getInstance()
     private var usersListener: ListenerRegistration? = null
 
-    var isLoggedIn = false; private set
-    var currentUser = ""; private set
-    var isBusy = false; private set
-    var userList = listOf<FirestoreUser>()
-        private set
-    var firestoreReady = false; private set
+    var isLoggedIn by mutableStateOf(false); private set
+    var currentUser by mutableStateOf(""); private set
+    var isBusy by mutableStateOf(false); private set
+    var userList by mutableStateOf(listOf<FirestoreUser>()); private set
+    var firestoreReady by mutableStateOf(false); private set
 
     init { ensureAnonymous() }
 

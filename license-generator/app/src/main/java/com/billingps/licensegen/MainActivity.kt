@@ -86,6 +86,12 @@ fun LoginScreen(vm: LicenseGenViewModel) {
             border = BorderStroke(1.dp, NeonGreen.copy(alpha = 0.3f)),
         ) {
             Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                androidx.compose.foundation.Image(
+                    painter = androidx.compose.ui.res.painterResource(com.billingps.licensegen.R.drawable.logo_app),
+                    contentDescription = "Logo",
+                    modifier = Modifier.size(150.dp),
+                )
+                Spacer(Modifier.height(8.dp))
                 Text("RR LICENSE GENERATOR", style = MaterialTheme.typography.titleLarge, color = NeonGreen, letterSpacing = 2.sp)
                 Spacer(Modifier.height(4.dp))
                 Text("Super Admin Only", style = MaterialTheme.typography.bodySmall, color = TextDim)

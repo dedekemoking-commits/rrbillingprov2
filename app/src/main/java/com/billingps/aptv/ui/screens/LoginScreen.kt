@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -26,6 +27,7 @@ import androidx.compose.ui.unit.sp
 import com.billingps.aptv.models.MainViewModel
 import com.billingps.aptv.ui.theme.*
 import kotlinx.coroutines.launch
+import androidx.compose.ui.tooling.preview.Preview
 
 @Composable
 fun LoginScreen(
@@ -38,7 +40,7 @@ fun LoginScreen(
     var password by remember { mutableStateOf("") }
     var showPass by remember { mutableStateOf(false) }
     var attempts by remember { mutableIntStateOf(0) }
-    var lockedUntil by remember { mutableStateOf(0L) }
+    var lockedUntil by remember { mutableLongStateOf(0L) }
     var errMsg by remember { mutableStateOf("") }
     var showReg by remember { mutableStateOf(false) }
     var regUser by remember { mutableStateOf("") }
@@ -81,22 +83,17 @@ fun LoginScreen(
                 Image(
                     painter = androidx.compose.ui.res.painterResource(com.billingps.aptv.R.drawable.logo_transparant),
                     contentDescription = "Logo",
-                    modifier = Modifier.size(120.dp),
+                    modifier = Modifier.size(180.dp),
                 )
 
                 Spacer(Modifier.height(2.dp))
 
                 Text(
-                    "RR BILLING PRO",
-                    style = MaterialTheme.typography.displaySmall,
-                    color = NeonGreen,
-                    letterSpacing = 4.sp,
-                )
-
-                Text(
                     "Sistem Billing Rental TV & PS",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        shadow = Shadow(color = Color(0xFF001B3D).copy(alpha = 0.6f), blurRadius = 12f),
+                        brush = Brush.horizontalGradient(colors = listOf(Color.Black, Color(0xFF001B3D)))
+                    )
                 )
 
                 if (showLicense) {
@@ -189,7 +186,7 @@ fun LoginScreen(
                                         lockedUntil = System.currentTimeMillis() + 60000
                                         errMsg = "5x salah - terkunci 1 menit"
                                     } else {
-                                        errMsg = if (result.message.isNotBlank()) result.message else "Username/Password salah ($attempts/5)"
+                                        errMsg = result.message.ifBlank { "Username/Password salah ($attempts/5)" }
                                     }
                                 }
                             }
@@ -527,3 +524,104 @@ fun LoginScreen(
     cursorColor = NeonGreen, focusedLabelColor = NeonGreen,
     unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
 )
+
+@Preview(showBackground = true, device = "id:pixel_5", backgroundColor = 0xFF0A0A0A)
+@Composable
+fun LoginScreenPreview() {
+    BillingPSTheme {
+        val loginGradient = Brush.verticalGradient(colors = listOf(Color(0xFFF0FDF4), Color(0xFF00C9A7)))
+        Box(modifier = Modifier.fillMaxSize().background(loginGradient)) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Image(
+                        painter = androidx.compose.ui.res.painterResource(com.billingps.aptv.R.drawable.logo_transparant),
+                        contentDescription = "Logo",
+                        modifier = Modifier.size(180.dp),
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "Sistem Billing Rental TV & PS",
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            shadow = Shadow(color = NeonCyan.copy(alpha = 0.5f), blurRadius = 12f)
+                        ),
+                        color = NeonCyan,
+                    )
+                }
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, NeonGreen.copy(alpha = 0.3f)),
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        OutlinedTextField(
+                            value = "",
+                            onValueChange = {},
+                            placeholder = { Text("Username") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = NeonGreen, unfocusedBorderColor = DarkSurfaceV3,
+                                cursorColor = NeonGreen, focusedLabelColor = NeonGreen,
+                                unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                            ),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = "",
+                            onValueChange = {},
+                            placeholder = { Text("Password") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            visualTransformation = PasswordVisualTransformation(),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = NeonGreen, unfocusedBorderColor = DarkSurfaceV3,
+                                cursorColor = NeonGreen, focusedLabelColor = NeonGreen,
+                                unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                            ),
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Button(
+                            onClick = {},
+                            modifier = Modifier.fillMaxWidth().height(42.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
+                        ) {
+                            Text("MASUK", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text("Belum punya akun? Daftar di sini", style = MaterialTheme.typography.bodySmall, color = NeonGreen, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().clickable {})
+                        Spacer(Modifier.height(2.dp))
+                        Text("Lupa password? Reset di sini", style = MaterialTheme.typography.bodySmall, color = NeonCyan, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().clickable {})
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedButton(
+                            onClick = {},
+                            modifier = Modifier.fillMaxWidth().height(36.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, NeonCyan),
+                            contentPadding = PaddingValues(0.dp),
+                        ) {
+                            Icon(Icons.Filled.Person, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Login Kasir", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+
+                Text(
+                    "RR BILLING PRO v1.0.8",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextDim,
+                )
+            }
+        }
+    }
+}

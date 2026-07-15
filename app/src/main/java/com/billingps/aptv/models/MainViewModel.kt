@@ -59,7 +59,7 @@ data class AppUiState(
     val pendingVerifyUser: String = "",
     val updateInfo: UpdateInfo? = null,
     val downloadProgress: Int = -1, // -1 = idle, 0-100 = downloading
-    val appVersionName: String = "1.0.5",
+    val appVersionName: String = APP_VERSION,
 )
 
 fun defaultPaketMain(): Map<String, Map<String, Int>> {
@@ -74,6 +74,8 @@ fun defaultPaketDurasi(): Map<String, Int> = mapOf(
     "15 Menit" to 15, "30 Menit" to 30, "1 Jam" to 60,
     "2 Jam" to 120, "3 Jam" to 180, "Main Bebas" to 0,
 )
+
+const val APP_VERSION = "1.0.6"
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -125,7 +127,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             kodeGenerasiList = StorageUtil.loadKodeGenerasiList(),
             trialBatas = StorageUtil.loadTrialBatas(),
             maxTv = StorageUtil.loadLicense().maxTv,
-            appVersionName = appVersionName,
         )
         // Check trial expiry
         val s = _state.value
@@ -479,7 +480,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── Auto Update ────────────────────────────────────────
     private val githubApiUrl = "https://api.github.com/repos/dedekemoking-commits/rrbillingprov2/releases/latest"
-    val appVersionName = "1.0.6"
 
     fun checkForUpdate() {
         viewModelScope.launch {
@@ -494,7 +494,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ?.optString("browser_download_url", "") ?: ""
                 val changelog = obj.optString("body", "")
 
-                if (tagName > appVersionName && apkUrl.isNotBlank()) {
+                if (tagName > APP_VERSION && apkUrl.isNotBlank()) {
                     _state.value = _state.value.copy(
                         updateInfo = UpdateInfo(tagName, apkUrl, changelog)
                     )

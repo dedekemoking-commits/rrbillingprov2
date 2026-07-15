@@ -1,0 +1,2 @@
+-keepclassmembers class com.billingps.licensegen.ECDSAUtils { *; }
+-keepclassmembers class com.billingps.licensegen.DataModels { *; }

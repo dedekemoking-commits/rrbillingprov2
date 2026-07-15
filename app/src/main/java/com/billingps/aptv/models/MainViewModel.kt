@@ -11,12 +11,14 @@ import androidx.lifecycle.viewModelScope
 import com.billingps.aptv.utils.ECDSAUtils
 import com.billingps.aptv.utils.StorageUtil
 import com.billingps.aptv.cloud.CloudRepository
+import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
 import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.auth.FirebaseAuthWeakPasswordException
 import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -79,7 +81,7 @@ fun defaultPaketDurasi(): Map<String, Int> = mapOf(
     "2 Jam" to 120, "3 Jam" to 180, "Main Bebas" to 0,
 )
 
-    const val APP_VERSION = "1.1.1"
+    const val APP_VERSION = "1.2.0"
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -349,6 +351,81 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (_: Exception) { }
         }
         return AuthResult(true, "")
+    }
+
+    // ── Google Sign-In ───────────────────────────────────────
+    fun signInWithGoogle(idToken: String, email: String, displayName: String) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isBusy = true, statusMessage = "Memproses login Google...")
+            try {
+                val credential = GoogleAuthProvider.getCredential(idToken, null)
+                var verifiedEmail = email
+                val firebaseOk = suspendCancellableCoroutine<Boolean> { cont ->
+                    firebaseAuth.signInWithCredential(credential)
+                        .addOnSuccessListener {
+                            verifiedEmail = it.user?.email ?: email
+                            if (!cont.isCompleted) cont.resume(true)
+                        }
+                        .addOnFailureListener { ex ->
+                            Log.i("MainVM", "Firebase Google sign-in: ${ex.message}")
+                            if (ex is FirebaseAuthUserCollisionException) {
+                                if (!cont.isCompleted) cont.resume(true) // email valid, lanjut local
+                            } else {
+                                if (!cont.isCompleted) cont.resume(false)
+                            }
+                        }
+                }
+                if (!firebaseOk && email.isBlank()) {
+                    _state.value = _state.value.copy(isBusy = false, statusMessage = "Gagal verifikasi Google")
+                    return@launch
+                }
+                val users = _state.value.users
+                val existing = users.values.firstOrNull { it.email.equals(verifiedEmail, ignoreCase = true) }
+                if (existing != null) {
+                    StorageUtil.saveCurrentSession(existing.username, existing.role)
+                    _state.value = _state.value.copy(
+                        isLoggedIn = true, currentUser = existing.username, currentRole = existing.role,
+                        needsSmtpSetup = _state.value.smtp.user.isEmpty(),
+                        isBusy = false, statusMessage = "",
+                    )
+                } else {
+                    val username = generateUniqueUsername(displayName)
+                    val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+                    val newUser = UserData(
+                        username = username, passwordHash = "", role = "admin", email = verifiedEmail,
+                        dibuat = sdf.format(java.util.Date()), emailVerified = true,
+                    )
+                    val updatedUsers = users + (username to newUser)
+                    StorageUtil.saveUsers(updatedUsers)
+                    StorageUtil.saveCurrentSession(username, "admin")
+                    _state.value = _state.value.copy(
+                        users = updatedUsers, isLoggedIn = true, currentUser = username, currentRole = "admin",
+                        needsSmtpSetup = _state.value.smtp.user.isEmpty(),
+                        isBusy = false, statusMessage = "",
+                    )
+                }
+                try {
+                    firebaseAuth.currentUser?.let { u ->
+                        launch { withContext(Dispatchers.IO) { cloudRepo.fetchTransaksiForUser(u.email ?: verifiedEmail) } }
+                    }
+                } catch (_: Exception) { }
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    isBusy = false,
+                    statusMessage = "Google Sign-In gagal: ${e.localizedMessage}",
+                )
+            }
+        }
+    }
+
+    private fun generateUniqueUsername(base: String): String {
+        val sanitized = base.lowercase(Locale.ROOT).replace(Regex("[^a-z0-9]"), "")
+        val prefix = sanitized.take(12).ifEmpty { "user" }
+        val users = _state.value.users
+        if (!users.containsKey(prefix)) return prefix
+        var suffix = 1
+        while (users.containsKey("$prefix$suffix")) suffix++
+        return "$prefix$suffix"
     }
 
     suspend fun sendPasswordReset(email: String): AuthResult {

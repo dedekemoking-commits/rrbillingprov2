@@ -27,7 +27,14 @@ import androidx.compose.ui.unit.sp
 import com.billingps.aptv.models.MainViewModel
 import com.billingps.aptv.ui.theme.*
 import kotlinx.coroutines.launch
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
+import android.app.Activity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
 
 @Composable
 fun LoginScreen(
@@ -61,6 +68,24 @@ fun LoginScreen(
     var forgotCodeDisplay by remember { mutableStateOf("") }
     var showKasirLogin by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val googleSignInLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+            try {
+                val account = task.getResult(ApiException::class.java)
+                val idToken = account.idToken
+                val email = account.email ?: ""
+                val displayName = account.displayName ?: email.substringBefore("@")
+                if (idToken != null) {
+                    viewModel.signInWithGoogle(idToken, email, displayName)
+                }
+            } catch (e: ApiException) {
+                errMsg = "Google Sign-In gagal: ${e.localizedMessage}"
+            }
+        }
+    }
     var selectedKasir by remember { mutableStateOf("") }
     var kasirPass by remember { mutableStateOf("") }
     var kasirErr by remember { mutableStateOf("") }
@@ -204,6 +229,36 @@ fun LoginScreen(
                     }
 
                     Spacer(Modifier.height(6.dp))
+
+                    // Google Sign-In
+                    val ctx = LocalContext.current
+                    val googleSignInClient = remember {
+                        GoogleSignIn.getClient(
+                            ctx,
+                            GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                                .requestIdToken(ctx.getString(com.billingps.aptv.R.string.default_web_client_id))
+                                .requestEmail()
+                                .build()
+                        )
+                    }
+                    Button(
+                        onClick = { googleSignInLauncher.launch(googleSignInClient.signInIntent) },
+                        modifier = Modifier.fillMaxWidth().height(42.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFFFFF), contentColor = Color(0xFF4285F4)),
+                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.Person,
+                            contentDescription = "Google",
+                            modifier = Modifier.size(18.dp),
+                            tint = Color(0xFF4285F4),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Masuk dengan Google", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    }
+
+                    Spacer(Modifier.height(8.dp))
 
                     TextButton(onClick = { showReg = true }, modifier = Modifier.fillMaxWidth()) {
                         Text("Belum punya akun? Daftar di sini", style = MaterialTheme.typography.bodySmall, color = NeonGreen)

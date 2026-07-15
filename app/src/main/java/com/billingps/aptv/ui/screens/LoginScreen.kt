@@ -16,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -76,7 +77,9 @@ fun LoginScreen(
         else -> if (lic.pesan.isNotEmpty()) lic.pesan else "Lisensi tidak aktif"
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(DarkBackground)) {
+    val loginGradient = Brush.verticalGradient(colors = listOf(Color(0xFFF0FDF4), Color(0xFF00C9A7)))
+
+    Box(modifier = Modifier.fillMaxSize().background(loginGradient)) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -357,11 +360,9 @@ fun LoginScreen(
                         } else {
                             Text("RESET PASSWORD", style = MaterialTheme.typography.titleLarge, color = NeonCyan)
                             Spacer(Modifier.height(8.dp))
-                            Text("Kode verifikasi Anda:", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                            Text("Kode verifikasi telah dikirim ke email Anda.", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
                             Spacer(Modifier.height(4.dp))
-                            Text(forgotCodeDisplay, style = MaterialTheme.typography.headlineLarge, color = NeonGreen, fontWeight = FontWeight.Bold, letterSpacing = 4.sp)
-                            Spacer(Modifier.height(4.dp))
-                            Text("(kode berlaku 10 menit)", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                            Text("Cek email Anda (termasuk folder Spam)", style = MaterialTheme.typography.bodySmall, color = TextDim)
                             Spacer(Modifier.height(16.dp))
                             OutlinedTextField(value = forgotCode, onValueChange = { forgotCode = it; forgotMsg = "" }, label = { Text("Kode Verifikasi") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
                             Spacer(Modifier.height(8.dp))
@@ -396,8 +397,7 @@ fun LoginScreen(
                             TextButton(onClick = {
                                 val result = viewModel.generateResetCode(forgotInput)
                                 if (result.success) {
-                                    forgotCodeDisplay = result.message.replace("Kode verifikasi Anda: ", "")
-                                    forgotMsg = "Kode baru telah dikirim"
+                                    forgotMsg = "Kode baru telah dikirim ke email"
                                     forgotMsgOk = true
                                 } else {
                                     forgotMsg = result.message
@@ -436,7 +436,7 @@ fun LoginScreen(
                     Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("VERIFIKASI EMAIL", style = MaterialTheme.typography.titleLarge, color = NeonCyan)
                         Spacer(Modifier.height(8.dp))
-                        Text("Masukkan kode verifikasi yang ditampilkan saat pendaftaran.", style = MaterialTheme.typography.bodySmall, color = TextSecondary, textAlign = TextAlign.Center)
+                        Text("Masukkan kode verifikasi yang dikirim ke email Anda.", style = MaterialTheme.typography.bodySmall, color = TextSecondary, textAlign = TextAlign.Center)
                         Spacer(Modifier.height(12.dp))
                         OutlinedTextField(value = verCode, onValueChange = { verCode = it; verMsg = "" }, label = { Text("Kode Verifikasi") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
                         if (verMsg.isNotEmpty()) {

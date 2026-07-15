@@ -28,7 +28,10 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.URL
 import java.security.MessageDigest
-import java.util.UUID
+import java.util.*
+import javax.mail.*
+import javax.mail.internet.InternetAddress
+import javax.mail.internet.MimeMessage
 import kotlin.coroutines.resume
 
 data class AppUiState(
@@ -201,7 +204,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(users = newUsers)
         StorageUtil.saveUsers(newUsers)
         Log.i("MainVM", "Reset code for ${user.username}: $code")
-        return AuthResult(true, "Kode verifikasi Anda: $code")
+        sendEmail(user.email,
+            "Kode Reset Password RR Billing Pro",
+            "Halo ${user.username},\n\nKode reset password RR Billing Pro Anda: $code\n\nKode berlaku 10 menit.\n\nTerima kasih.",
+        ) { ok, msg ->
+            if (!ok) Log.i("MainVM", "Failed to send reset email: $msg")
+        }
+        return AuthResult(true, "Kode verifikasi telah dikirim ke email Anda.")
     }
 
     fun verifyResetCode(usernameOrEmail: String, code: String): AuthResult {
@@ -416,6 +425,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(users = newUsers)
         StorageUtil.saveUsers(newUsers)
 
+        if (normalizedEmail.isNotBlank()) {
+            sendEmail(normalizedEmail,
+                "Kode Verifikasi RR Billing Pro",
+                "Halo $key,\n\nKode verifikasi akun RR Billing Pro Anda: $verificationCode\n\nKode berlaku 10 menit.\n\nTerima kasih.",
+            ) { ok, msg ->
+                if (!ok) Log.i("MainVM", "Failed to send verification email: $msg")
+            }
+        }
+
         // Set trial 3 hari untuk admin pertama
         if (role == "admin" && _state.value.users.size <= 1 && _state.value.trialBatas == 0L) {
             val trialEnd = System.currentTimeMillis() + 3 * 24 * 60 * 60 * 1000L
@@ -427,7 +445,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return if (normalizedEmail.isBlank()) {
             AuthResult(true, "Akun berhasil dibuat! Silakan login.")
         } else {
-            AuthResult(true, "Akun berhasil dibuat! Kode verifikasi Anda: $verificationCode")
+            AuthResult(true, "Akun berhasil dibuat! Kode verifikasi telah dikirim ke email Anda.")
         }
     }
 
@@ -458,7 +476,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── Auto Update ────────────────────────────────────────
     private val githubApiUrl = "https://api.github.com/repos/dedekemoking-commits/rrbillingprov2/releases/latest"
-    private val currentVersionName = "1.0.3"
+    private val currentVersionName = "1.0.5"
 
     fun checkForUpdate() {
         viewModelScope.launch {
@@ -680,6 +698,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun saveSmtp(cfg: SmtpConfig) {
         _state.value = _state.value.copy(smtp = cfg)
         StorageUtil.saveSmtp(cfg)
+    }
+
+    fun sendEmail(recipient: String, subject: String, body: String, onResult: (Boolean, String) -> Unit) {
+        val cfg = _state.value.smtp
+        if (cfg.user.isBlank() || cfg.pass.isBlank()) {
+            onResult(false, "SMTP belum dikonfigurasi. Konfigurasi di halaman Profil.")
+            return
+        }
+        Thread {
+            try {
+                val props = Properties().apply {
+                    put("mail.smtp.host", cfg.host.ifBlank { "smtp.gmail.com" })
+                    put("mail.smtp.port", cfg.port.toString())
+                    put("mail.smtp.auth", "true")
+                    put("mail.smtp.starttls.enable", "true")
+                }
+                val session = Session.getInstance(props, object : Authenticator() {
+                    override fun getPasswordAuthentication() = PasswordAuthentication(cfg.user, cfg.pass)
+                })
+                val message = MimeMessage(session).apply {
+                    setFrom(InternetAddress(cfg.user))
+                    setRecipient(Message.RecipientType.TO, InternetAddress(recipient))
+                    setSubject(subject)
+                    setText(body)
+                }
+                Transport.send(message)
+                onResult(true, "Email terkirim")
+            } catch (e: Exception) {
+                Log.i("MainVM", "sendEmail failed: ${e.message}")
+                onResult(false, "Gagal kirim email: ${e.message}")
+            }
+        }.start()
     }
 
     fun setStatus(msg: String) {

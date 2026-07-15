@@ -259,6 +259,53 @@ fun ProfileScreen(
 
                 }
 
+            // SMTP Config
+            if (state.currentRole == "admin") {
+                val smtpCfg = state.smtp
+                var smtpEmail by remember { mutableStateOf(smtpCfg.user) }
+                var smtpPass by remember { mutableStateOf(smtpCfg.pass) }
+                Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("KONFIGURASI EMAIL", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
+                        Spacer(Modifier.height(4.dp))
+                        Text("Digunakan untuk kirim kode verifikasi & reset password via Gmail.", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(value = smtpEmail, onValueChange = { smtpEmail = it }, label = { Text("Email Gmail") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
+                        Spacer(Modifier.height(4.dp))
+                        OutlinedTextField(value = smtpPass, onValueChange = { smtpPass = it }, label = { Text("App Password Gmail") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
+                        Spacer(Modifier.height(4.dp))
+                        Text("Cara buat App Password: Google Account -> Keamanan -> App Password", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = {
+                            viewModel.saveSmtp(SmtpConfig(host = "smtp.gmail.com", port = 587, user = smtpEmail, pass = smtpPass))
+                            Toast.makeText(ctx, "Konfigurasi email tersimpan", Toast.LENGTH_SHORT).show()
+                        }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground)) { Text("Simpan Konfigurasi Email") }
+                    }
+                }
+            }
+
+            // Check Update
+            Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("PERIKSA PEMBARUAN", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
+                    Spacer(Modifier.height(8.dp))
+                    val updateInfo = state.updateInfo
+                    if (updateInfo != null) {
+                        Text("Versi ${updateInfo.versionName} tersedia!", style = MaterialTheme.typography.bodyMedium, color = NeonGreen)
+                        Spacer(Modifier.height(8.dp))
+                        if (state.downloadProgress >= 0) {
+                            LinearProgressIndicator(progress = { state.downloadProgress / 100f }, modifier = Modifier.fillMaxWidth().height(12.dp), color = NeonGreen, trackColor = DarkSurfaceV3)
+                            Spacer(Modifier.height(4.dp))
+                            Text("Download: ${state.downloadProgress}%", style = MaterialTheme.typography.bodySmall, color = NeonGreen)
+                        } else {
+                            Button(onClick = { viewModel.downloadAndInstall(ctx) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("Download & Install") }
+                        }
+                    } else {
+                        Button(onClick = { viewModel.checkForUpdate(); Toast.makeText(ctx, "Memeriksa...", Toast.LENGTH_SHORT).show() }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("Cek Update") }
+                    }
+                }
+            }
+
             Spacer(Modifier.height(30.dp))
         }
     }

@@ -4,10 +4,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
@@ -81,58 +79,56 @@ fun LoginScreen(
 
     Box(modifier = Modifier.fillMaxSize().background(loginGradient)) {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(20.dp),
+            modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.SpaceBetween,
         ) {
-            Spacer(Modifier.height(48.dp))
+            // Top section: logo + title + license
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Spacer(Modifier.height(8.dp))
 
-            Image(
-                painter = androidx.compose.ui.res.painterResource(com.billingps.aptv.R.drawable.logo_transparant),
-                contentDescription = "Logo",
-                modifier = Modifier.size(112.dp),
-            )
+                Image(
+                    painter = androidx.compose.ui.res.painterResource(com.billingps.aptv.R.drawable.logo_transparant),
+                    contentDescription = "Logo",
+                    modifier = Modifier.size(80.dp),
+                )
 
-            Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(4.dp))
 
-            Text(
-                "RR BILLING PRO",
-                style = MaterialTheme.typography.displayMedium,
-                color = NeonGreen,
-                letterSpacing = 4.sp,
-            )
+                Text(
+                    "RR BILLING PRO",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = NeonGreen,
+                    letterSpacing = 4.sp,
+                )
 
-            Text(
-                "Sistem Billing Rental TV & PS",
-                style = MaterialTheme.typography.bodyMedium,
-                color = TextSecondary,
-            )
+                Text(
+                    "Sistem Billing Rental TV & PS",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                )
 
-            Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(4.dp))
 
-            Text(
-                licMsg,
-                style = MaterialTheme.typography.labelMedium,
-                color = licColor,
-            )
+                Text(
+                    licMsg,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = licColor,
+                )
+            }
 
-            Spacer(Modifier.height(24.dp))
-
+            // Middle: login card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = DarkSurface),
                 border = androidx.compose.foundation.BorderStroke(1.dp, NeonGreen.copy(alpha = 0.3f)),
             ) {
-                Column(Modifier.padding(24.dp)) {
-                    Text("Username", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
-                    Spacer(Modifier.height(6.dp))
+                Column(Modifier.padding(16.dp)) {
                     OutlinedTextField(
                         value = username,
                         onValueChange = { username = it; errMsg = "" },
-                        placeholder = { Text("Masukkan username") },
+                        placeholder = { Text("Username") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(10.dp),
@@ -143,15 +139,13 @@ fun LoginScreen(
                         ),
                     )
 
-                    Spacer(Modifier.height(14.dp))
+                    Spacer(Modifier.height(8.dp))
 
-                    Text("Password", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
-                    Spacer(Modifier.height(6.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
                             value = password,
                             onValueChange = { password = it; errMsg = "" },
-                            placeholder = { Text("Masukkan password") },
+                            placeholder = { Text("Password") },
                             singleLine = true,
                             modifier = Modifier.weight(1f),
                             visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
@@ -174,11 +168,11 @@ fun LoginScreen(
                     }
 
                     if (errMsg.isNotEmpty()) {
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(4.dp))
                         Text(errMsg, style = MaterialTheme.typography.bodySmall, color = NeonRed, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
                     }
 
-                    Spacer(Modifier.height(18.dp))
+                    Spacer(Modifier.height(10.dp))
 
                     Button(
                         onClick = {
@@ -192,35 +186,35 @@ fun LoginScreen(
                             loading = true
                             errMsg = ""
                            scope.launch {
-                               val result = viewModel.loginWithResult(username, password)
-                               loading = false
-                               if (result.success) {
-                                   attempts = 0
-                                   onLoginSuccess()
-                               } else {
-                                   attempts++
-                                   if (attempts >= 5) {
-                                       lockedUntil = System.currentTimeMillis() + 60000
-                                       errMsg = "5x salah - terkunci 1 menit"
-                                   } else {
-                                       errMsg = if (result.message.isNotBlank()) result.message else "Username/Password salah ($attempts/5)"
-                                   }
-                               }
-                           }
-                       },
+                                val result = viewModel.loginWithResult(username, password)
+                                loading = false
+                                if (result.success) {
+                                    attempts = 0
+                                    onLoginSuccess()
+                                } else {
+                                    attempts++
+                                    if (attempts >= 5) {
+                                        lockedUntil = System.currentTimeMillis() + 60000
+                                        errMsg = "5x salah - terkunci 1 menit"
+                                    } else {
+                                        errMsg = if (result.message.isNotBlank()) result.message else "Username/Password salah ($attempts/5)"
+                                    }
+                                }
+                            }
+                        },
                         enabled = !loading,
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        modifier = Modifier.fillMaxWidth().height(42.dp),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
                     ) {
                         if (loading) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), color = DarkBackground, strokeWidth = 2.dp)
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), color = DarkBackground, strokeWidth = 2.dp)
                         } else {
                             Text("MASUK", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                         }
                     }
 
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(6.dp))
 
                     TextButton(onClick = { showReg = true }, modifier = Modifier.fillMaxWidth()) {
                         Text("Belum punya akun? Daftar di sini", style = MaterialTheme.typography.bodySmall, color = NeonGreen)
@@ -229,23 +223,21 @@ fun LoginScreen(
                     TextButton(onClick = { showForgot = true; forgotInput = ""; forgotCode = ""; forgotNewPass = ""; forgotMsg = ""; forgotStep = 0; forgotCodeDisplay = "" }, modifier = Modifier.fillMaxWidth()) {
                         Text("Lupa password? Reset di sini", style = MaterialTheme.typography.bodySmall, color = NeonCyan)
                     }
+
+                    OutlinedButton(
+                        onClick = { showKasirLogin = true },
+                        modifier = Modifier.fillMaxWidth().height(36.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, NeonCyan),
+                        contentPadding = PaddingValues(0.dp),
+                    ) { Icon(Icons.Filled.Person, contentDescription = null, modifier = Modifier.size(14.dp)); Spacer(Modifier.width(4.dp)); Text("Login Kasir", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall) }
                 }
             }
 
-            Spacer(Modifier.height(8.dp))
-
-            OutlinedButton(
-                onClick = { showKasirLogin = true },
-                modifier = Modifier.fillMaxWidth().height(44.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan),
-                border = androidx.compose.foundation.BorderStroke(1.dp, NeonCyan),
-            ) { Icon(Icons.Filled.Person, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Login Kasir", fontWeight = FontWeight.Bold) }
-
-            Spacer(Modifier.height(32.dp))
-
+            // Bottom: version
             Text(
-                "RR BILLING PRO v1.0",
+                "RR BILLING PRO v${state.appVersionName}",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextDim,
             )

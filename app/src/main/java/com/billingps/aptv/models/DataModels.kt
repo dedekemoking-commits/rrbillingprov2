@@ -63,6 +63,21 @@ data class KodeGenerasi(
     val kode: String = "",
 )
 
+data class LicenseRecord(
+    val id: String = "",
+    val kode: String = "",
+    val payload: String = "",
+    val signature: String = "",
+    val paket: String = "",
+    val username: String = "",
+    val expiry: String = "",
+    val generatedBy: String = "",
+    val generatedAt: Long = 0,
+    val activatedAt: Long = 0,
+    val activatedDeviceId: String = "",
+    val revoked: Boolean = false,
+)
+
 data class SmtpConfig(
     val host: String = "",
     val port: Int = 587,

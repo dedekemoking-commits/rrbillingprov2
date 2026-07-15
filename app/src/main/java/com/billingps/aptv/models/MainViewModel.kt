@@ -8,6 +8,7 @@ import android.util.Patterns
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.billingps.aptv.utils.ECDSAUtils
 import com.billingps.aptv.utils.StorageUtil
 import com.billingps.aptv.cloud.CloudRepository
 import com.google.firebase.auth.FirebaseAuth
@@ -58,6 +59,7 @@ data class AppUiState(
     val pendingVerifyUser: String = "",
     val updateInfo: UpdateInfo? = null,
     val downloadProgress: Int = -1, // -1 = idle, 0-100 = downloading
+    val appVersionName: String = "1.0.5",
 )
 
 fun defaultPaketMain(): Map<String, Map<String, Int>> {
@@ -123,6 +125,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             kodeGenerasiList = StorageUtil.loadKodeGenerasiList(),
             trialBatas = StorageUtil.loadTrialBatas(),
             maxTv = StorageUtil.loadLicense().maxTv,
+            appVersionName = appVersionName,
         )
         // Check trial expiry
         val s = _state.value
@@ -476,7 +479,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── Auto Update ────────────────────────────────────────
     private val githubApiUrl = "https://api.github.com/repos/dedekemoking-commits/rrbillingprov2/releases/latest"
-    private val currentVersionName = "1.0.5"
+    val appVersionName = "1.0.6"
 
     fun checkForUpdate() {
         viewModelScope.launch {
@@ -491,7 +494,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ?.optString("browser_download_url", "") ?: ""
                 val changelog = obj.optString("body", "")
 
-                if (tagName > currentVersionName && apkUrl.isNotBlank()) {
+                if (tagName > appVersionName && apkUrl.isNotBlank()) {
                     _state.value = _state.value.copy(
                         updateInfo = UpdateInfo(tagName, apkUrl, changelog)
                     )
@@ -635,44 +638,63 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ── License ────────────────────────────────────────────
-    fun aktivasiLisensi(kode: String): Pair<Boolean, String> {
-        val parts = kode.trim().split("-")
-        if (parts.size < 4 || !kode.startsWith("RR-")) {
-            return false to "Format kode: RR-XXXX-XXXX-XXXX"
+    fun aktivasiLisensi(kode: String, onResult: (Boolean, String) -> Unit) {
+        val trimmed = kode.trim().uppercase()
+        if (trimmed.length < 4) {
+            onResult(false, "Kode tidak valid"); return
         }
-        val paket = when {
-            parts[3].endsWith("L") -> "LIFETIME"
-            parts[3].endsWith("T") -> "TAHUNAN"
-            parts[3].endsWith("3") || parts[3].endsWith("B") -> "3BULAN"
-            else -> "BULANAN"
+        viewModelScope.launch {
+            val record = cloudRepo.findLicenseByCode(trimmed)
+            if (record == null) {
+                onResult(false, "Kode tidak ditemukan di server. Periksa kembali atau hubungi admin.")
+                return@launch
+            }
+            if (record.revoked) {
+                onResult(false, "Kode ini sudah dicabut. Hubungi admin.")
+                return@launch
+            }
+            if (record.activatedAt > 0) {
+                onResult(false, "Kode ini sudah digunakan. Hubungi admin untuk kode baru.")
+                return@launch
+            }
+            if (!ECDSAUtils.verify(record.payload, record.signature)) {
+                onResult(false, "Kode tidak valid (signature mismatch). Hubungi admin.")
+                return@launch
+            }
+            val paket = record.paket
+            val durasiHari = when (paket) {
+                "BULANAN" -> 30; "3BULAN" -> 90; "TAHUNAN" -> 360; "LIFETIME" -> 99999; else -> 30
+            }
+            val maxTv = when (paket) {
+                "BULANAN" -> 5; "3BULAN" -> 8; "TAHUNAN" -> 15; "LIFETIME" -> 0; else -> 2
+            }
+            val cal = java.util.Calendar.getInstance()
+            cal.add(java.util.Calendar.DAY_OF_YEAR, durasiHari)
+            val expires = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
+            val ls = LicenseStatus(
+                status = "active",
+                pesan = "✅ Lisensi $paket aktif hingga $expires",
+                expiresAt = expires,
+                maxTv = maxTv,
+            )
+            _state.value = _state.value.copy(licenseStatus = ls, trialBatas = 0L, maxTv = maxTv)
+            StorageUtil.saveLicense(ls)
+            cloudRepo.activateLicense(record.id)
+            onResult(true, ls.pesan)
         }
-        val durasiHari = when (paket) {
-            "BULANAN" -> 30; "3BULAN" -> 90; "TAHUNAN" -> 360; "LIFETIME" -> 99999; else -> 30
-        }
-        val maxTv = when (paket) {
-            "BULANAN" -> 5; "3BULAN" -> 8; "TAHUNAN" -> 15; "LIFETIME" -> 0; else -> 2
-        }
-        val cal = java.util.Calendar.getInstance()
-        cal.add(java.util.Calendar.DAY_OF_YEAR, durasiHari)
-        val expires = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
-        val ls = LicenseStatus(
-            status = "active",
-            pesan = "✅ Lisensi $paket aktif hingga $expires",
-            expiresAt = expires,
-            maxTv = maxTv,
-        )
-        _state.value = _state.value.copy(licenseStatus = ls, trialBatas = 0L, maxTv = maxTv)
-        StorageUtil.saveLicense(ls)
-        return true to ls.pesan
     }
 
-    fun generateLicenseKode(paket: String, username: String): String {
-        val raw = "$username-$paket-${System.currentTimeMillis()}"
-        val hash = sha256(raw).substring(0, 12).uppercase()
-        val suffix = when (paket) {
-            "BULANAN" -> "B"; "3BULAN" -> "3"; "TAHUNAN" -> "T"; "LIFETIME" -> "L"; else -> "X"
-        }
-        val kode = "RR-${hash.substring(0, 4)}-${hash.substring(4, 8)}-${hash.substring(8, 12)}$suffix"
+    fun generateLicenseKode(paket: String, username: String, onDone: (String) -> Unit) {
+        val shortCode = (10000000..99999999).random().toString() + (65..90).random().toChar()
+        val nonce = java.util.UUID.randomUUID().toString().take(8)
+        val cal = java.util.Calendar.getInstance()
+        cal.add(java.util.Calendar.DAY_OF_YEAR, when (paket) {
+            "BULANAN" -> 30; "3BULAN" -> 90; "TAHUNAN" -> 360; "LIFETIME" -> 99999; else -> 30
+        })
+        val expiry = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
+        val payload = """{"p":"$paket","u":"$username","e":"$expiry","n":"$nonce"}"""
+        val signature = ECDSAUtils.sign(payload)
+        val kode = shortCode
         val record = KodeGenerasi(
             waktu = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).format(java.util.Date()),
             username = _state.value.currentUser,
@@ -682,7 +704,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val newList = _state.value.kodeGenerasiList + record
         _state.value = _state.value.copy(kodeGenerasiList = newList)
         StorageUtil.saveKodeGenerasiList(newList)
-        return kode
+        // Write to Firestore
+        viewModelScope.launch {
+            try {
+                if (cloudRepo.ensureSignedIn()) {
+                    val doc = HashMap<String, Any>()
+                    doc["kode"] = kode
+                    doc["payload"] = payload
+                    doc["signature"] = signature
+                    doc["paket"] = paket
+                    doc["username"] = username
+                    doc["expiry"] = expiry
+                    doc["generatedBy"] = _state.value.currentUser
+                    doc["generatedAt"] = System.currentTimeMillis()
+                    doc["activatedAt"] = 0L
+                    doc["activatedDeviceId"] = ""
+                    doc["revoked"] = false
+                    com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                        .collection("licenses").add(doc)
+                }
+            } catch (_: Exception) { }
+            onDone(kode)
+        }
     }
 
     fun gantiPassword(username: String, newPassword: String): Boolean {

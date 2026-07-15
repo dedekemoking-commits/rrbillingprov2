@@ -44,6 +44,7 @@ fun ProfileScreen(
     var kodeAktivasi by remember { mutableStateOf("") }
     var aktMsg by remember { mutableStateOf("") }
     var aktOk by remember { mutableStateOf(false) }
+    var aktLoading by remember { mutableStateOf(false) }
     var newPass by remember { mutableStateOf("") }
 
     var regUser by remember { mutableStateOf("") }
@@ -58,6 +59,7 @@ fun ProfileScreen(
     var genPaket by remember { mutableStateOf("BULANAN") }
     var genKode by remember { mutableStateOf("") }
     var genMsg by remember { mutableStateOf("") }
+    var genLoading by remember { mutableStateOf(false) }
 
     val lic = state.licenseStatus
     val licColor = when (lic.status) {
@@ -126,13 +128,19 @@ fun ProfileScreen(
                     val maxInfo = if (state.maxTv > 0) "Maksimal $state.maxTv perangkat TV" else "Unlimited perangkat TV"
                     Text(maxInfo, style = MaterialTheme.typography.bodySmall, color = TextSecondary, modifier = Modifier.padding(top = 4.dp))
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = kodeAktivasi, onValueChange = { kodeAktivasi = it.uppercase(); aktMsg = "" }, label = { Text("Kode Aktivasi") }, placeholder = { Text("RR-XXXX-XXXX-XXXX") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
+                    OutlinedTextField(value = kodeAktivasi, onValueChange = { kodeAktivasi = it.uppercase(); aktMsg = "" }, label = { Text("Kode Aktivasi") }, placeholder = { Text("Masukkan kode dari admin") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
                     if (aktMsg.isNotEmpty()) { Spacer(Modifier.height(4.dp)); Text(aktMsg, style = MaterialTheme.typography.bodySmall, color = if (aktOk) NeonGreen else NeonRed) }
                     Spacer(Modifier.height(8.dp))
                     Button(onClick = {
-                        val (ok, msg) = viewModel.aktivasiLisensi(kodeAktivasi)
-                        aktOk = ok; aktMsg = msg
-                    }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("Aktifkan Lisensi") }
+                        if (kodeAktivasi.isBlank()) { aktMsg = "Masukkan kode"; aktOk = false; return@Button }
+                        aktMsg = "Memverifikasi..."; aktOk = false; aktLoading = true
+                        viewModel.aktivasiLisensi(kodeAktivasi) { ok, msg ->
+                            aktOk = ok; aktMsg = msg; aktLoading = false
+                        }
+                    }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) {
+                        if (aktLoading) { CircularProgressIndicator(modifier = Modifier.size(18.dp), color = DarkBackground, strokeWidth = 2.dp) }
+                        else { Text("Aktifkan Lisensi") }
+                    }
                 }
             }
 
@@ -163,10 +171,14 @@ fun ProfileScreen(
                         Spacer(Modifier.height(8.dp))
                         Button(onClick = {
                             if (genUname.isBlank()) { genMsg = "Masukkan username"; return@Button }
-                            genMsg = "Generating..."; genKode = ""
-                            genKode = viewModel.generateLicenseKode(genPaket, genUname)
-                            genMsg = ""
-                        }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("Generate Kode") }
+                            genMsg = "Generating..."; genKode = ""; genLoading = true
+                            viewModel.generateLicenseKode(genPaket, genUname) { kode ->
+                                genKode = kode; genMsg = ""; genLoading = false
+                            }
+                        }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) {
+                            if (genLoading) { CircularProgressIndicator(modifier = Modifier.size(18.dp), color = DarkBackground, strokeWidth = 2.dp) }
+                            else { Text("Generate Kode") }
+                        }
                         if (genMsg.isNotEmpty()) { Spacer(Modifier.height(4.dp)); Text(genMsg, style = MaterialTheme.typography.bodySmall, color = NeonYellow) }
                         if (genKode.isNotEmpty()) {
                             Spacer(Modifier.height(8.dp))

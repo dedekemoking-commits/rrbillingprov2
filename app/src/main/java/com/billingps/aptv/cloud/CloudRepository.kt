@@ -4,6 +4,7 @@ import android.app.Application
 import android.provider.Settings
 import android.util.Log
 import com.billingps.aptv.models.*
+import com.billingps.aptv.utils.ECDSAUtils
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -84,7 +85,7 @@ class CloudRepository(private val app: Application) {
                     "expiresAt" to state.licenseStatus.expiresAt,
                     "maxTv" to state.licenseStatus.maxTv,
                 ),
-                "appVersion" to "1.0.0",
+                "appVersion" to "1.0.6",
             )
 
             return suspendCancellableCoroutine { cont ->
@@ -137,4 +138,41 @@ class CloudRepository(private val app: Application) {
                     .addOnFailureListener { ex -> Log.i("CloudRepo", "fetchTransaksiForUser failed: ${ex.message}"); if (!cont.isCompleted) cont.resume(emptyList()) }
             }
         }
+
+    suspend fun findLicenseByCode(kode: String): LicenseRecord? {
+        if (!ensureSignedIn()) return null
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("licenses").whereEqualTo("kode", kode).get()
+                .addOnSuccessListener { snap ->
+                    if (snap.isEmpty) { cont.resume(null); return@addOnSuccessListener }
+                    val doc = snap.documents.first()
+                    val data = doc.data ?: run { cont.resume(null); return@addOnSuccessListener }
+                    cont.resume(LicenseRecord(
+                        id = doc.id,
+                        kode = data["kode"] as? String ?: "",
+                        payload = data["payload"] as? String ?: "",
+                        signature = data["signature"] as? String ?: "",
+                        paket = data["paket"] as? String ?: "",
+                        username = data["username"] as? String ?: "",
+                        expiry = data["expiry"] as? String ?: "",
+                        generatedBy = data["generatedBy"] as? String ?: "",
+                        generatedAt = data["generatedAt"] as? Long ?: 0,
+                        activatedAt = data["activatedAt"] as? Long ?: 0,
+                        activatedDeviceId = data["activatedDeviceId"] as? String ?: "",
+                        revoked = data["revoked"] as? Boolean ?: false,
+                    ))
+                }
+                .addOnFailureListener { cont.resume(null) }
+        }
+    }
+
+    suspend fun activateLicense(docId: String): Boolean {
+        if (!ensureSignedIn()) return false
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("licenses").document(docId)
+                .update("activatedAt", System.currentTimeMillis(), "activatedDeviceId", deviceId)
+                .addOnSuccessListener { cont.resume(true) }
+                .addOnFailureListener { cont.resume(false) }
+        }
+    }
 }

@@ -64,16 +64,9 @@ fun LoginScreen(
     var kasirErr by remember { mutableStateOf("") }
 
     val lic = state.licenseStatus
-    val licColor = when (lic.status) {
-        "active" -> Color(0xFF39FF14)
-        "trial" -> Color(0xFFFFEA00)
-        else -> Color(0xFFFF1744)
-    }
-    val licMsg = when (lic.status) {
-        "active" -> "Lisensi Aktif"
-        "trial" -> lic.pesan
-        else -> if (lic.pesan.isNotEmpty()) lic.pesan else "Lisensi tidak aktif"
-    }
+    val showLicense = lic.status == "active" || lic.status == "trial"
+    val licColor = if (lic.status == "active") Color(0xFF39FF14) else Color(0xFFFFEA00)
+    val licMsg = if (lic.status == "active") "Lisensi Aktif" else lic.pesan
 
     val loginGradient = Brush.verticalGradient(colors = listOf(Color(0xFFF0FDF4), Color(0xFF00C9A7)))
 
@@ -85,19 +78,17 @@ fun LoginScreen(
         ) {
             // Top section: logo + title + license
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Spacer(Modifier.height(8.dp))
-
                 Image(
                     painter = androidx.compose.ui.res.painterResource(com.billingps.aptv.R.drawable.logo_transparant),
                     contentDescription = "Logo",
-                    modifier = Modifier.size(80.dp),
+                    modifier = Modifier.size(120.dp),
                 )
 
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(2.dp))
 
                 Text(
                     "RR BILLING PRO",
-                    style = MaterialTheme.typography.headlineMedium,
+                    style = MaterialTheme.typography.displaySmall,
                     color = NeonGreen,
                     letterSpacing = 4.sp,
                 )
@@ -108,13 +99,14 @@ fun LoginScreen(
                     color = TextSecondary,
                 )
 
-                Spacer(Modifier.height(4.dp))
-
-                Text(
-                    licMsg,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = licColor,
-                )
+                if (showLicense) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        licMsg,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = licColor,
+                    )
+                }
             }
 
             // Middle: login card

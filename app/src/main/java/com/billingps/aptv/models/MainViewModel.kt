@@ -75,7 +75,7 @@ fun defaultPaketDurasi(): Map<String, Int> = mapOf(
     "2 Jam" to 120, "3 Jam" to 180, "Main Bebas" to 0,
 )
 
-const val APP_VERSION = "1.0.6"
+const val APP_VERSION = "1.0.8"
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 

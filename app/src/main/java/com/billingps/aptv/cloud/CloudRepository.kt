@@ -85,7 +85,7 @@ class CloudRepository(private val app: Application) {
                     "expiresAt" to state.licenseStatus.expiresAt,
                     "maxTv" to state.licenseStatus.maxTv,
                 ),
-                "appVersion" to "1.0.6",
+                "appVersion" to "1.0.8",
             )
 
             return suspendCancellableCoroutine { cont ->

@@ -62,9 +62,22 @@ fun ProfileScreen(
     var genLoading by remember { mutableStateOf(false) }
 
     val lic = state.licenseStatus
-    val licColor = when (lic.status) {
-        "active" -> NeonGreen
-        "trial" -> NeonYellow
+    val now = System.currentTimeMillis()
+    val licSisa = if (lic.status == "active" && lic.expiresAt.isNotEmpty()) {
+        try {
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+            val expDate = sdf.parse(lic.expiresAt)
+            val diff = expDate.time - now
+            if (diff > 0) "${diff / 86400000} hari" else "Hari ini"
+        } catch (_: Exception) { "" }
+    } else ""
+    val trialSisa = if (state.trialBatas > now) {
+        val s = (state.trialBatas - now) / 1000
+        "${s / 86400} hari ${(s % 86400) / 3600} jam"
+    } else ""
+    val displayColor = when {
+        lic.status == "active" -> NeonGreen
+        trialSisa.isNotEmpty() -> NeonYellow
         else -> NeonRed
     }
 
@@ -88,32 +101,30 @@ fun ProfileScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // Profile Card
-            ProfileHeader(state.currentUser, state.currentRole)
+            ProfileHeader(state.currentUser, state.currentRole, state.appVersionName)
 
             // License Status Info
             Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
                 Column(Modifier.padding(16.dp)) {
                     Text("INFORMASI LISENSI", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
                     Spacer(Modifier.height(8.dp))
-                    val trialSisa = if (state.trialBatas > System.currentTimeMillis()) {
-                        val s = (state.trialBatas - System.currentTimeMillis()) / 1000
-                        "${s / 86400} hari ${(s % 86400) / 3600} jam"
-                    } else ""
                     val displayText = when {
-                        lic.status == "active" -> lic.pesan
-                        trialSisa.isNotEmpty() -> "Masa Trial: $trialSisa tersisa (max 2 TV)"
+                        lic.status == "active" -> "✅ Lisensi Aktif" + if (licSisa.isNotEmpty()) " ($licSisa lagi)" else ""
+                        trialSisa.isNotEmpty() -> "⏳ Masa Trial: $trialSisa tersisa (max 2 TV)"
                         else -> "Lisensi tidak aktif"
                     }
-                    val displayMaxInfo = if (state.maxTv > 0) "Maksimal $state.maxTv perangkat TV" else "Unlimited perangkat TV"
-                    val displayColor = when {
-                        lic.status == "active" -> NeonGreen
-                        trialSisa.isNotEmpty() -> NeonYellow
-                        else -> NeonRed
+                    val displayMaxInfo = when {
+                        lic.status == "active" && state.maxTv > 0 -> "Maksimal $state.maxTv perangkat TV"
+                        lic.status == "active" -> "Unlimited perangkat TV"
+                        trialSisa.isNotEmpty() -> "Maksimal 2 perangkat TV (trial)"
+                        else -> ""
                     }
                     Box(modifier = Modifier.fillMaxWidth().border(BorderStroke(1.dp, displayColor)).padding(10.dp), contentAlignment = Alignment.Center) {
                         Text(displayText, style = MaterialTheme.typography.bodyMedium, color = displayColor, textAlign = TextAlign.Center)
                     }
-                    Text(displayMaxInfo, style = MaterialTheme.typography.bodySmall, color = TextSecondary, modifier = Modifier.padding(top = 4.dp))
+                    if (displayMaxInfo.isNotEmpty()) {
+                        Text(displayMaxInfo, style = MaterialTheme.typography.bodySmall, color = TextSecondary, modifier = Modifier.padding(top = 4.dp))
+                    }
                 }
             }
 
@@ -122,11 +133,15 @@ fun ProfileScreen(
                 Column(Modifier.padding(16.dp)) {
                     Text("AKTIVASI LISENSI", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
                     Spacer(Modifier.height(8.dp))
-                    Box(modifier = Modifier.fillMaxWidth().border(BorderStroke(1.dp, licColor)).padding(10.dp), contentAlignment = Alignment.Center) {
-                        Text(lic.pesan.ifEmpty { "Lisensi tidak aktif" }, style = MaterialTheme.typography.bodyMedium, color = licColor, textAlign = TextAlign.Center)
+                    val licDisplay = when {
+                        lic.status == "active" && licSisa.isNotEmpty() -> "✅ Lisensi Aktif ($licSisa lagi)"
+                        lic.status == "active" -> "✅ Lisensi Aktif"
+                        trialSisa.isNotEmpty() -> "⏳ Trial: $trialSisa tersisa"
+                        else -> "Lisensi tidak aktif"
                     }
-                    val maxInfo = if (state.maxTv > 0) "Maksimal $state.maxTv perangkat TV" else "Unlimited perangkat TV"
-                    Text(maxInfo, style = MaterialTheme.typography.bodySmall, color = TextSecondary, modifier = Modifier.padding(top = 4.dp))
+                    Box(modifier = Modifier.fillMaxWidth().border(BorderStroke(1.dp, displayColor)).padding(10.dp), contentAlignment = Alignment.Center) {
+                        Text(licDisplay, style = MaterialTheme.typography.bodyMedium, color = displayColor, textAlign = TextAlign.Center)
+                    }
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(value = kodeAktivasi, onValueChange = { kodeAktivasi = it.uppercase(); aktMsg = "" }, label = { Text("Kode Aktivasi") }, placeholder = { Text("Masukkan kode dari admin") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
                     if (aktMsg.isNotEmpty()) { Spacer(Modifier.height(4.dp)); Text(aktMsg, style = MaterialTheme.typography.bodySmall, color = if (aktOk) NeonGreen else NeonRed) }
@@ -324,7 +339,7 @@ fun ProfileScreen(
 }
 
 @Composable
-private fun ProfileHeader(username: String, role: String) {
+private fun ProfileHeader(username: String, role: String, appVersionName: String) {
     Card(
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = DarkSurface),
@@ -341,7 +356,7 @@ private fun ProfileHeader(username: String, role: String) {
             Text("Sistem Billing Rental PlayStation & TV", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
             Spacer(Modifier.height(12.dp))
             listOf(
-                "Versi" to "1.0.0",
+                "Versi" to appVersionName,
                 "Developer" to "RR Developer",
                 "Kontak" to "081270647744",
                 "User" to "$username [$role]",

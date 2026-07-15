@@ -70,6 +70,7 @@ data class LicenseRecord(
     val signature: String = "",
     val paket: String = "",
     val username: String = "",
+    val email: String = "",
     val expiry: String = "",
     val generatedBy: String = "",
     val generatedAt: Long = 0,

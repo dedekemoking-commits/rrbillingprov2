@@ -1,2 +1,6 @@
 -keepclassmembers class com.billingps.licensegen.ECDSAUtils { *; }
 -keepclassmembers class com.billingps.licensegen.DataModels { *; }
+-keep class com.billingps.licensegen.** { *; }
+-keep class com.google.firebase.** { *; }
+-keep class com.google.android.gms.** { *; }
+-keep class kotlinx.coroutines.** { *; }

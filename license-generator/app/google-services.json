@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "222901292831",
+    "project_id": "rrbillinglicensegen",
+    "storage_bucket": "rrbillinglicensegen.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:222901292831:android:06e56e6d98315f381b6a2a",
+        "android_client_info": {
+          "package_name": "com.billingps.licensegen"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCaZYVC5N9ly1GLmaQ2Ci85l98G_U5i71g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

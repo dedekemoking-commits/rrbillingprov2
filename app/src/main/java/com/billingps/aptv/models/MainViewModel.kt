@@ -81,7 +81,7 @@ fun defaultPaketDurasi(): Map<String, Int> = mapOf(
     "2 Jam" to 120, "3 Jam" to 180, "Main Bebas" to 0,
 )
 
-    const val APP_VERSION = "1.2.0"
+    const val APP_VERSION = "1.2.1"
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -786,6 +786,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 onResult(false, "Kode tidak valid (signature mismatch). Hubungi admin.")
                 return@launch
             }
+            val currentEmail = _state.value.users[_state.value.currentUser]?.email ?: ""
+            if (record.email.isNotBlank() && !record.email.equals(currentEmail, ignoreCase = true)) {
+                onResult(false, "Kode ini khusus untuk ${record.email}. Gunakan akun email yang sesuai.")
+                return@launch
+            }
             val paket = record.paket
             val durasiHari = when (paket) {
                 "BULANAN" -> 30; "3BULAN" -> 90; "TAHUNAN" -> 360; "LIFETIME" -> 99999; else -> 30
@@ -809,7 +814,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun generateLicenseKode(paket: String, username: String, onDone: (String) -> Unit) {
+    fun generateLicenseKode(paket: String, username: String, email: String = "", onDone: (String) -> Unit) {
         val shortCode = (10000000..99999999).random().toString() + (65..90).random().toChar()
         val nonce = java.util.UUID.randomUUID().toString().take(8)
         val cal = java.util.Calendar.getInstance()
@@ -817,7 +822,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "BULANAN" -> 30; "3BULAN" -> 90; "TAHUNAN" -> 360; "LIFETIME" -> 99999; else -> 30
         })
         val expiry = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
-        val payload = """{"p":"$paket","u":"$username","e":"$expiry","n":"$nonce"}"""
+        val payload = """{"p":"$paket","u":"$username","e":"$expiry","n":"$nonce","m":"$email"}"""
         val signature = ECDSAUtils.sign(payload)
         val kode = shortCode
         val record = KodeGenerasi(
@@ -839,6 +844,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     doc["signature"] = signature
                     doc["paket"] = paket
                     doc["username"] = username
+                    doc["email"] = email
                     doc["expiry"] = expiry
                     doc["generatedBy"] = _state.value.currentUser
                     doc["generatedAt"] = System.currentTimeMillis()

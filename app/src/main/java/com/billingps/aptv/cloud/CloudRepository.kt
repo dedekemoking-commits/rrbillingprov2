@@ -154,6 +154,7 @@ class CloudRepository(private val app: Application) {
                         signature = data["signature"] as? String ?: "",
                         paket = data["paket"] as? String ?: "",
                         username = data["username"] as? String ?: "",
+                        email = data["email"] as? String ?: "",
                         expiry = data["expiry"] as? String ?: "",
                         generatedBy = data["generatedBy"] as? String ?: "",
                         generatedAt = data["generatedAt"] as? Long ?: 0,

@@ -54,6 +54,7 @@ data class AppUiState(
     val statusMessage: String = "",
     val pendingVerifyUser: String = "",
     val updateInfo: UpdateInfo? = null,
+    val downloadProgress: Int = -1, // -1 = idle, 0-100 = downloading
 )
 
 fun defaultPaketMain(): Map<String, Map<String, Int>> {
@@ -457,7 +458,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── Auto Update ────────────────────────────────────────
     private val githubApiUrl = "https://api.github.com/repos/dedekemoking-commits/rrbillingprov2/releases/latest"
-    private val currentVersionName = "1.0.2"
+    private val currentVersionName = "1.0.3"
 
     fun checkForUpdate() {
         viewModelScope.launch {
@@ -491,17 +492,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val info = _state.value.updateInfo ?: return
         viewModelScope.launch {
             try {
+                _state.value = _state.value.copy(downloadProgress = 0)
                 val file = withContext(Dispatchers.IO) {
                     val cacheDir = ctx.cacheDir
                     val apkFile = File(cacheDir, "update.apk")
                     val url = URL(info.apkUrl)
-                    url.openStream().use { input ->
-                        FileOutputStream(apkFile).use { output ->
-                            input.copyTo(output)
+                    url.openConnection().let { conn ->
+                        conn.connect()
+                        val totalBytes = conn.contentLengthLong
+                        var downloaded = 0L
+                        conn.getInputStream().use { input ->
+                            FileOutputStream(apkFile).use { output ->
+                                val buffer = ByteArray(8192)
+                                var read: Int
+                                while (input.read(buffer).also { read = it } != -1) {
+                                    output.write(buffer, 0, read)
+                                    downloaded += read
+                                    if (totalBytes > 0) {
+                                        val pct = ((downloaded * 100) / totalBytes).toInt()
+                                        _state.value = _state.value.copy(downloadProgress = pct.coerceIn(0, 99))
+                                    }
+                                }
+                            }
                         }
                     }
                     apkFile
                 }
+                _state.value = _state.value.copy(downloadProgress = 100)
                 val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
                 val intent = Intent(Intent.ACTION_VIEW).apply {
                     setDataAndType(uri, "application/vnd.android.package-archive")
@@ -509,9 +526,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 ctx.startActivity(intent)
-                _state.value = _state.value.copy(updateInfo = null)
+                _state.value = _state.value.copy(updateInfo = null, downloadProgress = -1)
             } catch (e: Exception) {
                 Log.i("MainVM", "downloadAndInstall failed: ${e.message}")
+                _state.value = _state.value.copy(downloadProgress = -1)
             }
         }
     }

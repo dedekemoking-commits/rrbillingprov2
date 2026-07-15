@@ -427,6 +427,7 @@ fun DashboardScreen(
 
     // ── Update Dialog ──────────────────────────────────────
     val updateInfo = state.updateInfo
+    val dlProgress = state.downloadProgress
     if (updateInfo != null) {
         AlertDialog(
             onDismissRequest = { },
@@ -441,13 +442,25 @@ fun DashboardScreen(
                     }
                     Spacer(Modifier.height(8.dp))
                     Text("Ukuran: ${updateInfo.apkUrl.length} (link)", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                    if (dlProgress >= 0) {
+                        Spacer(Modifier.height(12.dp))
+                        LinearProgressIndicator(
+                            progress = { dlProgress / 100f },
+                            modifier = Modifier.fillMaxWidth().height(12.dp),
+                            color = NeonGreen,
+                            trackColor = DarkSurfaceV3,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text("Download: $dlProgress%", style = MaterialTheme.typography.bodySmall, color = NeonGreen)
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = { viewModel.downloadAndInstall(ctx) },
+                    enabled = dlProgress < 0,
                     colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
-                ) { Text("Update Now") }
+                ) { Text(if (dlProgress >= 0) "Mengunduh..." else "Update Now") }
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.dismissUpdate() }) { Text("Update Nanti", color = TextSecondary) }

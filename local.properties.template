@@ -1,0 +1,4 @@
+# Change this to point to your Android SDK installation path
+# Example:
+# sdk.dir=C:\\Users\\dedek\\AppData\\Local\\Android\\Sdk
+sdk.dir=C:\\Users\\YourUser\\AppData\\Local\\Android\\Sdk

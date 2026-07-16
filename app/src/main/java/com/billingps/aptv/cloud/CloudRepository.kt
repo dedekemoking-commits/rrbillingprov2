@@ -40,14 +40,6 @@ class CloudRepository(private val app: Application) {
             Log.i("CloudRepo", "syncAll start for user=${username ?: "(device)"}")
             if (!ensureSignedIn()) { Log.i("CloudRepo", "ensureSignedIn failed"); return false }
 
-            val usersMap = state.users.mapValues { (_, u) ->
-                mapOf(
-                    "role" to u.role,
-                    "email" to u.email,
-                    "dibuat" to u.dibuat,
-                )
-            }
-
             val tvs = state.tvList.map { tv ->
                 mapOf(
                     "id" to tv.id,
@@ -76,7 +68,6 @@ class CloudRepository(private val app: Application) {
                 "lastSync" to System.currentTimeMillis(),
                 "deviceId" to deviceId,
                 "currentUser" to state.currentUser,
-                "users" to usersMap,
                 "tvList" to tvs,
                 "transaksiList" to txs,
                 "licenseStatus" to mapOf(
@@ -90,16 +81,32 @@ class CloudRepository(private val app: Application) {
 
             return suspendCancellableCoroutine { cont ->
                 val docRef = if (!username.isNullOrBlank()) {
-                    // Save under per-user document
                     firestore.collection("billingps_users").document(username)
                 } else {
                     firestore.collection("billingps_devices").document(deviceId)
                 }
                 docRef.set(payload)
-                    .addOnSuccessListener { r -> Log.i("CloudRepo", "syncAll success for ${docRef.path}"); if (!cont.isCompleted) cont.resume(true) }
+                    .addOnSuccessListener { r ->
+                        Log.i("CloudRepo", "syncAll success for ${docRef.path}")
+                        // Also write individual user docs for License Generator
+                        syncUsersMap(state.users)
+                        if (!cont.isCompleted) cont.resume(true)
+                    }
                     .addOnFailureListener { ex -> Log.i("CloudRepo", "syncAll failed: ${ex.message}"); if (!cont.isCompleted) cont.resume(false) }
             }
         }
+
+    private fun syncUsersMap(users: Map<String, UserData>) {
+        for ((key, u) in users) {
+            val doc = mapOf(
+                "username" to key,
+                "role" to u.role,
+                "email" to u.email,
+                "dibuat" to u.dibuat,
+            )
+            firestore.collection("billingps_users").document("_user_$key").set(doc)
+        }
+    }
 
         suspend fun fetchTransaksiForUser(username: String): List<Transaksi> {
             if (username.isBlank()) return emptyList()

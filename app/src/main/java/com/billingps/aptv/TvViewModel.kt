@@ -58,6 +58,10 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
             val result = withContext(Dispatchers.IO) {
                 try {
                     Log.d("BillingPS", "start_pairing called with ip=$ip")
+                    if (!Python.isStarted()) {
+                        Log.e("BillingPS", "Python not started yet")
+                        return@withContext null
+                    }
                     val out = Python.getInstance()
                         .getModule("tv_mesin")
                         .callAttr("TvController")

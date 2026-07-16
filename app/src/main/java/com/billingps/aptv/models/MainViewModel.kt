@@ -333,13 +333,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             currentRole = localUser.role,
             needsSmtpSetup = smtp.user.isBlank() || smtp.pass.isBlank(),
         )
-        // After successful login, pull remote transaksi for this user
+        // After successful login, pull remote transaksi & sync local
         viewModelScope.launch {
             try {
                 val remote = cloudRepo.fetchTransaksiForUser(localUser.username)
                 if (remote.isNotEmpty()) {
                     val existing = _state.value.transaksiList.toMutableList()
-                    // merge by id: add remote ones that don't exist locally
                     val existingIds = existing.map { it.id }.toSet()
                     val toAdd = remote.filter { it.id.isNotEmpty() && !existingIds.contains(it.id) }
                     if (toAdd.isNotEmpty()) {
@@ -349,6 +348,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             } catch (_: Exception) { }
+            try { syncToCloud() } catch (_: Exception) { }
         }
         return AuthResult(true, "")
     }
@@ -408,6 +408,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     firebaseAuth.currentUser?.let { u ->
                         launch { withContext(Dispatchers.IO) { cloudRepo.fetchTransaksiForUser(u.email ?: verifiedEmail) } }
                     }
+                    launch { try { syncToCloud() } catch (_: Exception) { } }
                 } catch (_: Exception) { }
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
@@ -550,6 +551,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             StorageUtil.saveTrial(trialEnd)
             StorageUtil.saveLicense(_state.value.licenseStatus.copy(maxTv = 2))
         }
+
+        // Sync user list ke Firestore agar License Generator melihat user baru
+        viewModelScope.launch { try { syncToCloud() } catch (_: Exception) { } }
 
         if (normalizedEmail.isNotBlank()) {
             _state.value = _state.value.copy(
@@ -697,26 +701,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             else {
                 var t = tv
                 updates.forEach { (k, v) ->
-                    t = when (k) {
-                        "nama" -> t.copy(nama = v as String)
-                        "ip" -> t.copy(ip = v as String)
-                        "port" -> t.copy(port = (v as Number).toInt())
-                        "jenisPs" -> t.copy(jenisPs = v as String)
-                        "paketAktif" -> t.copy(paketAktif = v as String)
-                        "sisaDetik" -> t.copy(sisaDetik = (v as Number).toLong())
-                        "timerActive" -> t.copy(timerActive = v as Boolean)
-                        "bebas" -> t.copy(bebas = v as Boolean)
-                        "paketHarga" -> t.copy(paketHarga = (v as Number).toInt())
-                        "totalPesanan" -> t.copy(totalPesanan = (v as Number).toInt())
-                        "bebasMulai" -> t.copy(bebasMulai = (v as Number).toLong())
-                        "bebasHargaPerJam" -> t.copy(bebasHargaPerJam = (v as Number).toInt())
-                        "bebasPesananTotal" -> t.copy(bebasPesananTotal = (v as Number).toInt())
-                        "paired" -> t.copy(paired = v as Boolean)
-                        "certPem" -> t.copy(certPem = v as String)
-                        "keyPem" -> t.copy(keyPem = v as String)
-                        "cancelBatas" -> t.copy(cancelBatas = (v as Number).toLong())
-                        "sudahBayar" -> t.copy(sudahBayar = v as Boolean)
-                        else -> t
+                    t = try {
+                        when (k) {
+                            "nama" -> t.copy(nama = v as? String ?: return@forEach)
+                            "ip" -> t.copy(ip = v as? String ?: return@forEach)
+                            "port" -> t.copy(port = (v as? Number)?.toInt() ?: return@forEach)
+                            "jenisPs" -> t.copy(jenisPs = v as? String ?: return@forEach)
+                            "paketAktif" -> t.copy(paketAktif = v as? String ?: return@forEach)
+                            "sisaDetik" -> t.copy(sisaDetik = (v as? Number)?.toLong() ?: return@forEach)
+                            "timerActive" -> t.copy(timerActive = v as? Boolean ?: return@forEach)
+                            "bebas" -> t.copy(bebas = v as? Boolean ?: return@forEach)
+                            "paketHarga" -> t.copy(paketHarga = (v as? Number)?.toInt() ?: return@forEach)
+                            "totalPesanan" -> t.copy(totalPesanan = (v as? Number)?.toInt() ?: return@forEach)
+                            "bebasMulai" -> t.copy(bebasMulai = (v as? Number)?.toLong() ?: return@forEach)
+                            "bebasHargaPerJam" -> t.copy(bebasHargaPerJam = (v as? Number)?.toInt() ?: return@forEach)
+                            "bebasPesananTotal" -> t.copy(bebasPesananTotal = (v as? Number)?.toInt() ?: return@forEach)
+                            "paired" -> t.copy(paired = v as? Boolean ?: return@forEach)
+                            "certPem" -> t.copy(certPem = v as? String ?: return@forEach)
+                            "keyPem" -> t.copy(keyPem = v as? String ?: return@forEach)
+                            "cancelBatas" -> t.copy(cancelBatas = (v as? Number)?.toLong() ?: return@forEach)
+                            "sudahBayar" -> t.copy(sudahBayar = v as? Boolean ?: return@forEach)
+                            else -> t
+                        }
+                    } catch (e: Exception) {
+                        Log.w("MainVM", "updateTV: skip bad value for $k: ${v?.javaClass?.name} ($e)")
+                        t
                     }
                 }
                 t

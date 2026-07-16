@@ -78,19 +78,36 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                 val allUsers = mutableMapOf<String, FirestoreUser>()
                 for (doc in snap.documents) {
                     val data = doc.data ?: continue
-                    val usersRaw = data["users"] as? Map<*, *> ?: continue
-                    for ((key, value) in usersRaw) {
-                        if (key !is String || value !is Map<*, *>) continue
-                        val existing = allUsers[key]
-                        val u = FirestoreUser(
-                            username = key,
-                            role = value["role"] as? String ?: "",
-                            email = value["email"] as? String ?: "",
-                            dibuat = value["dibuat"] as? String ?: "",
-                        )
-                        if (existing == null || u.email.isNotBlank() || existing.email.isBlank()) {
-                            allUsers[key] = u
+                    // Individual user documents (prefixed with _user_)
+                    val username = data["username"] as? String ?: continue
+                    if (!doc.id.startsWith("_user_")) {
+                        // Backward compat: read nested "users" map from device docs
+                        val usersRaw = data["users"] as? Map<*, *> ?: continue
+                        for ((key, value) in usersRaw) {
+                            if (key !is String || value !is Map<*, *>) continue
+                            val existing = allUsers[key]
+                            val u = FirestoreUser(
+                                username = key,
+                                role = value["role"] as? String ?: "",
+                                email = value["email"] as? String ?: "",
+                                dibuat = value["dibuat"] as? String ?: "",
+                            )
+                            if (existing == null || u.email.isNotBlank() || existing.email.isBlank()) {
+                                allUsers[key] = u
+                            }
                         }
+                        continue
+                    }
+                    // Individual user doc
+                    val existing = allUsers[username]
+                    val u = FirestoreUser(
+                        username = username,
+                        role = data["role"] as? String ?: "",
+                        email = data["email"] as? String ?: "",
+                        dibuat = data["dibuat"] as? String ?: "",
+                    )
+                    if (existing == null || u.email.isNotBlank() || existing.email.isBlank()) {
+                        allUsers[username] = u
                     }
                 }
                 userList = allUsers.values.sortedBy { it.username }

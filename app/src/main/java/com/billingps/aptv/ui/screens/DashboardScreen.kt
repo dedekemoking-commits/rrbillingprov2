@@ -33,6 +33,7 @@ import androidx.compose.animation.core.*
 import com.billingps.aptv.models.*
 import com.billingps.aptv.ui.theme.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import android.content.Context
 import androidx.compose.ui.platform.LocalContext
@@ -182,12 +183,14 @@ fun DashboardScreen(
             }
         }
 
-        // Timer countdown effect
+        // Timer countdown effect — reactive to state.tvList changes
         LaunchedEffect(Unit) {
-            while (true) {
+            while (isActive) {
                 delay(1000)
+                val now = System.currentTimeMillis()
                 state.tvList.forEach { tv ->
-                    if (tv.cancelBatas > 0 && System.currentTimeMillis() > tv.cancelBatas) {
+                    if (!isActive) return@forEach
+                    if (tv.cancelBatas > 0 && now > tv.cancelBatas) {
                         viewModel.updateTV(tv.id, mapOf("cancelBatas" to 0L))
                     }
                     if (tv.timerActive && !tv.bebas && tv.sisaDetik > 0) {

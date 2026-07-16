@@ -11,25 +11,29 @@ import org.json.JSONObject
 object StorageUtil {
     private const val PREFS_NAME = "billingps_data"
     private const val PREFS_SENSITIVE = "billingps_sensitive"
-    private lateinit var prefs: SharedPreferences
-    private lateinit var securePrefs: SharedPreferences
-
-    fun init(context: Context) {
-        prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private var _ctx: Context? = null
+    private val prefs: SharedPreferences get() = _ctx!!.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val securePrefs: SharedPreferences by lazy {
         try {
-            val masterKey = MasterKey.Builder(context)
+            val masterKey = MasterKey.Builder(_ctx!!)
                 .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
                 .build()
-            securePrefs = EncryptedSharedPreferences.create(
-                context,
+            EncryptedSharedPreferences.create(
+                _ctx!!,
                 PREFS_SENSITIVE,
                 masterKey,
                 EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
             )
         } catch (_: Exception) {
-            securePrefs = context.getSharedPreferences(PREFS_SENSITIVE, Context.MODE_PRIVATE)
+            _ctx!!.getSharedPreferences(PREFS_SENSITIVE, Context.MODE_PRIVATE)
         }
+    }
+
+    fun init(context: Context) {
+        _ctx = context.applicationContext
+        // trigger securePrefs init to validate early
+        try { securePrefs.edit().apply() } catch (_: Exception) { }
     }
 
     // ── Users ──────────────────────────────────────────────

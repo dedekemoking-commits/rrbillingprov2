@@ -1,11 +1,11 @@
 package com.billingps.aptv.ui.screens
 
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
-import android.os.Environment
-import android.provider.MediaStore
+import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -79,6 +79,22 @@ fun RiwayatScreen(viewModel: MainViewModel) {
         }
     }
     val totalPendapatan = txList.sumOf { it.total }
+
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val header = "Waktu,Kasir,Kota/TV,Paket,Pesanan,Total\n"
+                val rows = txList.joinToString("\n") { t ->
+                    val pesananStr = t.pesanan.entries.joinToString(" | ") { (k, v) -> "$k x$v" }.ifEmpty { "-" }
+                    listOf(t.waktu, t.kasir, t.kota, t.paket, "\"$pesananStr\"", fmtRp(t.total)).joinToString(",")
+                }
+                ctx.contentResolver.openOutputStream(uri)?.use { it.write((header + rows).toByteArray(Charsets.UTF_8)) }
+                Toast.makeText(ctx, "Tersimpan", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Toast.makeText(ctx, "Gagal export: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize().background(DarkBackground)) {
         Log.i("RiwayatScreen", "rendering RiwayatScreen, total transactions=${state.transaksiList.size}")
@@ -179,7 +195,14 @@ fun RiwayatScreen(viewModel: MainViewModel) {
                 border = BorderStroke(1.dp, NeonCyan),
             ) { Icon(Icons.Filled.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Import") }
             OutlinedButton(
-                onClick = { exportCSV(ctx, txList) },
+                onClick = {
+                    if (txList.isEmpty()) {
+                        Toast.makeText(ctx, "Belum ada transaksi", Toast.LENGTH_SHORT).show()
+                    } else {
+                        val tgl = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+                        exportLauncher.launch("laporan_rrbillingpro_$tgl.csv")
+                    }
+                },
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(10.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
@@ -244,29 +267,4 @@ private fun formatWaktu(iso: String): String {
     } catch (_: Exception) { iso }
 }
 
-private fun exportCSV(ctx: Context, list: List<com.billingps.aptv.models.Transaksi>) {
-    if (list.isEmpty()) {
-        Toast.makeText(ctx, "Belum ada transaksi", Toast.LENGTH_SHORT).show(); return
-    }
-    val header = "Waktu,Kasir,Kota/TV,Paket,Pesanan,Total\n"
-    val rows = list.joinToString("\n") { t ->
-        val pesananStr = t.pesanan.entries.joinToString(" | ") { (k, v) -> "$k x$v" }.ifEmpty { "-" }
-        listOf(t.waktu, t.kasir, t.kota, t.paket, "\"$pesananStr\"", fmtRp(t.total)).joinToString(",")
-    }
-    val tgl = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
-    val filename = "laporan_rrbillingpro_$tgl.csv"
-    try {
-        val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, filename)
-            put(MediaStore.Downloads.MIME_TYPE, "text/csv")
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-        }
-        val uri = ctx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-        if (uri != null) {
-            ctx.contentResolver.openOutputStream(uri)?.use { it.write((header + rows).toByteArray(Charsets.UTF_8)) }
-            Toast.makeText(ctx, "Tersimpan: $filename", Toast.LENGTH_LONG).show()
-        }
-    } catch (e: Exception) {
-        Toast.makeText(ctx, "Gagal export: ${e.message}", Toast.LENGTH_SHORT).show()
-    }
-}
+

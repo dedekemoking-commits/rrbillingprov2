@@ -3,8 +3,6 @@ package com.billingps.aptv.ui.screens
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
-import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.BorderStroke
@@ -20,9 +18,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.border
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.foundation.border
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -41,11 +39,11 @@ fun ProfileScreen(
     val ctx = LocalContext.current
     val canGenerateLicense = state.currentUser == "rrgaming"
 
-    var kodeAktivasi by remember { mutableStateOf("") }
-    var aktMsg by remember { mutableStateOf("") }
-    var aktOk by remember { mutableStateOf(false) }
-    var aktLoading by remember { mutableStateOf(false) }
     var newPass by remember { mutableStateOf("") }
+    var tvPass by remember { mutableStateOf("") }
+    var tvPassConfirm by remember { mutableStateOf("") }
+    var tvPassMsg by remember { mutableStateOf("") }
+    var tvPassMsgOk by remember { mutableStateOf(false) }
 
     var regUser by remember { mutableStateOf("") }
     var regPass by remember { mutableStateOf("") }
@@ -103,64 +101,20 @@ fun ProfileScreen(
             // Profile Card
             ProfileHeader(state.currentUser, state.currentRole, state.appVersionName)
 
-            // License Status Info
+            // License Status Info — simplified
             Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("INFORMASI LISENSI", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
-                    Spacer(Modifier.height(8.dp))
                     val displayText = when {
-                        lic.status == "active" -> "✅ Lisensi Aktif" + if (licSisa.isNotEmpty()) " ($licSisa lagi)" else ""
-                        trialSisa.isNotEmpty() -> "⏳ Masa Trial: $trialSisa tersisa (max 2 TV)"
-                        else -> "Lisensi tidak aktif"
-                    }
-                    val displayMaxInfo = when {
-                        lic.status == "active" && state.maxTv > 0 -> "Maksimal $state.maxTv perangkat TV"
-                        lic.status == "active" -> "Unlimited perangkat TV"
-                        trialSisa.isNotEmpty() -> "Maksimal 2 perangkat TV (trial)"
-                        else -> ""
+                        lic.status == "active" && licSisa.isNotEmpty() -> "✅ Lisensi Aktif $licSisa lagi"
+                        lic.status == "active" -> "✅ Lisensi Aktif"
+                        trialSisa.isNotEmpty() -> "⏳ Masa Trial: $trialSisa tersisa"
+                        else -> "❌ Lisensi tidak aktif"
                     }
                     Box(modifier = Modifier.fillMaxWidth().border(BorderStroke(1.dp, displayColor)).padding(10.dp), contentAlignment = Alignment.Center) {
                         Text(displayText, style = MaterialTheme.typography.bodyMedium, color = displayColor, textAlign = TextAlign.Center)
                     }
-                    if (displayMaxInfo.isNotEmpty()) {
-                        Text(displayMaxInfo, style = MaterialTheme.typography.bodySmall, color = TextSecondary, modifier = Modifier.padding(top = 4.dp))
-                    }
                 }
             }
-
-            // License Activation
-            Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("AKTIVASI LISENSI", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
-                    Spacer(Modifier.height(8.dp))
-                    val licDisplay = when {
-                        lic.status == "active" && licSisa.isNotEmpty() -> "✅ Lisensi Aktif ($licSisa lagi)"
-                        lic.status == "active" -> "✅ Lisensi Aktif"
-                        trialSisa.isNotEmpty() -> "⏳ Trial: $trialSisa tersisa"
-                        else -> "Lisensi tidak aktif"
-                    }
-                    Box(modifier = Modifier.fillMaxWidth().border(BorderStroke(1.dp, displayColor)).padding(10.dp), contentAlignment = Alignment.Center) {
-                        Text(licDisplay, style = MaterialTheme.typography.bodyMedium, color = displayColor, textAlign = TextAlign.Center)
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = kodeAktivasi, onValueChange = { kodeAktivasi = it.uppercase(); aktMsg = "" }, label = { Text("Kode Aktivasi") }, placeholder = { Text("Masukkan kode dari admin") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
-                    if (aktMsg.isNotEmpty()) { Spacer(Modifier.height(4.dp)); Text(aktMsg, style = MaterialTheme.typography.bodySmall, color = if (aktOk) NeonGreen else NeonRed) }
-                    Spacer(Modifier.height(8.dp))
-                    Button(onClick = {
-                        if (kodeAktivasi.isBlank()) { aktMsg = "Masukkan kode"; aktOk = false; return@Button }
-                        aktMsg = "Memverifikasi..."; aktOk = false; aktLoading = true
-                        viewModel.aktivasiLisensi(kodeAktivasi) { ok, msg ->
-                            aktOk = ok; aktMsg = msg; aktLoading = false
-                        }
-                    }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) {
-                        if (aktLoading) { CircularProgressIndicator(modifier = Modifier.size(18.dp), color = DarkBackground, strokeWidth = 2.dp) }
-                        else { Text("Aktifkan Lisensi") }
-                    }
-                }
-            }
-
-            // Subscription Packages
-            SubscriptionPackages { paket -> openWA(ctx, paket) }
 
             // Super Admin: Generate Kode
             if (canGenerateLicense) {
@@ -254,6 +208,52 @@ fun ProfileScreen(
                 }
             }
 
+            // TV Password
+            if (state.currentRole == "admin") {
+                Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("PASSWORD TV", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
+                        Spacer(Modifier.height(4.dp))
+                        Text("Digunakan untuk proteksi hapus TV di Dashboard. Kasir tidak bisa melihat ini.", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                        Spacer(Modifier.height(8.dp))
+
+                        val hash = state.tvPasswordHash
+                        val hasPassword = hash.isNotEmpty()
+
+                        OutlinedTextField(value = tvPass, onValueChange = { tvPass = it; tvPassMsg = "" }, label = { Text(if (hasPassword) "Password baru (min 4)" else "Password (min 4)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
+
+                        if (hasPassword) {
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(value = tvPassConfirm, onValueChange = { tvPassConfirm = it; tvPassMsg = "" }, label = { Text("Konfirmasi password baru") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
+                        }
+
+                        if (tvPassMsg.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(tvPassMsg, style = MaterialTheme.typography.bodySmall, color = if (tvPassMsgOk) NeonGreen else NeonRed)
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = {
+                                if (tvPass.length < 4) { tvPassMsg = "Minimal 4 karakter"; tvPassMsgOk = false; return@Button }
+                                if (hasPassword && tvPass != tvPassConfirm) { tvPassMsg = "Konfirmasi tidak cocok"; tvPassMsgOk = false; return@Button }
+                                viewModel.setTvPassword(tvPass)
+                                tvPass = ""; tvPassConfirm = ""
+                                tvPassMsg = "Password TV tersimpan"; tvPassMsgOk = true
+                            }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text(if (hasPassword) "Ubah Password" else "Simpan Password") }
+
+                            if (hasPassword) {
+                                OutlinedButton(onClick = {
+                                    viewModel.setTvPassword("")
+                                    tvPass = ""; tvPassConfirm = ""
+                                    tvPassMsg = "Password TV dihapus"; tvPassMsgOk = true
+                                }, shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed), border = BorderStroke(1.dp, NeonRed)) { Text("Hapus") }
+                            }
+                        }
+                    }
+                }
+            }
+
             // User Management (Admin)
             if (state.currentRole == "admin") {
                 Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
@@ -285,31 +285,6 @@ fun ProfileScreen(
                 }
 
                 }
-
-            // SMTP Config
-            if (state.currentRole == "admin") {
-                val smtpCfg = state.smtp
-                var smtpEmail by remember { mutableStateOf(smtpCfg.user) }
-                var smtpPass by remember { mutableStateOf(smtpCfg.pass) }
-                Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("KONFIGURASI EMAIL", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
-                        Spacer(Modifier.height(4.dp))
-                        Text("Digunakan untuk kirim kode verifikasi & reset password via Gmail.", style = MaterialTheme.typography.bodySmall, color = TextDim)
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(value = smtpEmail, onValueChange = { smtpEmail = it }, label = { Text("Email Gmail") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
-                        Spacer(Modifier.height(4.dp))
-                        OutlinedTextField(value = smtpPass, onValueChange = { smtpPass = it }, label = { Text("App Password Gmail") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
-                        Spacer(Modifier.height(4.dp))
-                        Text("Cara buat App Password: Google Account -> Keamanan -> App Password", style = MaterialTheme.typography.bodySmall, color = TextDim)
-                        Spacer(Modifier.height(8.dp))
-                        Button(onClick = {
-                            viewModel.saveSmtp(SmtpConfig(host = "smtp.gmail.com", port = 587, user = smtpEmail, pass = smtpPass))
-                            Toast.makeText(ctx, "Konfigurasi email tersimpan", Toast.LENGTH_SHORT).show()
-                        }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground)) { Text("Simpan Konfigurasi Email") }
-                    }
-                }
-            }
 
             // Check Update
             Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
@@ -361,7 +336,7 @@ private fun ProfileHeader(username: String, role: String, appVersionName: String
     ) {
         Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Image(
-                painter = androidx.compose.ui.res.painterResource(com.billingps.aptv.R.drawable.logo_transparant),
+                painter = androidx.compose.ui.res.painterResource(com.billingps.aptv.R.drawable.logo_transparant_profile),
                 contentDescription = "Logo",
                 modifier = Modifier.size(96.dp),
             )
@@ -386,65 +361,12 @@ private fun ProfileHeader(username: String, role: String, appVersionName: String
     }
 }
 
-@Composable
-private fun SubscriptionPackages(onBayar: (String) -> Unit) {
-    Card(
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = DarkSurface),
-        border = BorderStroke(1.dp, DarkSurfaceV3),
-    ) {
-        Column(Modifier.padding(16.dp)) {
-            Text("PAKET BERLANGGANAN", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
-            Spacer(Modifier.height(8.dp))
-            listOf(
-                SubData("1 Bulan", "Rp99.000", "ADD TV 5", NeonGreen),
-                SubData("3 Bulan", "Rp299.000", "ADD TV 10", NeonCyan),
-                SubData("1 Tahun", "Rp999.000", "ADD TV 15", NeonYellow),
-                SubData("LIFETIME", "Rp2.000.000", "ADD TV unlimited", NeonOrange),
-            ).forEach { p ->
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2),
-                    border = BorderStroke(1.dp, p.color),
-                ) {
-                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(p.nama, style = MaterialTheme.typography.bodyMedium, color = p.color, fontWeight = FontWeight.Bold)
-                            Text(p.harga, style = MaterialTheme.typography.bodySmall, color = TextPrimary)
-                            Text(p.desc, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                        }
-                        Button(
-                            onClick = { onBayar(p.nama) },
-                            shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = p.color, contentColor = DarkBackground),
-                        ) { Text("Bayar") }
-                    }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(
-                onClick = { onBayar("") },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
-                border = BorderStroke(1.dp, NeonGreen),
-            ) { Icon(Icons.Filled.Email, contentDescription = null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Hubungi Admin via WhatsApp") }
-        }
-    }
-}
-
-private data class SubData(val nama: String, val harga: String, val desc: String, val color: Color)
-
-private fun openWA(ctx: android.content.Context, paket: String) {
-    val msg = "Halo Admin RR BILLING PRO,\n\nSaya ingin berlangganan:\n📦 Paket: $paket\n\nMohon info pembayaran. Terima kasih!"
-    try {
-        val uri = Uri.parse("https://wa.me/6281270647744?text=${Uri.encode(msg)}")
-        ctx.startActivity(Intent(Intent.ACTION_VIEW, uri))
-    } catch (_: Exception) {
-        Toast.makeText(ctx, "WhatsApp tidak ditemukan", Toast.LENGTH_SHORT).show()
-    }
-}
+private val paketHargaMap = mapOf(
+    "1 Bulan" to 99000,
+    "3 Bulan" to 299000,
+    "1 Tahun" to 999000,
+    "LIFETIME" to 2000000,
+)
 
 @Composable private fun fieldColors() = OutlinedTextFieldDefaults.colors(
     focusedBorderColor = NeonGreen, unfocusedBorderColor = DarkSurfaceV3,

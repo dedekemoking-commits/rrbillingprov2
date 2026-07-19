@@ -31,6 +31,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import android.graphics.BitmapFactory
+import android.util.Base64
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.coroutines.launch
 
 private val DarkBackground = Color(0xFF121212)
@@ -151,16 +156,24 @@ fun MainScreen(vm: LicenseGenViewModel) {
             }
         }
 
+        val pendingCount = vm.invoiceList.count { it.status == "WAITING_CONFIRMATION" }
+
         TabRow(selectedTabIndex = tab, containerColor = DarkSurface, contentColor = NeonGreen) {
             Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("User") })
             Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Generate") })
             Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("Riwayat") })
+            Tab(selected = tab == 3, onClick = { tab = 3 }, text = {
+                if (pendingCount > 0) {
+                    BadgedBox(badge = { Badge { Text("$pendingCount") } }) { Text("Invoice") }
+                } else { Text("Invoice") }
+            })
         }
 
         when (tab) {
             0 -> UserListTab(vm)
             1 -> GenerateTab(vm, ctx)
             2 -> HistoryTab(vm, ctx)
+            3 -> InvoiceTab(vm, ctx)
         }
     }
 }
@@ -392,18 +405,152 @@ fun HistoryTab(vm: LicenseGenViewModel, ctx: Context) {
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(10.dp),
                         colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                        border = BorderStroke(1.dp, DarkSurfaceV3),
                     ) {
                         Column(Modifier.padding(12.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(rec.kode, style = MaterialTheme.typography.bodyMedium, color = NeonGreen, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                                Text(rec.kode, style = MaterialTheme.typography.titleMedium, color = NeonGreen, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                                 Text(status, style = MaterialTheme.typography.bodySmall, color = if (rec.activatedAt > 0) NeonGreen else TextSecondary)
                             }
-                            Spacer(Modifier.height(4.dp))
-                            Text("${rec.username} • ${rec.email} • ${rec.paket} • $time", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                            Spacer(Modifier.height(6.dp))
+                            HorizontalDivider(color = DarkSurfaceV3, thickness = 0.5.dp)
+                            Spacer(Modifier.height(6.dp))
+                            DetailRow("User", rec.username)
+                            DetailRow("Email", rec.email.ifEmpty { "(tanpa email)" })
+                            DetailRow("Paket", rec.paket)
+                            DetailRow("Berlaku", rec.expiry)
+                            DetailRow("Generate", time)
                         }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+fun InvoiceTab(vm: LicenseGenViewModel, ctx: Context) {
+    val pending = vm.invoiceList.filter { it.status == "WAITING_CONFIRMATION" }
+
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Text("INVOICE MENUNGGU KONFIRMASI", style = MaterialTheme.typography.titleMedium, color = NeonCyan)
+        Spacer(Modifier.height(8.dp))
+        Text("${pending.size} menunggu", style = MaterialTheme.typography.bodySmall, color = TextDim)
+        Spacer(Modifier.height(12.dp))
+
+        if (pending.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("Tidak ada invoice menunggu", style = MaterialTheme.typography.bodyMedium, color = TextDim)
+            }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(pending) { inv ->
+                    var showConfirmDialog by remember { mutableStateOf(false) }
+
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                        border = BorderStroke(1.dp, NeonYellow.copy(alpha = 0.3f)),
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(inv.id, style = MaterialTheme.typography.titleSmall, color = NeonYellow, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                                Text(inv.paket, style = MaterialTheme.typography.bodySmall, color = NeonGreen)
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            DetailRow("User", inv.username)
+                            DetailRow("Email", inv.email)
+                            DetailRow("Total", "Rp${String.format("%,d", inv.harga)}")
+                            val dateStr = if (inv.dibayar > 0) {
+                                val sdf = java.text.SimpleDateFormat("dd/MM/yy HH:mm", java.util.Locale.US)
+                                sdf.format(java.util.Date(inv.dibayar))
+                            } else if (inv.dibuat > 0) {
+                                val sdf = java.text.SimpleDateFormat("dd/MM/yy HH:mm", java.util.Locale.US)
+                                "Dibuat: ${sdf.format(java.util.Date(inv.dibuat))}"
+                            } else "-"
+                            DetailRow("Tanggal", dateStr)
+
+                            if (inv.buktiBase64.isNotBlank()) {
+                                Spacer(Modifier.height(8.dp))
+                                Text("Bukti Transfer:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                val bitmap = remember(inv.buktiBase64) {
+                                    try {
+                                        val bytes = Base64.decode(inv.buktiBase64, Base64.DEFAULT)
+                                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                    } catch (e: Exception) { null }
+                                }
+                                if (bitmap != null) {
+                                    Image(
+                                        bitmap = bitmap.asImageBitmap(),
+                                        contentDescription = "Bukti Transfer",
+                                        modifier = Modifier.fillMaxWidth().aspectRatio(1f).padding(top = 4.dp),
+                                    )
+                                } else {
+                                    Text("(gagal decode gambar)", style = MaterialTheme.typography.bodySmall, color = NeonRed)
+                                }
+                            }
+
+                            Spacer(Modifier.height(12.dp))
+                            Button(
+                                onClick = { showConfirmDialog = true },
+                                modifier = Modifier.fillMaxWidth().height(44.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
+                            ) {
+                                if (vm.isBusy) {
+                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), color = DarkBackground, strokeWidth = 2.dp)
+                                } else {
+                                    Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("KONFIRMASI & GENERATE LISENSI", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                }
+                            }
+                        }
+                    }
+
+                    if (showConfirmDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showConfirmDialog = false },
+                            containerColor = DarkSurface,
+                            titleContentColor = NeonGreen,
+                            textContentColor = TextPrimary,
+                            title = { Text("Konfirmasi Invoice") },
+                            text = {
+                                Column {
+                                    Text("Konfirmasi pembayaran dari:")
+                                    Text("${inv.username} (${inv.email})", fontWeight = FontWeight.Bold)
+                                    Spacer(Modifier.height(4.dp))
+                                    Text("Paket: ${inv.paket}")
+                                    Text("Total: Rp${String.format("%,d", inv.harga)}")
+                                    Spacer(Modifier.height(8.dp))
+                                    Text("Lisensi akan digenerate otomatis dan dikaitkan ke invoice.", color = TextSecondary, fontSize = 13.sp)
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    showConfirmDialog = false
+                                    vm.konfirmasiInvoice(inv) { ok, result ->
+                                        val msg = if (ok) "Berhasil! Kode: $result" else "Gagal: $result"
+                                        Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+                                    }
+                                }) { Text("KONFIRMASI", color = NeonGreen) }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showConfirmDialog = false }) { Text("BATAL", color = NeonRed) }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Text("$label : ", style = MaterialTheme.typography.bodySmall, color = TextSecondary, modifier = Modifier.width(60.dp))
+        Text(value, style = MaterialTheme.typography.bodySmall, color = TextPrimary)
     }
 }

@@ -63,6 +63,12 @@ data class KodeGenerasi(
     val kode: String = "",
 )
 
+data class ActivatedDevice(
+    val deviceType: String = "", // "android" atau "desktop"
+    val deviceId: String = "",
+    val activatedAt: Long = 0,
+)
+
 data class LicenseRecord(
     val id: String = "",
     val kode: String = "",
@@ -77,6 +83,8 @@ data class LicenseRecord(
     val activatedAt: Long = 0,
     val activatedDeviceId: String = "",
     val revoked: Boolean = false,
+    val maxActivations: Int = 2,
+    val activatedDevices: List<ActivatedDevice> = emptyList(),
 )
 
 data class SmtpConfig(
@@ -107,4 +115,18 @@ data class UpdateInfo(
     val versionName: String,
     val apkUrl: String,
     val changelog: String,
+)
+
+data class Invoice(
+    val id: String = "",
+    val username: String = "",
+    val email: String = "",
+    val paket: String = "",
+    val harga: Int = 0,
+    val status: String = "PENDING", // PENDING, WAITING_CONFIRMATION, CONFIRMED, EXPIRED
+    val dibuat: Long = 0L,
+    val dibayar: Long = 0L,
+    val confirmedBy: String = "",
+    val kodeLisensi: String = "",
+    val buktiBase64: String = "",
 )

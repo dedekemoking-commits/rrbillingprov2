@@ -49,7 +49,7 @@ fun KontrolHargaScreen(viewModel: MainViewModel) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text("KONTROL HARGA", style = MaterialTheme.typography.titleLarge, color = NeonGreen)
+            Text("HARGA", style = MaterialTheme.typography.titleLarge, color = NeonGreen)
             FilledTonalButton(
                 onClick = {
                     val paketSaved = mutableMapOf<String, Map<String, Int>>()
@@ -86,9 +86,9 @@ fun KontrolHargaScreen(viewModel: MainViewModel) {
                     Spacer(Modifier.height(8.dp))
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Paket", style = MaterialTheme.typography.labelSmall, color = TextPrimary, modifier = Modifier.weight(2f), fontWeight = FontWeight.Bold)
-                        JENIS_PS.forEach { Text(it, style = MaterialTheme.typography.labelSmall, color = TextPrimary, modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontWeight = FontWeight.Bold) }
-                        Text("Mnt", style = MaterialTheme.typography.labelSmall, color = TextPrimary, modifier = Modifier.width(60.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontWeight = FontWeight.Bold)
+                        Text("Paket", style = MaterialTheme.typography.labelSmall, color = TextPrimary, modifier = Modifier.weight(1.5f), fontWeight = FontWeight.Bold)
+                        JENIS_PS.forEach { Text(it, style = MaterialTheme.typography.labelSmall, color = TextPrimary, modifier = Modifier.weight(1.5f), textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontWeight = FontWeight.Bold) }
+                        Text("Mnt", style = MaterialTheme.typography.labelSmall, color = TextPrimary, modifier = Modifier.width(50.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.width(28.dp))
                     }
 
@@ -108,7 +108,7 @@ fun KontrolHargaScreen(viewModel: MainViewModel) {
                                     cd[baru] = cd.remove(nama) ?: "60"
                                     editDurasi = cd
                                 },
-                                singleLine = true, modifier = Modifier.weight(2f), textStyle = MaterialTheme.typography.bodySmall,
+                                singleLine = true, modifier = Modifier.weight(1.5f), textStyle = MaterialTheme.typography.bodySmall,
                                 shape = RoundedCornerShape(6.dp), colors = fieldColors(),
                             )
                             JENIS_PS.forEach { t ->
@@ -116,14 +116,14 @@ fun KontrolHargaScreen(viewModel: MainViewModel) {
                                     value = editPaket[t]?.get(nama) ?: "0",
                                     onValueChange = { v -> editPaket = editPaket + (t to ((editPaket[t] ?: emptyMap()) + (nama to v))) },
                                     singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    modifier = Modifier.weight(1f), textStyle = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1.5f), textStyle = MaterialTheme.typography.bodySmall,
                                     shape = RoundedCornerShape(6.dp), colors = fieldColors(),
                                 )
                             }
                             OutlinedTextField(
                                 value = editDurasi[nama] ?: "60", onValueChange = { v -> editDurasi = editDurasi + (nama to v) },
                                 singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.width(60.dp), textStyle = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.width(50.dp), textStyle = MaterialTheme.typography.bodySmall,
                                 shape = RoundedCornerShape(6.dp), colors = fieldColors(),
                             )
                             IconButton(onClick = {

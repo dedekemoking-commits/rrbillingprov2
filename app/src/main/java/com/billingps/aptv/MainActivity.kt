@@ -161,7 +161,8 @@ fun AppRoot(
 enum class BottomTab(val title: String, val icon: ImageVector) {
     DASHBOARD("Dashboard", Icons.Filled.Home),
     RIWAYAT("Riwayat", Icons.Filled.History),
-    KONTROL_HARGA("Kontrol Harga", Icons.Filled.Star),
+    KONTROL_HARGA("Harga", Icons.Filled.Star),
+    VERIFIKASI("Verifikasi", Icons.Filled.Verified),
     PROFILE("Profile", Icons.Filled.Person),
 }
 
@@ -174,9 +175,10 @@ fun MainScreen(
     val mainState by mainViewModel.state.collectAsState()
     val role = mainState.currentRole
 
+    val pendingCount = mainState.pendingInvoiceCount
     val tabList = remember(role) {
         when (role) {
-            "kasir" -> listOf(BottomTab.DASHBOARD, BottomTab.RIWAYAT)
+            "kasir" -> listOf(BottomTab.DASHBOARD, BottomTab.RIWAYAT, BottomTab.VERIFIKASI)
             else -> BottomTab.entries.toList()
         }
     }
@@ -191,7 +193,15 @@ fun MainScreen(
                     NavigationBarItem(
                         selected = selectedTab == tab,
                         onClick = { selectedTab = tab },
-                        icon = { Icon(tab.icon, contentDescription = tab.title) },
+                        icon = {
+                            if (tab == BottomTab.VERIFIKASI && pendingCount > 0) {
+                                BadgedBox(badge = { Badge { Text("$pendingCount") } }) {
+                                    Icon(tab.icon, contentDescription = tab.title)
+                                }
+                            } else {
+                                Icon(tab.icon, contentDescription = tab.title)
+                            }
+                        },
                         label = { Text(tab.title, style = MaterialTheme.typography.labelSmall) },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = MaterialTheme.colorScheme.primary,
@@ -220,6 +230,7 @@ fun MainScreen(
                 BottomTab.DASHBOARD -> DashboardScreen(mainViewModel, tvViewModel)
                 BottomTab.RIWAYAT -> RiwayatScreen(mainViewModel)
                 BottomTab.KONTROL_HARGA -> KontrolHargaScreen(mainViewModel)
+                BottomTab.VERIFIKASI -> VerifikasiScreen(mainViewModel)
                 BottomTab.PROFILE -> ProfileScreen(mainViewModel, onLogout = { mainViewModel.logout() })
             }
         }

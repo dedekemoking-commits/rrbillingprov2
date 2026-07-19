@@ -230,6 +230,50 @@ object StorageUtil {
 
     fun loadTrialBatas(): Long = prefs.getLong("trialBatas", 0L)
 
+    // ── Invoices ────────────────────────────────────────────
+    fun saveInvoices(list: List<Invoice>) {
+        val arr = JSONArray()
+        list.forEach { inv ->
+            arr.put(JSONObject().apply {
+                put("id", inv.id)
+                put("username", inv.username)
+                put("email", inv.email)
+                put("paket", inv.paket)
+                put("harga", inv.harga)
+                put("status", inv.status)
+                put("dibuat", inv.dibuat)
+                put("dibayar", inv.dibayar)
+                put("confirmedBy", inv.confirmedBy)
+                put("kodeLisensi", inv.kodeLisensi)
+                put("buktiBase64", inv.buktiBase64)
+            })
+        }
+        prefs.edit().putString("invoices", arr.toString()).apply()
+    }
+
+    fun loadInvoices(): List<Invoice> {
+        val raw = prefs.getString("invoices", "[]") ?: "[]"
+        val arr = JSONArray(raw)
+        val list = mutableListOf<Invoice>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            list.add(Invoice(
+                id = o.optString("id"),
+                username = o.optString("username"),
+                email = o.optString("email"),
+                paket = o.optString("paket"),
+                harga = o.optInt("harga"),
+                status = o.optString("status", "PENDING"),
+                dibuat = o.optLong("dibuat"),
+                dibayar = o.optLong("dibayar"),
+                confirmedBy = o.optString("confirmedBy"),
+                kodeLisensi = o.optString("kodeLisensi"),
+                buktiBase64 = o.optString("buktiBase64"),
+            ))
+        }
+        return list
+    }
+
     // ── SMTP ───────────────────────────────────────────────
     fun saveSmtp(cfg: SmtpConfig) {
         securePrefs.edit()
@@ -246,6 +290,13 @@ object StorageUtil {
         user = securePrefs.getString("smtpUser", "") ?: "",
         pass = securePrefs.getString("smtpPass", "") ?: "",
     )
+
+    // ── TV Password ─────────────────────────────────────────
+    fun saveTvPassword(hash: String) {
+        securePrefs.edit().putString("tvPasswordHash", hash).apply()
+    }
+
+    fun loadTvPassword(): String = securePrefs.getString("tvPasswordHash", "") ?: ""
 
     // ── Kode Generasi ───────────────────────────────────────
     fun saveKodeGenerasiList(list: List<KodeGenerasi>) {

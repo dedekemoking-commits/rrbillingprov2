@@ -20,3 +20,17 @@ data class FirestoreUser(
     val email: String = "",
     val dibuat: String = "",
 )
+
+data class Invoice(
+    val id: String = "",
+    val username: String = "",
+    val email: String = "",
+    val paket: String = "",
+    val harga: Int = 0,
+    val status: String = "PENDING",
+    val dibuat: Long = 0L,
+    val dibayar: Long = 0L,
+    val confirmedBy: String = "",
+    val kodeLisensi: String = "",
+    val buktiBase64: String = "",
+)

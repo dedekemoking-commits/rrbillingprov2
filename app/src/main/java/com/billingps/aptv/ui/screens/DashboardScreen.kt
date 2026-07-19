@@ -25,6 +25,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -68,6 +69,14 @@ fun DashboardScreen(
     var bayarUpdates by remember { mutableStateOf<Map<String, Any>?>(null) }
     var showHabisDialog by remember { mutableStateOf(false) }
     var tvHabis by remember { mutableStateOf<TvData?>(null) }
+    var showHapusPasswordDialog by remember { mutableStateOf(false) }
+    var tvHapusTarget by remember { mutableStateOf<TvData?>(null) }
+    var hapusPasswordInput by remember { mutableStateOf("") }
+    var hapusPasswordError by remember { mutableStateOf("") }
+    var showBuatPasswordDialog by remember { mutableStateOf(false) }
+    var buatPasswordInput by remember { mutableStateOf("") }
+    var buatPasswordConfirm by remember { mutableStateOf("") }
+    var buatPasswordError by remember { mutableStateOf("") }
     val ctx = LocalContext.current
 
     // Check for update on first render
@@ -127,7 +136,20 @@ fun DashboardScreen(
                         tv = tv,
                         showPindah = tvList.size > 1,
                         onPilihPaket = { selectedTV = tv; showPaket = true },
-                        onHapus = { viewModel.hapusTV(tv.id) },
+                        onHapus = {
+                            if (state.tvPasswordHash.isEmpty()) {
+                                tvHapusTarget = tv
+                                buatPasswordInput = ""
+                                buatPasswordConfirm = ""
+                                buatPasswordError = ""
+                                showBuatPasswordDialog = true
+                            } else {
+                                tvHapusTarget = tv
+                                hapusPasswordInput = ""
+                                hapusPasswordError = ""
+                                showHapusPasswordDialog = true
+                            }
+                        },
                         onPair = { pairingTvId = tv.id; showPairingDialog = true },
                         onUpdate = { updates -> viewModel.updateTV(tv.id, updates) },
                         onPower = {
@@ -470,6 +492,110 @@ fun DashboardScreen(
             },
         )
     }
+
+    // ── Buat Password TV Dialog ──────────────────────────
+    if (showBuatPasswordDialog && tvHapusTarget != null) {
+        AlertDialog(
+            onDismissRequest = { showBuatPasswordDialog = false; tvHapusTarget = null },
+            containerColor = DarkSurface,
+            title = { Text("BUAT PASSWORD TV", color = NeonCyan, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("Buat password untuk melindungi penghapusan TV.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = buatPasswordInput,
+                        onValueChange = { buatPasswordInput = it; buatPasswordError = "" },
+                        label = { Text("Password TV") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = fieldColors(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = buatPasswordConfirm,
+                        onValueChange = { buatPasswordConfirm = it; buatPasswordError = "" },
+                        label = { Text("Konfirmasi Password") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = fieldColors(),
+                    )
+                    if (buatPasswordError.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(buatPasswordError, style = MaterialTheme.typography.bodySmall, color = NeonRed)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (buatPasswordInput.length < 4) { buatPasswordError = "Minimal 4 karakter"; return@Button }
+                        if (buatPasswordInput != buatPasswordConfirm) { buatPasswordError = "Konfirmasi tidak cocok"; return@Button }
+                        viewModel.setTvPassword(buatPasswordInput)
+                        viewModel.hapusTV(tvHapusTarget!!.id)
+                        showBuatPasswordDialog = false
+                        tvHapusTarget = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonRed, contentColor = DarkBackground),
+                    shape = RoundedCornerShape(8.dp),
+                ) { Text("Buat & Hapus TV", fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBuatPasswordDialog = false; tvHapusTarget = null }) { Text("Batal", color = TextSecondary) }
+            },
+        )
+    }
+
+    // ── Masukkan Password TV Dialog ──────────────────────────
+    if (showHapusPasswordDialog && tvHapusTarget != null) {
+        AlertDialog(
+            onDismissRequest = { showHapusPasswordDialog = false; tvHapusTarget = null },
+            containerColor = DarkSurface,
+            title = { Text("HAPUS TV", color = NeonRed, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("Masukkan password TV untuk menghapus ${tvHapusTarget!!.nama}.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = hapusPasswordInput,
+                        onValueChange = { hapusPasswordInput = it; hapusPasswordError = "" },
+                        label = { Text("Password TV") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = fieldColors(),
+                    )
+                    if (hapusPasswordError.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(hapusPasswordError, style = MaterialTheme.typography.bodySmall, color = NeonRed)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (!viewModel.verifyTvPassword(hapusPasswordInput)) {
+                            hapusPasswordError = "Password salah"
+                            return@Button
+                        }
+                        viewModel.hapusTV(tvHapusTarget!!.id)
+                        showHapusPasswordDialog = false
+                        tvHapusTarget = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonRed, contentColor = DarkBackground),
+                    shape = RoundedCornerShape(8.dp),
+                ) { Text("Hapus TV", fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showHapusPasswordDialog = false; tvHapusTarget = null }) { Text("Batal", color = TextSecondary) }
+            },
+        )
+    }
 }
 
 @Composable
@@ -557,22 +683,21 @@ fun TVCard(
             if (tv.paketAktif.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
                 if (!isHabis && sisaWaktu.isNotEmpty()) {
-                    Text(sisaWaktu, style = MaterialTheme.typography.titleLarge, color = if (tv.paketAktif == "WAKTU HABIS") NeonRed else NeonYellow,
+                    Text(sisaWaktu, style = MaterialTheme.typography.titleLarge,
+                        color = if (tv.paketAktif == "WAKTU HABIS") NeonRed else NeonYellow,
                         fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
                 }
-                val totalBelanja = if (tv.bebas) {
+                Text(tv.paketAktif, style = MaterialTheme.typography.bodySmall,
+                    color = if (isHabis) NeonRed else NeonGreen, fontWeight = FontWeight.Bold)
+                if (!isHabis && tv.bebas) {
                     val jam = maxOf(1, ((System.currentTimeMillis() - tv.bebasMulai) / 3600000).toInt())
-                    (jam * tv.bebasHargaPerJam) + tv.bebasPesananTotal
-                } else {
-                    tv.paketHarga + tv.totalPesanan
+                    val runningTotal = (jam * tv.bebasHargaPerJam) + tv.bebasPesananTotal
+                    Spacer(Modifier.height(2.dp))
+                    Text("Biaya: ${fmtRp(runningTotal)} (${fmtRp(tv.bebasHargaPerJam)}/jam)",
+                        style = MaterialTheme.typography.bodySmall, color = NeonGreen)
                 }
-                Text(
-                    tv.paketAktif,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (isHabis) NeonRed else NeonGreen,
-                    fontWeight = FontWeight.Bold,
-                )
-                if (!isHabis) {
+                if (!isHabis && !tv.bebas) {
+                    val totalBelanja = tv.paketHarga + tv.totalPesanan
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text(fmtRp(totalBelanja), style = MaterialTheme.typography.bodyMedium, color = NeonGreen, fontWeight = FontWeight.Bold)
                     }
@@ -788,6 +913,21 @@ fun ModalPaket(
                             }
                         }
                     }
+                    val hargaPerJam = paketData["1 Jam"] ?: 0
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = selectedPaket == "Main Bebas",
+                            onClick = { selectedPaket = "Main Bebas" },
+                            colors = RadioButtonDefaults.colors(selectedColor = NeonGreen),
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Main Bebas", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+                            Text("${fmtRp(hargaPerJam)}/jam", style = MaterialTheme.typography.bodySmall, color = NeonGreen)
+                        }
+                    }
                 }
 
                 if (makananData.isNotEmpty()) {
@@ -869,8 +1009,9 @@ fun ModalPaket(
                             "cancelBatas" to (System.currentTimeMillis() + 600_000),
                         )
                         if (isBebas) {
+                            val hourlyRate = paketData["1 Jam"] ?: 0
                             updates["bebasMulai"] = System.currentTimeMillis()
-                            updates["bebasHargaPerJam"] = hargaPaket
+                            updates["bebasHargaPerJam"] = hourlyRate
                             updates["bebasPesananTotal"] = pesananTotal
                         }
                         onConfirm(selectedPaket, hargaPaket, pesananBaru, total, menitPair, updates)

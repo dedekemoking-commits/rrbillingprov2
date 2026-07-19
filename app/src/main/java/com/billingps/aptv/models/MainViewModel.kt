@@ -19,6 +19,7 @@ import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.auth.FirebaseAuthWeakPasswordException
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
+import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -66,12 +67,15 @@ data class AppUiState(
     val updateChecked: Boolean = false,
     val downloadProgress: Int = -1, // -1 = idle, 0-100 = downloading
     val appVersionName: String = APP_VERSION,
+    val invoices: List<Invoice> = emptyList(),
+    val pendingInvoiceCount: Int = 0,
+    val tvPasswordHash: String = "",
 )
 
 fun defaultPaketMain(): Map<String, Map<String, Int>> {
     val defaultPS = mapOf(
         "15 Menit" to 5000, "30 Menit" to 10000, "1 Jam" to 15000,
-        "2 Jam" to 25000, "3 Jam" to 35000, "Main Bebas" to 35000,
+        "2 Jam" to 25000, "3 Jam" to 35000,
     )
     return mapOf("PS3" to defaultPS, "PS4" to defaultPS, "PS5" to defaultPS)
 }
@@ -81,12 +85,14 @@ fun defaultPaketDurasi(): Map<String, Int> = mapOf(
     "2 Jam" to 120, "3 Jam" to 180, "Main Bebas" to 0,
 )
 
-    const val APP_VERSION = "1.2.1"
+    const val APP_VERSION = "1.2.2"
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val cloudRepo = CloudRepository(application)
     private val firebaseAuth = FirebaseAuth.getInstance()
+    private var userDocListener: ListenerRegistration? = null
+    private var invoicesListener: ListenerRegistration? = null
 
     private val _state = MutableStateFlow(AppUiState())
     val state: StateFlow<AppUiState> = _state.asStateFlow()
@@ -117,6 +123,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val users = StorageUtil.loadUsers()
         val cu = StorageUtil.loadCurrentUser()
         val cr = StorageUtil.loadCurrentRole()
+        val lic = StorageUtil.loadLicense()
+        val trial = StorageUtil.loadTrialBatas()
+        Log.i("MainVM", "loadAll: license status='${lic.status}' expires='${lic.expiresAt}' maxTv=${lic.maxTv} trial=$trial")
         _state.value = _state.value.copy(
             isLoggedIn = cu.isNotEmpty(),
             currentUser = cu,
@@ -128,17 +137,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             paketDurasi = StorageUtil.loadPaketDurasi().ifEmpty { defaultPaketDurasi() },
             menuMakanan = StorageUtil.loadMenuMakanan(),
             menuMinuman = StorageUtil.loadMenuMinuman(),
-            licenseStatus = StorageUtil.loadLicense(),
+            licenseStatus = lic,
             smtp = StorageUtil.loadSmtp(),
             kodeGenerasiList = StorageUtil.loadKodeGenerasiList(),
-            trialBatas = StorageUtil.loadTrialBatas(),
-            maxTv = StorageUtil.loadLicense().maxTv,
+            trialBatas = trial,
+            maxTv = lic.maxTv,
+            invoices = StorageUtil.loadInvoices(),
+            tvPasswordHash = StorageUtil.loadTvPassword(),
         )
+        _state.value = _state.value.copy(pendingInvoiceCount = _state.value.invoices.count { it.status == "WAITING_CONFIRMATION" })
         // Check trial expiry
         val s = _state.value
         if (s.trialBatas > 0 && s.trialBatas < System.currentTimeMillis() && s.licenseStatus.status != "active") {
+            Log.i("MainVM", "loadAll: trial expired, clearing")
             _state.value = _state.value.copy(trialBatas = 0L, maxTv = 0)
             StorageUtil.saveTrial(0L)
+        }
+        // Start real-time license listener if logged in
+        if (cu.isNotEmpty()) {
+            startLicenseListener(cu)
         }
     }
 
@@ -287,12 +304,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val firebaseResult = signInWithFirebase(input, password)
             if (firebaseResult.success) {
                 val effectiveUser = matchingEmailUser ?: localUser
-                if (effectiveUser != null && !effectiveUser.emailVerified) {
-                    firebaseAuth.signOut()
-                    _state.value = _state.value.copy(pendingVerifyUser = effectiveUser.username)
-                    return AuthResult(false, "Silakan verifikasi email Anda dengan memasukkan kode verifikasi")
+                val sessionUser = if (effectiveUser != null) {
+                    effectiveUser
+                } else {
+                    val remoteUsername = withContext(Dispatchers.IO) { cloudRepo.findUsernameByEmail(input) }
+                    if (remoteUsername != null) {
+                        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+                        val restoredUser = UserData(
+                            username = remoteUsername, passwordHash = sha256(password), role = "admin",
+                            email = input, dibuat = sdf.format(java.util.Date()), emailVerified = true,
+                        )
+                        val updatedUsers = _state.value.users + (remoteUsername to restoredUser)
+                        _state.value = _state.value.copy(users = updatedUsers)
+                        StorageUtil.saveUsers(updatedUsers)
+                        restoredUser
+                    } else {
+                        UserData(username = input, role = "admin", email = input)
+                    }
                 }
-                val sessionUser = effectiveUser ?: UserData(username = input, role = "admin", email = input)
                 StorageUtil.saveCurrentSession(sessionUser.username, sessionUser.role)
                 val smtp = _state.value.smtp
                 _state.value = _state.value.copy(
@@ -301,6 +330,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     currentRole = sessionUser.role,
                     needsSmtpSetup = smtp.user.isBlank() || smtp.pass.isBlank(),
                 )
+                restoreLicenseAndTrial(sessionUser.username)
                 return AuthResult(true, "")
             }
             // Firebase gagal — fallback ke cek password lokal
@@ -316,6 +346,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         currentRole = fallbackUser.role,
                         needsSmtpSetup = smtp.user.isBlank() || smtp.pass.isBlank(),
                     )
+                    restoreLicenseAndTrial(fallbackUser.username)
                     return AuthResult(true, "")
                 }
             }
@@ -348,6 +379,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             } catch (_: Exception) { }
+            restoreLicenseAndTrial(localUser.username)
             try { syncToCloud() } catch (_: Exception) { }
         }
         return AuthResult(true, "")
@@ -388,21 +420,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         needsSmtpSetup = _state.value.smtp.user.isEmpty(),
                         isBusy = false, statusMessage = "",
                     )
+                    restoreLicenseAndTrial(existing.username)
                 } else {
-                    val username = generateUniqueUsername(displayName)
+                    val remoteUsername = withContext(Dispatchers.IO) { cloudRepo.findUsernameByEmail(verifiedEmail) }
                     val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
-                    val newUser = UserData(
-                        username = username, passwordHash = "", role = "admin", email = verifiedEmail,
-                        dibuat = sdf.format(java.util.Date()), emailVerified = true,
-                    )
-                    val updatedUsers = users + (username to newUser)
-                    StorageUtil.saveUsers(updatedUsers)
-                    StorageUtil.saveCurrentSession(username, "admin")
-                    _state.value = _state.value.copy(
-                        users = updatedUsers, isLoggedIn = true, currentUser = username, currentRole = "admin",
-                        needsSmtpSetup = _state.value.smtp.user.isEmpty(),
-                        isBusy = false, statusMessage = "",
-                    )
+                    if (remoteUsername != null) {
+                        val restoredUser = UserData(
+                            username = remoteUsername, passwordHash = "", role = "admin",
+                            email = verifiedEmail, dibuat = sdf.format(java.util.Date()), emailVerified = true,
+                        )
+                        val updatedUsers = users + (remoteUsername to restoredUser)
+                        StorageUtil.saveUsers(updatedUsers)
+                        StorageUtil.saveCurrentSession(remoteUsername, "admin")
+                        _state.value = _state.value.copy(
+                            users = updatedUsers, isLoggedIn = true, currentUser = remoteUsername, currentRole = "admin",
+                            isBusy = false, statusMessage = "",
+                        )
+                        restoreLicenseAndTrial(remoteUsername)
+                    } else {
+                        val username = generateUniqueUsername(displayName)
+                        val newUser = UserData(
+                            username = username, passwordHash = "", role = "admin", email = verifiedEmail,
+                            dibuat = sdf.format(java.util.Date()), emailVerified = true,
+                        )
+                        val updatedUsers = users + (username to newUser)
+                        StorageUtil.saveUsers(updatedUsers)
+                        StorageUtil.saveCurrentSession(username, "admin")
+                        _state.value = _state.value.copy(
+                            users = updatedUsers, isLoggedIn = true, currentUser = username, currentRole = "admin",
+                            isBusy = false, statusMessage = "",
+                        )
+                        if (_state.value.trialBatas == 0L && _state.value.licenseStatus.status != "active") {
+                            val trialEnd = System.currentTimeMillis() + 3 * 24 * 60 * 60 * 1000L
+                            _state.value = _state.value.copy(trialBatas = trialEnd, maxTv = 2)
+                            StorageUtil.saveTrial(trialEnd)
+                        }
+                    }
                 }
                 try {
                     firebaseAuth.currentUser?.let { u ->
@@ -437,9 +490,83 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun logout() {
+        stopLicenseListener()
         try { firebaseAuth.signOut() } catch (_: Exception) { }
         StorageUtil.clearSession()
         _state.value = _state.value.copy(isLoggedIn = false, currentUser = "", currentRole = "")
+    }
+
+    private suspend fun restoreLicenseAndTrial(username: String) {
+        try {
+            val cloudLic = withContext(Dispatchers.IO) { cloudRepo.fetchLicenseForUser(username) }
+            if (cloudLic != null && cloudLic.status.isNotEmpty()) {
+                _state.value = _state.value.copy(licenseStatus = cloudLic, trialBatas = 0L, maxTv = cloudLic.maxTv)
+                StorageUtil.saveLicense(cloudLic)
+            }
+        } catch (_: Exception) { }
+        val s = _state.value
+        if (s.trialBatas == 0L && s.licenseStatus.status != "active") {
+            val trialEnd = System.currentTimeMillis() + 3 * 24 * 60 * 60 * 1000L
+            _state.value = _state.value.copy(trialBatas = trialEnd, maxTv = 2)
+            StorageUtil.saveTrial(trialEnd)
+        }
+        startLicenseListener(username)
+    }
+
+    private fun startLicenseListener(username: String) {
+        stopLicenseListener()
+        Log.i("MainVM", "startLicenseListener for $username")
+        userDocListener = cloudRepo.listenUserLicense(username) { cloudLic ->
+            if (cloudLic != null) {
+                Log.i("MainVM", "listener: license updated to ${cloudLic.status} expires=${cloudLic.expiresAt}")
+                _state.value = _state.value.copy(licenseStatus = cloudLic, trialBatas = 0L, maxTv = cloudLic.maxTv)
+                StorageUtil.saveLicense(cloudLic)
+                // Activate the unactivated license doc so License Generator history shows it as activated
+                viewModelScope.launch {
+                    withContext(Dispatchers.IO) {
+                        cloudRepo.findAndActivateLicenseByUsername(username, cloudLic.expiresAt, deviceType = "android")
+                    }
+                }
+            } else {
+                // Only clear if current license is not active locally
+                val current = _state.value.licenseStatus
+                if (current.pesan.contains("✅")) {
+                    // license was active on this device from local activation — don't clear
+                    return@listenUserLicense
+                }
+            }
+        }
+        invoicesListener = cloudRepo.listenUserInvoices(username) { cloudInv ->
+            val currentInvs = _state.value.invoices.toMutableList()
+            val idx = currentInvs.indexOfFirst { it.id == cloudInv.id }
+            if (idx >= 0) {
+                val existing = currentInvs[idx]
+                if (existing.status != "CONFIRMED") {
+                    currentInvs[idx] = cloudInv
+                    _state.value = _state.value.copy(
+                        invoices = currentInvs,
+                        pendingInvoiceCount = currentInvs.count { it.status == "WAITING_CONFIRMATION" },
+                    )
+                    StorageUtil.saveInvoices(currentInvs)
+                    Log.i("MainVM", "invoices listener: updated invoice ${cloudInv.id} to CONFIRMED")
+                }
+            } else {
+                currentInvs.add(cloudInv)
+                _state.value = _state.value.copy(
+                    invoices = currentInvs,
+                    pendingInvoiceCount = currentInvs.count { it.status == "WAITING_CONFIRMATION" },
+                )
+                StorageUtil.saveInvoices(currentInvs)
+                Log.i("MainVM", "invoices listener: added CONFIRMED invoice ${cloudInv.id}")
+            }
+        }
+    }
+
+    private fun stopLicenseListener() {
+        userDocListener?.remove()
+        userDocListener = null
+        invoicesListener?.remove()
+        invoicesListener = null
     }
 
     // ── Kasir ──────────────────────────────────────────────
@@ -544,12 +671,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Set trial 3 hari untuk admin pertama
-        if (role == "admin" && _state.value.users.size <= 1 && _state.value.trialBatas == 0L) {
+        // Set trial 3 hari max 2 TV untuk semua user tanpa lisensi aktif
+        if (_state.value.trialBatas == 0L && _state.value.licenseStatus.status != "active") {
             val trialEnd = System.currentTimeMillis() + 3 * 24 * 60 * 60 * 1000L
             _state.value = _state.value.copy(trialBatas = trialEnd, maxTv = 2)
             StorageUtil.saveTrial(trialEnd)
-            StorageUtil.saveLicense(_state.value.licenseStatus.copy(maxTv = 2))
         }
 
         // Sync user list ke Firestore agar License Generator melihat user baru
@@ -773,6 +899,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── License ────────────────────────────────────────────
     fun aktivasiLisensi(kode: String, onResult: (Boolean, String) -> Unit) {
+        val DEVICE_TYPE = "android"
         val trimmed = kode.trim().uppercase()
         if (trimmed.length < 4) {
             onResult(false, "Kode tidak valid"); return
@@ -787,9 +914,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 onResult(false, "Kode ini sudah dicabut. Hubungi admin.")
                 return@launch
             }
-            if (record.activatedAt > 0) {
-                onResult(false, "Kode ini sudah digunakan. Hubungi admin untuk kode baru.")
-                return@launch
+            // Multi-device check
+            val activatedDevices = record.activatedDevices
+            val maxActivations = record.maxActivations
+            if (activatedDevices.isNotEmpty()) {
+                // Check if this device type already registered
+                val alreadyAndroid = activatedDevices.any { it.deviceType == DEVICE_TYPE }
+                if (alreadyAndroid) {
+                    onResult(false, "Kode ini sudah teraktivasi di perangkat Android lain.")
+                    return@launch
+                }
+                if (activatedDevices.size >= maxActivations) {
+                    onResult(false, "Kode ini sudah mencapai batas aktivasi ($maxActivations perangkat). Hubungi admin.")
+                    return@launch
+                }
+            } else if (record.activatedAt > 0) {
+                // Backward compat: old single-activation code
+                // Allow it on Android since it was activated on Desktop (or vice versa)
+                // We'll let it pass and record as multi-device
             }
             if (!ECDSAUtils.verify(record.payload, record.signature)) {
                 onResult(false, "Kode tidak valid (signature mismatch). Hubungi admin.")
@@ -808,6 +950,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 "BULANAN" -> 5; "3BULAN" -> 8; "TAHUNAN" -> 15; "LIFETIME" -> 0; else -> 2
             }
             val cal = java.util.Calendar.getInstance()
+            val existingExp = _state.value.licenseStatus
+            if (existingExp.status == "active" && existingExp.expiresAt.isNotEmpty()) {
+                try {
+                    val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                    val existingDate = sdf.parse(existingExp.expiresAt)
+                    if (existingDate != null && existingDate.after(java.util.Date())) {
+                        cal.time = existingDate
+                    }
+                } catch (_: Exception) { }
+            }
             cal.add(java.util.Calendar.DAY_OF_YEAR, durasiHari)
             val expires = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
             val ls = LicenseStatus(
@@ -818,13 +970,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             _state.value = _state.value.copy(licenseStatus = ls, trialBatas = 0L, maxTv = maxTv)
             StorageUtil.saveLicense(ls)
-            cloudRepo.activateLicense(record.id)
+
+            // Activate with device type (multi-device support)
+            cloudRepo.activateLicense(record.id, expires, deviceType = DEVICE_TYPE)
+
+            // Write licenseStatus ke user doc untuk sync antar device
+            val username = _state.value.currentUser
+            if (username.isNotBlank()) {
+                try {
+                    val userLs = mapOf(
+                        "status" to "active",
+                        "pesan" to ls.pesan,
+                        "expiresAt" to expires,
+                        "maxTv" to maxTv,
+                        "maxPc" to maxTv,
+                        "cloud_restored" to true,
+                    )
+                    cloudRepo.ensureSignedIn()
+                    cloudRepo.writeLicenseStatusToUserDoc(username, userLs)
+                } catch (_: Exception) { }
+            }
+
+            try { syncToCloud() } catch (_: Exception) { }
             onResult(true, ls.pesan)
         }
     }
 
+    private fun generateKode(paket: String): String {
+        val paketChar = when (paket) { "BULANAN" -> "B"; "3BULAN" -> "T"; "TAHUNAN" -> "S"; "LIFETIME" -> "L"; else -> "X" }
+        val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        val random = (1..13).map { chars.random() }.joinToString("")
+        return "RR$paketChar$random"
+    }
+
     fun generateLicenseKode(paket: String, username: String, email: String = "", onDone: (String) -> Unit) {
-        val shortCode = (10000000..99999999).random().toString() + (65..90).random().toChar()
+        val kode = generateKode(paket)
         val nonce = java.util.UUID.randomUUID().toString().take(8)
         val cal = java.util.Calendar.getInstance()
         cal.add(java.util.Calendar.DAY_OF_YEAR, when (paket) {
@@ -833,7 +1013,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val expiry = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
         val payload = """{"p":"$paket","u":"$username","e":"$expiry","n":"$nonce","m":"$email"}"""
         val signature = ECDSAUtils.sign(payload)
-        val kode = shortCode
         val record = KodeGenerasi(
             waktu = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).format(java.util.Date()),
             username = _state.value.currentUser,
@@ -868,6 +1047,106 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ── Invoices ────────────────────────────────────────────
+    private fun generateInvoiceId(): String {
+        val sdf = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US)
+        val datePart = sdf.format(java.util.Date())
+        val random = (1..4).map { "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".random() }.joinToString("")
+        return "INV-$datePart-$random"
+    }
+
+    fun buatInvoice(paket: String, harga: Int): Invoice {
+        val id = generateInvoiceId()
+        val username = _state.value.currentUser
+        val email = _state.value.users[username]?.email ?: ""
+        val inv = Invoice(
+            id = id,
+            username = username,
+            email = email,
+            paket = paket,
+            harga = harga,
+            status = "PENDING",
+            dibuat = System.currentTimeMillis(),
+        )
+        val newList = _state.value.invoices + inv
+        _state.value = _state.value.copy(invoices = newList)
+        _state.value = _state.value.copy(pendingInvoiceCount = newList.count { it.status == "WAITING_CONFIRMATION" })
+        StorageUtil.saveInvoices(newList)
+        viewModelScope.launch { try { cloudRepo.saveInvoiceToCloud(inv) } catch (_: Exception) { } }
+        return inv
+    }
+
+    fun uploadBukti(invoiceId: String, base64: String) {
+        val newList = _state.value.invoices.map {
+            if (it.id == invoiceId) it.copy(status = "WAITING_CONFIRMATION", buktiBase64 = base64) else it
+        }
+        _state.value = _state.value.copy(invoices = newList)
+        _state.value = _state.value.copy(pendingInvoiceCount = newList.count { it.status == "WAITING_CONFIRMATION" })
+        StorageUtil.saveInvoices(newList)
+        val updated = newList.firstOrNull { it.id == invoiceId }
+        if (updated != null) {
+            viewModelScope.launch { try { cloudRepo.saveInvoiceToCloud(updated) } catch (_: Exception) { } }
+        }
+    }
+
+    fun konfirmasiPembayaran(invoiceId: String) {
+        val inv = _state.value.invoices.firstOrNull { it.id == invoiceId } ?: return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isBusy = true, statusMessage = "Memproses pembayaran...")
+            generateLicenseKode(inv.paket, inv.username, inv.email) { kode ->
+                viewModelScope.launch {
+                    val maxTv = when (inv.paket) {
+                        "1 Bulan" -> 5; "BULANAN" -> 5; "3 Bulan" -> 8; "3BULAN" -> 8
+                        "1 Tahun" -> 15; "TAHUNAN" -> 15; "LIFETIME" -> 0; else -> 2
+                    }
+                    val cal = java.util.Calendar.getInstance()
+                    val existingExp = _state.value.licenseStatus
+                    if (existingExp.status == "active" && existingExp.expiresAt.isNotEmpty()) {
+                        try {
+                            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                            val existingDate = sdf.parse(existingExp.expiresAt)
+                            if (existingDate != null && existingDate.after(java.util.Date())) {
+                                cal.time = existingDate
+                            }
+                        } catch (_: Exception) { }
+                    }
+                    cal.add(java.util.Calendar.DAY_OF_YEAR, when (inv.paket) {
+                        "1 Bulan", "BULANAN" -> 30; "3 Bulan", "3BULAN" -> 90
+                        "1 Tahun", "TAHUNAN" -> 360; "LIFETIME" -> 99999; else -> 30
+                    })
+                    val expiry = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
+                    val ls = LicenseStatus(
+                        status = "active",
+                        pesan = "✅ Lisensi ${inv.paket} aktif hingga $expiry",
+                        expiresAt = expiry, maxTv = maxTv,
+                    )
+                    _state.value = _state.value.copy(licenseStatus = ls, trialBatas = 0L, maxTv = maxTv)
+                    StorageUtil.saveLicense(ls)
+                    try {
+                        val record = cloudRepo.findLicenseByCode(kode)
+                        if (record != null) { cloudRepo.activateLicense(record.id, expiry) }
+                    } catch (_: Exception) { }
+                    val confirmedInv = _state.value.invoices.firstOrNull { it.id == invoiceId }?.copy(
+                        status = "CONFIRMED", dibayar = System.currentTimeMillis(),
+                        confirmedBy = _state.value.currentUser, kodeLisensi = kode,
+                    )
+                    val newInvoices = _state.value.invoices.map {
+                        if (it.id == invoiceId) confirmedInv!! else it
+                    }
+                    _state.value = _state.value.copy(invoices = newInvoices, pendingInvoiceCount = newInvoices.count { it.status == "WAITING_CONFIRMATION" })
+                    StorageUtil.saveInvoices(newInvoices)
+                    if (confirmedInv != null) { try { cloudRepo.saveInvoiceToCloud(confirmedInv) } catch (_: Exception) { } }
+                    try { syncToCloud() } catch (_: Exception) { }
+                    _state.value = _state.value.copy(isBusy = false, statusMessage = "Pembayaran dikonfirmasi!")
+                }
+            }
+        }
+    }
+
+    fun getPendingInvoices(): List<Invoice> = _state.value.invoices.filter { it.status == "WAITING_CONFIRMATION" || it.status == "PENDING" }.sortedByDescending { it.dibuat }
+
+    fun getMyInvoices(): List<Invoice> = _state.value.invoices.filter { it.username == _state.value.currentUser }.sortedByDescending { it.dibuat }
+
     fun gantiPassword(username: String, newPassword: String): Boolean {
         if (newPassword.length < 6) return false
         val users = _state.value.users.toMutableMap()
@@ -876,6 +1155,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(users = users)
         StorageUtil.saveUsers(users)
         return true
+    }
+
+    fun setTvPassword(password: String) {
+        val hash = sha256(password)
+        StorageUtil.saveTvPassword(hash)
+        _state.value = _state.value.copy(tvPasswordHash = hash)
+    }
+
+    fun verifyTvPassword(password: String): Boolean {
+        val hash = _state.value.tvPasswordHash
+        if (hash.isEmpty()) return true
+        return sha256(password) == hash
     }
 
     fun saveSmtp(cfg: SmtpConfig) {
@@ -964,5 +1255,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 statusMessage = if (ok) "Cloud sync successful" else "Cloud sync failed"
             )
         }
+    }
+
+    override fun onCleared() {
+        stopLicenseListener()
+        super.onCleared()
     }
 }

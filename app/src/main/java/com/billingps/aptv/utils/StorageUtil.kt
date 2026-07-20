@@ -7,6 +7,7 @@ import androidx.security.crypto.MasterKey
 import com.billingps.aptv.models.*
 import org.json.JSONArray
 import org.json.JSONObject
+import android.util.Log
 
 object StorageUtil {
     private const val PREFS_NAME = "billingps_data"
@@ -25,7 +26,8 @@ object StorageUtil {
                 EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
             )
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e("StorageUtil", "securePrefs init failed: ${e.message}")
             _ctx!!.getSharedPreferences(PREFS_SENSITIVE, Context.MODE_PRIVATE)
         }
     }
@@ -33,7 +35,7 @@ object StorageUtil {
     fun init(context: Context) {
         _ctx = context.applicationContext
         // trigger securePrefs init to validate early
-        try { securePrefs.edit().apply() } catch (_: Exception) { }
+        try { securePrefs.edit().apply() } catch (e: Exception) { Log.e("StorageUtil", "init securePrefs edit: ${e.message}") }
     }
 
     // ── Users ──────────────────────────────────────────────
@@ -120,6 +122,8 @@ object StorageUtil {
                 put("jenisPs", tv.jenisPs)
                 put("paketAktif", tv.paketAktif)
                 put("sisaDetik", tv.sisaDetik)
+                put("timerStart", tv.timerStart)
+                put("timerDurasi", tv.timerDurasi)
                 put("timerActive", tv.timerActive)
                 put("bebas", tv.bebas)
                 put("paketHarga", tv.paketHarga)
@@ -150,6 +154,8 @@ object StorageUtil {
                 jenisPs = o.optString("jenisPs", "PS3"),
                 paketAktif = o.optString("paketAktif"),
                 sisaDetik = o.optLong("sisaDetik"),
+                timerStart = o.optLong("timerStart"),
+                timerDurasi = o.optLong("timerDurasi"),
                 timerActive = o.optBoolean("timerActive"),
                 bebas = o.optBoolean("bebas"),
                 paketHarga = o.optInt("paketHarga"),
@@ -274,6 +280,13 @@ object StorageUtil {
         return list
     }
 
+    // ── SMTP Skip Permanently ──────────────────────────────
+    fun saveSmtpSkipPermanently(skip: Boolean) {
+        prefs.edit().putBoolean("smtpSkipPermanently", skip).apply()
+    }
+
+    fun loadSmtpSkipPermanently(): Boolean = prefs.getBoolean("smtpSkipPermanently", false)
+
     // ── SMTP ───────────────────────────────────────────────
     fun saveSmtp(cfg: SmtpConfig) {
         securePrefs.edit()
@@ -290,6 +303,37 @@ object StorageUtil {
         user = securePrefs.getString("smtpUser", "") ?: "",
         pass = securePrefs.getString("smtpPass", "") ?: "",
     )
+
+    // ── Promo ───────────────────────────────────────────────
+    fun savePromo(promo: PromoSettings) {
+        prefs.edit()
+            .putBoolean("promoAktif", promo.promoAktif)
+            .putString("diskonPerPaket", mapToJson(promo.diskonPerPaket.mapValues { it.value }))
+            .putString("addTvOverride", mapToJson(promo.addTvOverride.mapValues { it.value }))
+            .putString("promoUpdatedBy", promo.updatedBy)
+            .putLong("promoUpdatedAt", promo.updatedAt)
+            .apply()
+    }
+
+    fun loadPromo(): PromoSettings {
+        val rawDiskon = prefs.getString("diskonPerPaket", null)
+        val rawTv = prefs.getString("addTvOverride", null)
+        val diskonMap = rawDiskon?.let { jsonToMap(it) } ?: emptyMap()
+        return PromoSettings(
+            promoAktif = prefs.getBoolean("promoAktif", false),
+            diskonPerPaket = diskonMap,
+            addTvOverride = rawTv?.let { jsonToMap(it) } ?: emptyMap(),
+            updatedBy = prefs.getString("promoUpdatedBy", "") ?: "",
+            updatedAt = prefs.getLong("promoUpdatedAt", 0L),
+        )
+    }
+
+    // ── Theme ───────────────────────────────────────────────
+    fun saveThemeOption(name: String) {
+        prefs.edit().putString("themeOption", name).apply()
+    }
+
+    fun loadThemeOption(): String = prefs.getString("themeOption", "GAMING_DARK") ?: "GAMING_DARK"
 
     // ── TV Password ─────────────────────────────────────────
     fun saveTvPassword(hash: String) {
@@ -341,6 +385,42 @@ object StorageUtil {
         val map = mutableMapOf<String, Int>()
         obj.keys().forEach { k -> map[k] = obj.optInt(k) }
         return map
+    }
+
+    // ── FCM Token ───────────────────────────────────────────
+    fun saveFcmToken(token: String) {
+        prefs.edit().putString("fcmToken", token).apply()
+    }
+
+    fun loadFcmToken(): String = prefs.getString("fcmToken", "") ?: ""
+
+    // ── Notification Dialog Flag ────────────────────────────
+    fun saveNotifDialogShown(shown: Boolean) {
+        prefs.edit().putBoolean("notifDialogShown", shown).apply()
+    }
+
+    fun loadNotifDialogShown(): Boolean = prefs.getBoolean("notifDialogShown", false)
+
+    // ── Secure Preferences (for ECDSA, etc.) ──────────────
+    fun getSecurePreference(key: String): String? = securePrefs.getString(key, null)
+
+    fun putSecurePreference(key: String, value: String) {
+        securePrefs.edit().putString(key, value).apply()
+    }
+
+    // ── Activity Log ──────────────────────────────────────
+    fun saveActivityLog(list: List<String>) {
+        val arr = JSONArray()
+        list.forEach { arr.put(it) }
+        prefs.edit().putString("activityLog", arr.toString()).apply()
+    }
+
+    fun loadActivityLog(): List<String> {
+        val raw = prefs.getString("activityLog", "[]") ?: "[]"
+        val arr = JSONArray(raw)
+        val list = mutableListOf<String>()
+        for (i in 0 until arr.length()) list.add(arr.optString(i))
+        return list
     }
 
     private fun map2dToJson(map: Map<String, Map<String, Int>>?): String {

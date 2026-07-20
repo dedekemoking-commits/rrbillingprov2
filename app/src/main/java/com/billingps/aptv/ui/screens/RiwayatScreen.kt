@@ -33,6 +33,7 @@ fun RiwayatScreen(viewModel: MainViewModel) {
     val ctx = LocalContext.current
     // Filter mode: "DAY", "WEEK", "MONTH", "ALL"
     var filterMode by remember { mutableStateOf("DAY") }
+    var searchQuery by remember { mutableStateOf("") }
     val allList = state.transaksiList.sortedByDescending { it.waktu }
     // compute filtered list
     val now = java.util.Date()
@@ -45,7 +46,7 @@ fun RiwayatScreen(viewModel: MainViewModel) {
             calD.time = d
             calNow.get(java.util.Calendar.YEAR) == calD.get(java.util.Calendar.YEAR)
                     && calNow.get(java.util.Calendar.DAY_OF_YEAR) == calD.get(java.util.Calendar.DAY_OF_YEAR)
-        } catch (_: Exception) { false }
+        } catch (e: Exception) { Log.e("RiwayatScreen", "inDay: ${e.message}"); false }
     }
     fun inWeek(waktuIso: String): Boolean {
         return try {
@@ -57,7 +58,7 @@ fun RiwayatScreen(viewModel: MainViewModel) {
             // compare week of year and year
             calNow.get(java.util.Calendar.YEAR) == calD.get(java.util.Calendar.YEAR)
                     && calNow.get(java.util.Calendar.WEEK_OF_YEAR) == calD.get(java.util.Calendar.WEEK_OF_YEAR)
-        } catch (_: Exception) { false }
+        } catch (e: Exception) { Log.e("RiwayatScreen", "inWeek: ${e.message}"); false }
     }
     fun inMonth(waktuIso: String): Boolean {
         return try {
@@ -68,14 +69,20 @@ fun RiwayatScreen(viewModel: MainViewModel) {
             calD.time = d
             calNow.get(java.util.Calendar.YEAR) == calD.get(java.util.Calendar.YEAR)
                     && calNow.get(java.util.Calendar.MONTH) == calD.get(java.util.Calendar.MONTH)
-        } catch (_: Exception) { false }
+        } catch (e: Exception) { Log.e("RiwayatScreen", "inMonth: ${e.message}"); false }
     }
-    val txList = remember(allList, filterMode) {
-        when (filterMode) {
+    val txList = remember(allList, filterMode, searchQuery) {
+        val timeFiltered = when (filterMode) {
             "DAY" -> allList.filter { inDay(it.waktu) }
             "WEEK" -> allList.filter { inWeek(it.waktu) }
             "MONTH" -> allList.filter { inMonth(it.waktu) }
             else -> allList
+        }
+        if (searchQuery.isBlank()) timeFiltered
+        else timeFiltered.filter { t ->
+            t.kota.contains(searchQuery, ignoreCase = true) ||
+            t.kasir.contains(searchQuery, ignoreCase = true) ||
+            t.paket.contains(searchQuery, ignoreCase = true)
         }
     }
     val totalPendapatan = txList.sumOf { it.total }
@@ -178,6 +185,31 @@ fun RiwayatScreen(viewModel: MainViewModel) {
 
         Spacer(Modifier.height(8.dp))
 
+        // Search bar
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            placeholder = { Text("Cari TV, kasir, atau paket...", color = TextDim) },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = TextDim) },
+            trailingIcon = {
+                if (searchQuery.isNotEmpty()) {
+                    IconButton(onClick = { searchQuery = "" }) {
+                        Icon(Icons.Filled.Clear, contentDescription = "Hapus", tint = TextDim)
+                    }
+                }
+            },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+            shape = RoundedCornerShape(10.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = NeonCyan, unfocusedBorderColor = DarkSurfaceV3,
+                cursorColor = NeonCyan,
+                unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+            ),
+        )
+
+        Spacer(Modifier.height(6.dp))
+
         if (state.statusMessage.isNotEmpty()) {
             Text(state.statusMessage, style = MaterialTheme.typography.bodySmall, color = NeonCyan, modifier = Modifier.padding(horizontal = 12.dp))
             Spacer(Modifier.height(4.dp))
@@ -209,13 +241,37 @@ fun RiwayatScreen(viewModel: MainViewModel) {
                 border = BorderStroke(1.dp, NeonGreen),
             ) { Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Export CSV") }
             if (state.currentRole != "kasir") {
+                var showBersihkanDialog by remember { mutableStateOf(false) }
                 OutlinedButton(
-                    onClick = { viewModel.bersihkanTransaksi() },
+                    onClick = { showBersihkanDialog = true },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
                     border = BorderStroke(1.dp, NeonRed),
                 ) { Icon(Icons.Filled.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Bersihkan") }
+                if (showBersihkanDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showBersihkanDialog = false },
+                        containerColor = DarkSurface,
+                        title = { Text("BERSIHKAN TRANSAKSI", fontWeight = FontWeight.Bold, color = NeonRed) },
+                        text = { Text("Semua transaksi lokal akan dihapus permanen. Lanjutkan?", color = TextSecondary) },
+                        confirmButton = {
+                            Button(
+                                onClick = { showBersihkanDialog = false; viewModel.bersihkanTransaksi() },
+                                colors = ButtonDefaults.buttonColors(containerColor = NeonRed, contentColor = DarkBackground),
+                                shape = RoundedCornerShape(10.dp),
+                            ) { Text("Bersihkan") }
+                        },
+                        dismissButton = {
+                            OutlinedButton(
+                                onClick = { showBersihkanDialog = false },
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
+                                border = BorderStroke(1.dp, TextSecondary.copy(alpha = 0.5f)),
+                            ) { Text("Batal") }
+                        },
+                    )
+                }
             }
         }
 
@@ -263,8 +319,8 @@ private fun formatWaktu(iso: String): String {
     return try {
         val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
         val out = java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale("id", "ID"))
-        out.format(sdf.parse(iso)!!)
-    } catch (_: Exception) { iso }
+        out.format(sdf.parse(iso) ?: return iso)
+    } catch (e: Exception) { Log.e("RiwayatScreen", "formatWaktu: ${e.message}"); iso }
 }
 
 

@@ -8,6 +8,8 @@ data class TvData(
     val jenisPs: String = "PS3",
     val paketAktif: String = "",
     val sisaDetik: Long = 0,
+    val timerStart: Long = 0L,
+    val timerDurasi: Long = 0L,
     val timerActive: Boolean = false,
     val bebas: Boolean = false,
     val paketHarga: Int = 0,
@@ -115,6 +117,14 @@ data class UpdateInfo(
     val versionName: String,
     val apkUrl: String,
     val changelog: String,
+)
+
+data class PromoSettings(
+    val promoAktif: Boolean = false,
+    val diskonPerPaket: Map<String, Int> = emptyMap(),
+    val addTvOverride: Map<String, Int> = emptyMap(),
+    val updatedBy: String = "",
+    val updatedAt: Long = 0L,
 )
 
 data class Invoice(

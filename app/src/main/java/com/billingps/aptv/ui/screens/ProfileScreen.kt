@@ -23,12 +23,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import com.billingps.aptv.models.*
 import com.billingps.aptv.ui.theme.*
+import com.billingps.aptv.ui.theme.ThemeOption
 import kotlinx.coroutines.launch
+import android.util.Log
 
 @Composable
 fun ProfileScreen(
@@ -37,7 +40,6 @@ fun ProfileScreen(
 ) {
     val state by viewModel.state.collectAsState()
     val ctx = LocalContext.current
-    val canGenerateLicense = state.currentUser == "rrgaming"
 
     var newPass by remember { mutableStateOf("") }
     var tvPass by remember { mutableStateOf("") }
@@ -53,31 +55,7 @@ fun ProfileScreen(
     var regMsgOk by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    var genUname by remember { mutableStateOf("") }
-    var genPaket by remember { mutableStateOf("BULANAN") }
-    var genKode by remember { mutableStateOf("") }
-    var genMsg by remember { mutableStateOf("") }
-    var genLoading by remember { mutableStateOf(false) }
 
-    val lic = state.licenseStatus
-    val now = System.currentTimeMillis()
-    val licSisa = if (lic.status == "active" && lic.expiresAt.isNotEmpty()) {
-        try {
-            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
-            val expDate = sdf.parse(lic.expiresAt)
-            val diff = expDate.time - now
-            if (diff > 0) "${diff / 86400000} hari" else "Hari ini"
-        } catch (_: Exception) { "" }
-    } else ""
-    val trialSisa = if (state.trialBatas > now) {
-        val s = (state.trialBatas - now) / 1000
-        "${s / 86400} hari ${(s % 86400) / 3600} jam"
-    } else ""
-    val displayColor = when {
-        lic.status == "active" -> NeonGreen
-        trialSisa.isNotEmpty() -> NeonYellow
-        else -> NeonRed
-    }
 
     Column(modifier = Modifier.fillMaxSize().background(DarkBackground)) {
         Row(
@@ -86,12 +64,36 @@ fun ProfileScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text("PROFIL & AKTIVASI", style = MaterialTheme.typography.titleLarge, color = NeonGreen)
+            var showLogoutDialog by remember { mutableStateOf(false) }
             OutlinedButton(
-                onClick = onLogout,
+                onClick = { showLogoutDialog = true },
                 shape = RoundedCornerShape(8.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
                 border = BorderStroke(1.dp, NeonRed),
             ) { Icon(Icons.Filled.Logout, contentDescription = null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Keluar") }
+            if (showLogoutDialog) {
+                AlertDialog(
+                    onDismissRequest = { showLogoutDialog = false },
+                    containerColor = DarkSurface,
+                    title = { Text("KONFIRMASI KELUAR", fontWeight = FontWeight.Bold, color = NeonRed) },
+                    text = { Text("Apakah Anda yakin ingin keluar? Data yang belum tersimpan akan hilang.", color = TextSecondary) },
+                    confirmButton = {
+                        Button(
+                            onClick = { showLogoutDialog = false; onLogout() },
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonRed, contentColor = DarkBackground),
+                            shape = RoundedCornerShape(10.dp),
+                        ) { Text("Keluar") }
+                    },
+                    dismissButton = {
+                        OutlinedButton(
+                            onClick = { showLogoutDialog = false },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
+                            border = BorderStroke(1.dp, TextSecondary.copy(alpha = 0.5f)),
+                        ) { Text("Batal") }
+                    },
+                )
+            }
         }
 
         Column(
@@ -101,103 +103,16 @@ fun ProfileScreen(
             // Profile Card
             ProfileHeader(state.currentUser, state.currentRole, state.appVersionName)
 
-            // License Status Info — simplified
-            Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
-                Column(Modifier.padding(16.dp)) {
-                    val displayText = when {
-                        lic.status == "active" && licSisa.isNotEmpty() -> "✅ Lisensi Aktif $licSisa lagi"
-                        lic.status == "active" -> "✅ Lisensi Aktif"
-                        trialSisa.isNotEmpty() -> "⏳ Masa Trial: $trialSisa tersisa"
-                        else -> "❌ Lisensi tidak aktif"
-                    }
-                    Box(modifier = Modifier.fillMaxWidth().border(BorderStroke(1.dp, displayColor)).padding(10.dp), contentAlignment = Alignment.Center) {
-                        Text(displayText, style = MaterialTheme.typography.bodyMedium, color = displayColor, textAlign = TextAlign.Center)
-                    }
-                }
-            }
 
-            // Super Admin: Generate Kode
-            if (canGenerateLicense) {
-                Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("GENERATE KODE AKTIVASI", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(value = genUname, onValueChange = { genUname = it }, label = { Text("Username Pelanggan") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf("BULANAN", "3BULAN", "TAHUNAN", "LIFETIME").forEach { p ->
-                                FilterChip(selected = genPaket == p, onClick = { genPaket = p; genKode = "" }, label = { Text(p, style = MaterialTheme.typography.labelSmall) }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = NeonGreen, selectedLabelColor = DarkBackground))
-                            }
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        val maxTvText = when (genPaket) {
-                            "BULANAN" -> "max 5 TV"
-                            "3BULAN" -> "max 8 TV"
-                            "TAHUNAN" -> "max 15 TV"
-                            else -> "Unlimited"
-                        }
-                        Text(maxTvText, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                        Spacer(Modifier.height(8.dp))
-                        Button(onClick = {
-                            if (genUname.isBlank()) { genMsg = "Masukkan username"; return@Button }
-                            genMsg = "Generating..."; genKode = ""; genLoading = true
-                            viewModel.generateLicenseKode(genPaket, genUname) { kode ->
-                                genKode = kode; genMsg = ""; genLoading = false
-                            }
-                        }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) {
-                            if (genLoading) { CircularProgressIndicator(modifier = Modifier.size(18.dp), color = DarkBackground, strokeWidth = 2.dp) }
-                            else { Text("Generate Kode") }
-                        }
-                        if (genMsg.isNotEmpty()) { Spacer(Modifier.height(4.dp)); Text(genMsg, style = MaterialTheme.typography.bodySmall, color = NeonYellow) }
-                        if (genKode.isNotEmpty()) {
-                            Spacer(Modifier.height(8.dp))
-                            Card(
-                                modifier = Modifier.fillMaxWidth()
-                                    .border(BorderStroke(2.dp, NeonGreen))
-                                    .clickable {
-                                        val clip = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                        clip.setPrimaryClip(ClipData.newPlainText("Kode Aktivasi", genKode))
-                                        Toast.makeText(ctx, "Kode tersalin", Toast.LENGTH_SHORT).show()
-                                    },
-                                shape = RoundedCornerShape(12.dp),
-                                colors = CardDefaults.cardColors(containerColor = GamersGreenDark),
-                            ) {
-                                Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(genKode, style = MaterialTheme.typography.titleLarge, color = NeonGreen, letterSpacing = 2.sp, textAlign = TextAlign.Center)
-                                    Text("Tap untuk copy", style = MaterialTheme.typography.bodySmall, color = TextDim)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Riwayat Generate Kode
-            if (canGenerateLicense && state.kodeGenerasiList.isNotEmpty()) {
-                Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("RIWAYAT GENERATE KODE", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
-                        Spacer(Modifier.height(8.dp))
-                        val reversed = state.kodeGenerasiList.sortedByDescending { it.waktu }
-                        reversed.forEach { g ->
-                            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(g.kode, style = MaterialTheme.typography.bodySmall, color = NeonGreen, fontWeight = FontWeight.Bold)
-                                    Text("${g.username} • ${g.paket}", style = MaterialTheme.typography.bodySmall, color = TextDim)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
 
             // Change Password
             if (state.currentRole == "admin") {
+                var newPassVisible by remember { mutableStateOf(false) }
                 Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
                     Column(Modifier.padding(16.dp)) {
                         Text("GANTI PASSWORD", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
                         Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(value = newPass, onValueChange = { newPass = it }, label = { Text("Password baru (min 6)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
+                        OutlinedTextField(value = newPass, onValueChange = { newPass = it }, label = { Text("Password baru (min 6)") }, singleLine = true, visualTransformation = if (newPassVisible) VisualTransformation.None else PasswordVisualTransformation(), trailingIcon = { IconButton(onClick = { newPassVisible = !newPassVisible }) { Icon(if (newPassVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, null, tint = TextSecondary) } }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
                         Spacer(Modifier.height(8.dp))
                         Button(onClick = {
                             if (newPass.length < 6) { Toast.makeText(ctx, "Minimal 6 karakter", Toast.LENGTH_SHORT).show(); return@Button }
@@ -208,8 +123,12 @@ fun ProfileScreen(
                 }
             }
 
+
+
             // TV Password
             if (state.currentRole == "admin") {
+                var tvPassVisible by remember { mutableStateOf(false) }
+                var tvPassConfirmVisible by remember { mutableStateOf(false) }
                 Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
                     Column(Modifier.padding(16.dp)) {
                         Text("PASSWORD TV", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
@@ -220,11 +139,11 @@ fun ProfileScreen(
                         val hash = state.tvPasswordHash
                         val hasPassword = hash.isNotEmpty()
 
-                        OutlinedTextField(value = tvPass, onValueChange = { tvPass = it; tvPassMsg = "" }, label = { Text(if (hasPassword) "Password baru (min 4)" else "Password (min 4)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
+                        OutlinedTextField(value = tvPass, onValueChange = { tvPass = it; tvPassMsg = "" }, label = { Text(if (hasPassword) "Password baru (min 4)" else "Password (min 4)") }, singleLine = true, visualTransformation = if (tvPassVisible) VisualTransformation.None else PasswordVisualTransformation(), trailingIcon = { IconButton(onClick = { tvPassVisible = !tvPassVisible }) { Icon(if (tvPassVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, null, tint = TextSecondary) } }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
 
                         if (hasPassword) {
                             Spacer(Modifier.height(8.dp))
-                            OutlinedTextField(value = tvPassConfirm, onValueChange = { tvPassConfirm = it; tvPassMsg = "" }, label = { Text("Konfirmasi password baru") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
+                            OutlinedTextField(value = tvPassConfirm, onValueChange = { tvPassConfirm = it; tvPassMsg = "" }, label = { Text("Konfirmasi password baru") }, singleLine = true, visualTransformation = if (tvPassConfirmVisible) VisualTransformation.None else PasswordVisualTransformation(), trailingIcon = { IconButton(onClick = { tvPassConfirmVisible = !tvPassConfirmVisible }) { Icon(if (tvPassConfirmVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, null, tint = TextSecondary) } }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
                         }
 
                         if (tvPassMsg.isNotEmpty()) {
@@ -261,7 +180,8 @@ fun ProfileScreen(
                         Text("MANAJEMEN USER", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
                         Spacer(Modifier.height(8.dp))
                         OutlinedTextField(value = regUser, onValueChange = { regUser = it; regMsg = "" }, label = { Text("Username baru") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
-                        OutlinedTextField(value = regPass, onValueChange = { regPass = it }, label = { Text("Password (min 6, huruf besar & angka)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
+                        var regPassVisible by remember { mutableStateOf(false) }
+                        OutlinedTextField(value = regPass, onValueChange = { regPass = it }, label = { Text("Password (min 6, huruf besar & angka)") }, singleLine = true, visualTransformation = if (regPassVisible) VisualTransformation.None else PasswordVisualTransformation(), trailingIcon = { IconButton(onClick = { regPassVisible = !regPassVisible }) { Icon(if (regPassVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, null, tint = TextSecondary) } }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
                         Spacer(Modifier.height(4.dp))
                         Text("Role: kasir", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                         OutlinedTextField(value = regEmail, onValueChange = { regEmail = it }, label = { Text("Email (opsional)") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
@@ -285,6 +205,38 @@ fun ProfileScreen(
                 }
 
                 }
+
+            // Theme Picker
+            Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("TEMA TAMPILAN", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ThemeOption.entries.forEach { opt ->
+                            val selected = state.themeOption == opt
+                            val accent = when (opt) {
+                                ThemeOption.GAMING_DARK -> Color(0xFF39FF14)
+                                ThemeOption.CYBER_BLUE -> Color(0xFF00E5FF)
+                                ThemeOption.NEON_PURPLE -> Color(0xFFBB00FF)
+                                ThemeOption.CLASSIC_DARK -> Color(0xFF4CAF50)
+                                ThemeOption.LIGHT_MODE -> Color(0xFF388E3C)
+                            }
+                            FilterChip(
+                                selected = selected,
+                                onClick = { viewModel.setTheme(opt) },
+                                label = { Text(opt.displayName, style = MaterialTheme.typography.labelSmall) },
+                                leadingIcon = {
+                                    Box(modifier = Modifier.size(10.dp).background(accent, RoundedCornerShape(2.dp)))
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = accent.copy(alpha = 0.2f),
+                                    selectedLabelColor = accent,
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
 
             // Check Update
             Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
@@ -322,6 +274,50 @@ fun ProfileScreen(
                 }
             }
 
+            // Publish Update (Admin only)
+            if (state.currentRole == "admin") {
+                var pubVersion by remember { mutableStateOf(state.appVersionName) }
+                var pubUrl by remember { mutableStateOf("") }
+                var pubChangelog by remember { mutableStateOf("") }
+                var pubMsg by remember { mutableStateOf("") }
+                var pubMsgOk by remember { mutableStateOf(false) }
+                var pubBusy by remember { mutableStateOf(false) }
+                Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("PUBLISH UPDATE KE USER", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
+                        Spacer(Modifier.height(4.dp))
+                        Text("User akan dapat notifikasi update baru di Dashboard & Profile", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(value = pubVersion, onValueChange = { pubVersion = it }, label = { Text("Versi") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(value = pubUrl, onValueChange = { pubUrl = it }, label = { Text("URL Download APK") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(value = pubChangelog, onValueChange = { pubChangelog = it }, label = { Text("Changelog") }, minLines = 3, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = {
+                                if (pubVersion.isBlank() || pubUrl.isBlank()) { pubMsg = "Isi versi & URL"; pubMsgOk = false; return@Button }
+                                pubBusy = true; pubMsg = "Mempublikasikan..."
+                                viewModel.publishUpdate(pubVersion.trim(), pubUrl.trim(), pubChangelog.trim()) { ok, msg ->
+                                    pubBusy = false; pubMsg = msg; pubMsgOk = ok
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            enabled = !pubBusy,
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground),
+                        ) {
+                            if (pubBusy) { CircularProgressIndicator(modifier = Modifier.size(18.dp), color = DarkBackground, strokeWidth = 2.dp) }
+                            else { Text("PUBLISH") }
+                        }
+                        if (pubMsg.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(pubMsg, style = MaterialTheme.typography.bodySmall, color = if (pubMsgOk) NeonGreen else NeonRed)
+                        }
+                    }
+                }
+            }
+
             Spacer(Modifier.height(30.dp))
         }
     }
@@ -347,7 +343,7 @@ private fun ProfileHeader(username: String, role: String, appVersionName: String
             listOf(
                 "Versi" to appVersionName,
                 "Developer" to "RR Developer",
-                "Kontak" to "081270647744",
+                "Kontak" to "082180208414",
                 "User" to "$username [$role]",
             ).forEach { (label, value) ->
                 Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {

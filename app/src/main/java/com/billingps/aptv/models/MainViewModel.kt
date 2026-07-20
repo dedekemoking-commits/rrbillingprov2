@@ -8,9 +8,12 @@ import android.util.Patterns
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.billingps.aptv.utils.ConnectivityObserver
 import com.billingps.aptv.utils.ECDSAUtils
+import com.billingps.aptv.utils.FcmSender
 import com.billingps.aptv.utils.StorageUtil
 import com.billingps.aptv.cloud.CloudRepository
+import com.billingps.aptv.ui.theme.ThemeOption
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthException
@@ -20,6 +23,7 @@ import com.google.firebase.auth.FirebaseAuthWeakPasswordException
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -70,6 +74,8 @@ data class AppUiState(
     val invoices: List<Invoice> = emptyList(),
     val pendingInvoiceCount: Int = 0,
     val tvPasswordHash: String = "",
+    val themeOption: ThemeOption = ThemeOption.GAMING_DARK,
+    val promo: PromoSettings = PromoSettings(),
 )
 
 fun defaultPaketMain(): Map<String, Map<String, Int>> {
@@ -85,7 +91,7 @@ fun defaultPaketDurasi(): Map<String, Int> = mapOf(
     "2 Jam" to 120, "3 Jam" to 180, "Main Bebas" to 0,
 )
 
-    const val APP_VERSION = "1.2.2"
+    const val APP_VERSION = "1.2.3"
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -93,29 +99,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val firebaseAuth = FirebaseAuth.getInstance()
     private var userDocListener: ListenerRegistration? = null
     private var invoicesListener: ListenerRegistration? = null
+    private val connectivityObserver = ConnectivityObserver(application)
 
     private val _state = MutableStateFlow(AppUiState())
     val state: StateFlow<AppUiState> = _state.asStateFlow()
 
     init {
         StorageUtil.init(application)
+        ECDSAUtils.init(application)
+        FcmSender.init(application)
         loadAll()
-        ensureSuperAdmin()
-    }
-
-    private fun ensureSuperAdmin() {
-        val users = _state.value.users.toMutableMap()
-        if (!users.containsKey("rrgaming")) {
-            val hash = sha256("q7fmvVOw6hUtWPAF")
-            users["rrgaming"] = UserData(
-                username = "rrgaming",
-                passwordHash = hash,
-                role = "admin",
-                email = "",
-                dibuat = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).format(java.util.Date()),
-            )
-            _state.value = _state.value.copy(users = users)
-            StorageUtil.saveUsers(users)
+        // Offline-first: auto-sync when connectivity restored
+        connectivityObserver.start()
+        viewModelScope.launch {
+            connectivityObserver.status.collect { status ->
+                if (status == ConnectivityObserver.Status.AVAILABLE && _state.value.isLoggedIn) {
+                    Log.i("MainVM", "Connectivity restored, auto-syncing...")
+                    syncToCloud()
+                }
+            }
         }
     }
 
@@ -126,10 +128,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val lic = StorageUtil.loadLicense()
         val trial = StorageUtil.loadTrialBatas()
         Log.i("MainVM", "loadAll: license status='${lic.status}' expires='${lic.expiresAt}' maxTv=${lic.maxTv} trial=$trial")
+        val themeName = StorageUtil.loadThemeOption()
+        val savedTheme = try { ThemeOption.valueOf(themeName) } catch (_: Exception) { ThemeOption.GAMING_DARK }
         _state.value = _state.value.copy(
             isLoggedIn = cu.isNotEmpty(),
             currentUser = cu,
             currentRole = cr,
+            themeOption = savedTheme,
             users = users,
             tvList = StorageUtil.loadTvList(),
             transaksiList = StorageUtil.loadTransaksi(),
@@ -144,6 +149,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             maxTv = lic.maxTv,
             invoices = StorageUtil.loadInvoices(),
             tvPasswordHash = StorageUtil.loadTvPassword(),
+            promo = StorageUtil.loadPromo(),
         )
         _state.value = _state.value.copy(pendingInvoiceCount = _state.value.invoices.count { it.status == "WAITING_CONFIRMATION" })
         // Check trial expiry
@@ -156,6 +162,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Start real-time license listener if logged in
         if (cu.isNotEmpty()) {
             startLicenseListener(cu)
+            startPromoListener()
         }
     }
 
@@ -276,7 +283,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Kirim Firebase password reset email agar password di Firebase juga berubah
         if (user.email.isNotBlank()) {
             viewModelScope.launch {
-                try { sendFirebasePasswordReset(user.email) } catch (_: Exception) { }
+                try { sendFirebasePasswordReset(user.email) } catch (e: Exception) { Log.e("MainVM", "sendFirebasePasswordReset after resetPasswordWithCode: ${e.message}") }
             }
         }
         return AuthResult(true, "Password berhasil direset! Silakan login.")
@@ -287,7 +294,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             firebaseAuth.sendPasswordResetEmail(email)
                 .addOnSuccessListener { Log.i("MainVM", "Firebase password reset email sent to $email") }
                 .addOnFailureListener { Log.i("MainVM", "Firebase password reset email failed: ${it.message}") }
-        } catch (_: Exception) { }
+        } catch (e: Exception) { Log.e("MainVM", "sendFirebasePasswordReset exception: ${e.message}") }
     }
 
     // ── Login ──────────────────────────────────────────────
@@ -356,6 +363,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (localUser == null) return AuthResult(false, "Username/Password salah")
         val hash = sha256(password)
         if (localUser.passwordHash != hash) return AuthResult(false, "Username/Password salah")
+        addActivityLog("Login")
         StorageUtil.saveCurrentSession(localUser.username, localUser.role)
         val smtp = _state.value.smtp
         _state.value = _state.value.copy(
@@ -378,9 +386,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         StorageUtil.saveTransaksi(merged)
                     }
                 }
-            } catch (_: Exception) { }
+            } catch (e: Exception) { Log.e("MainVM", "fetchTransaksiForUser after login: ${e.message}") }
             restoreLicenseAndTrial(localUser.username)
-            try { syncToCloud() } catch (_: Exception) { }
+            try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after login: ${e.message}") }
         }
         return AuthResult(true, "")
     }
@@ -414,6 +422,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val users = _state.value.users
                 val existing = users.values.firstOrNull { it.email.equals(verifiedEmail, ignoreCase = true) }
                 if (existing != null) {
+                    addActivityLog("Login via Google")
                     StorageUtil.saveCurrentSession(existing.username, existing.role)
                     _state.value = _state.value.copy(
                         isLoggedIn = true, currentUser = existing.username, currentRole = existing.role,
@@ -454,6 +463,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             val trialEnd = System.currentTimeMillis() + 3 * 24 * 60 * 60 * 1000L
                             _state.value = _state.value.copy(trialBatas = trialEnd, maxTv = 2)
                             StorageUtil.saveTrial(trialEnd)
+                            launch { try { cloudRepo.saveTrialToCloud(username, trialEnd) } catch (e: Exception) { Log.e("MainVM", "saveTrialToCloud on Google sign-in new user: ${e.message}") } }
                         }
                     }
                 }
@@ -461,8 +471,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     firebaseAuth.currentUser?.let { u ->
                         launch { withContext(Dispatchers.IO) { cloudRepo.fetchTransaksiForUser(u.email ?: verifiedEmail) } }
                     }
-                    launch { try { syncToCloud() } catch (_: Exception) { } }
-                } catch (_: Exception) { }
+                    launch { try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after Google sign-in: ${e.message}") } }
+                } catch (e: Exception) { Log.e("MainVM", "post-Google-sign-in sync block: ${e.message}") }
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     isBusy = false,
@@ -489,9 +499,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return if (ok) AuthResult(true, "Link reset password telah dikirim ke email Anda") else AuthResult(false, "Gagal mengirim link reset password. Pastikan email sudah terdaftar")
     }
 
+    fun setTheme(option: ThemeOption) {
+        StorageUtil.saveThemeOption(option.name)
+        _state.value = _state.value.copy(themeOption = option)
+    }
+
     fun logout() {
+        addActivityLog("Logout")
         stopLicenseListener()
-        try { firebaseAuth.signOut() } catch (_: Exception) { }
+        stopPromoListener()
+        try { firebaseAuth.signOut() } catch (e: Exception) { Log.e("MainVM", "firebaseAuth.signOut on logout: ${e.message}") }
         StorageUtil.clearSession()
         _state.value = _state.value.copy(isLoggedIn = false, currentUser = "", currentRole = "")
     }
@@ -503,14 +520,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _state.value = _state.value.copy(licenseStatus = cloudLic, trialBatas = 0L, maxTv = cloudLic.maxTv)
                 StorageUtil.saveLicense(cloudLic)
             }
-        } catch (_: Exception) { }
+        } catch (e: Exception) { Log.e("MainVM", "fetchLicenseForUser in restoreLicenseAndTrial: ${e.message}") }
         val s = _state.value
         if (s.trialBatas == 0L && s.licenseStatus.status != "active") {
-            val trialEnd = System.currentTimeMillis() + 3 * 24 * 60 * 60 * 1000L
-            _state.value = _state.value.copy(trialBatas = trialEnd, maxTv = 2)
-            StorageUtil.saveTrial(trialEnd)
+            val cloudTrial = withContext(Dispatchers.IO) { cloudRepo.loadTrialFromCloud(username) }
+            if (cloudTrial <= 0L) {
+                // No existing trial in cloud — this is a truly new user, give trial
+                val trialEnd = System.currentTimeMillis() + 3 * 24 * 60 * 60 * 1000L
+                _state.value = _state.value.copy(trialBatas = trialEnd, maxTv = 2)
+                StorageUtil.saveTrial(trialEnd)
+                withContext(Dispatchers.IO) { cloudRepo.saveTrialToCloud(username, trialEnd) }
+            } else if (cloudTrial > System.currentTimeMillis()) {
+                // Cloud trial still active — restore it
+                _state.value = _state.value.copy(trialBatas = cloudTrial, maxTv = 2)
+                StorageUtil.saveTrial(cloudTrial)
+            }
+            // else: cloud trial expired — don't give new trial, leave trialBatas = 0
         }
         startLicenseListener(username)
+        startPromoListener()
+        initFcmToken(username)
     }
 
     private fun startLicenseListener(username: String) {
@@ -562,6 +591,77 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private var promoListener: ListenerRegistration? = null
+
+    private fun startPromoListener() {
+        stopPromoListener()
+        viewModelScope.launch {
+            cloudRepo.ensureSignedIn()
+            promoListener = cloudRepo.listenGlobalSettings { promo ->
+                _state.value = _state.value.copy(promo = promo)
+                StorageUtil.savePromo(promo)
+            }
+        }
+    }
+
+    private fun stopPromoListener() {
+        promoListener?.remove()
+        promoListener = null
+    }
+
+    private fun initFcmToken(username: String) {
+        viewModelScope.launch {
+            try {
+                cloudRepo.ensureSignedIn()
+                var token = StorageUtil.loadFcmToken()
+                if (token.isEmpty()) {
+                    token = suspendCancellableCoroutine { cont ->
+                        FirebaseMessaging.getInstance().token
+                            .addOnSuccessListener { t -> Log.i("FCM", "Fetched token: ${t.take(20)}..."); cont.resume(t) }
+                            .addOnFailureListener { e -> Log.e("FCM", "Failed to get token: ${e.message}"); cont.resume("") }
+                    }
+                    if (token.isNotEmpty()) StorageUtil.saveFcmToken(token)
+                }
+                if (token.isNotEmpty()) {
+                    cloudRepo.saveFcmToken(username, token)
+                    Log.i("FCM", "Token saved to Firestore for $username")
+                } else {
+                    Log.w("FCM", "No token available for $username")
+                }
+            } catch (e: Exception) {
+                Log.e("FCM", "initFcmToken exception: ${e.message}")
+            }
+        }
+    }
+
+    fun hargaSetelahDiskon(namaPaket: String, hargaAsli: Int): Int {
+        val s = _state.value
+        if (!s.promo.promoAktif) return hargaAsli
+        val key = when (namaPaket) {
+            "1 Bulan", "BULANAN" -> "1 Bulan"
+            "3 Bulan", "3BULAN" -> "3 Bulan"
+            "1 Tahun", "TAHUNAN" -> "1 Tahun"
+            "LIFETIME" -> "LIFETIME"
+            else -> null
+        }
+        val diskon = key?.let { s.promo.diskonPerPaket[it] } ?: 0
+        if (diskon <= 0) return hargaAsli
+        return (hargaAsli * (100 - diskon.coerceIn(0, 100))) / 100
+    }
+
+    fun getAddTvOverride(namaPaket: String): Int? {
+        val s = _state.value
+        if (!s.promo.promoAktif) return null
+        val key = when (namaPaket) {
+            "1 Bulan", "BULANAN" -> "1 Bulan"
+            "3 Bulan", "3BULAN" -> "3 Bulan"
+            "1 Tahun", "TAHUNAN" -> "1 Tahun"
+            "LIFETIME" -> "LIFETIME"
+            else -> null
+        }
+        return key?.let { s.promo.addTvOverride[it] }
+    }
+
     private fun stopLicenseListener() {
         userDocListener?.remove()
         userDocListener = null
@@ -582,11 +682,141 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             currentUser = user.username,
             currentRole = user.role,
         )
+        addActivityLog("Login kasir")
+        startPromoListener()
+        initFcmToken(user.username)
         return true
     }
 
     fun getKasirList(): List<Pair<String, String>> =
         _state.value.users.filter { it.value.role == "kasir" }.map { it.key to it.value.role }.sortedBy { it.first }
+
+    // ── Auto Push Notifications ────────────────────────────
+    private fun sendPushNotification(title: String, body: String) {
+        val username = _state.value.currentUser
+        if (username.isBlank()) return
+        viewModelScope.launch {
+            try {
+                val token = suspendCancellableCoroutine<String?> { cont ->
+                    com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                        .collection("billingps_users").document(username).get()
+                        .addOnSuccessListener { cont.resume(it.getString("fcmToken")) }
+                        .addOnFailureListener { cont.resume(null) }
+                }
+                if (!token.isNullOrBlank()) {
+                    FcmSender.sendToUser(token, title, body)
+                }
+            } catch (e: Exception) {
+                Log.e("MainVM", "sendPushNotification failed: ${e.message}")
+            }
+        }
+    }
+
+    // ── Activity Log ───────────────────────────────────────
+    private fun addActivityLog(event: String) {
+        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+        val time = sdf.format(java.util.Date())
+        val user = _state.value.currentUser
+        val entry = "[$time] $user: $event"
+        val log = StorageUtil.loadActivityLog().toMutableList()
+        log.add(entry)
+        if (log.size > 200) log.removeAt(0) // Keep last 200 entries
+        StorageUtil.saveActivityLog(log)
+    }
+
+    fun getActivityLog(): List<String> = StorageUtil.loadActivityLog().reversed()
+
+    // ── Backup & Restore ──────────────────────────────────
+    fun exportBackupJson(): String {
+        val s = _state.value
+        val obj = org.json.JSONObject()
+        obj.put("exportVersion", APP_VERSION)
+        obj.put("exportedAt", System.currentTimeMillis())
+        obj.put("users", org.json.JSONObject(StorageUtil.loadUsers().mapValues { (_, u) ->
+            org.json.JSONObject().apply {
+                put("username", u.username); put("role", u.role); put("email", u.email); put("dibuat", u.dibuat)
+            }
+        }))
+        obj.put("tvList", org.json.JSONArray(StorageUtil.loadTvList().map { tv ->
+            org.json.JSONObject().apply {
+                put("id", tv.id); put("nama", tv.nama); put("ip", tv.ip); put("port", tv.port)
+                put("jenisPs", tv.jenisPs); put("paired", tv.paired)
+            }
+        }))
+        obj.put("transaksiList", org.json.JSONArray(StorageUtil.loadTransaksi().map { t ->
+            org.json.JSONObject().apply {
+                put("id", t.id); put("waktu", t.waktu); put("kasir", t.kasir)
+                put("kota", t.kota); put("paket", t.paket); put("total", t.total)
+            }
+        }))
+        obj.put("paketMain", org.json.JSONObject(s.paketMain.mapValues { (_, v) -> org.json.JSONObject(v) }))
+        obj.put("paketDurasi", org.json.JSONObject(s.paketDurasi))
+        obj.put("menuMakanan", org.json.JSONObject(s.menuMakanan))
+        obj.put("menuMinuman", org.json.JSONObject(s.menuMinuman))
+        return obj.toString(2)
+    }
+
+    fun importBackupJson(jsonStr: String): String {
+        return try {
+            val obj = org.json.JSONObject(jsonStr)
+            if (!obj.has("exportVersion")) return "File backup tidak valid"
+
+            // Restore users
+            if (obj.has("users")) {
+                val usersRaw = obj.getJSONObject("users")
+                val users = mutableMapOf<String, UserData>()
+                usersRaw.keys().forEach { key ->
+                    val u = usersRaw.getJSONObject(key)
+                    users[key] = UserData(
+                        username = u.optString("username"),
+                        passwordHash = "",
+                        role = u.optString("role", "kasir"),
+                        email = u.optString("email"),
+                        dibuat = u.optString("dibuat"),
+                    )
+                }
+                StorageUtil.saveUsers(users)
+                _state.value = _state.value.copy(users = users)
+            }
+
+            // Restore TV list
+            if (obj.has("tvList")) {
+                val arr = obj.getJSONArray("tvList")
+                val list = mutableListOf<TvData>()
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    list.add(TvData(
+                        id = o.optString("id"), nama = o.optString("nama"),
+                        ip = o.optString("ip"), port = o.optInt("port", 5555),
+                        jenisPs = o.optString("jenisPs", "PS3"), paired = o.optBoolean("paired"),
+                    ))
+                }
+                StorageUtil.saveTvList(list)
+                _state.value = _state.value.copy(tvList = list)
+            }
+
+            // Restore transactions
+            if (obj.has("transaksiList")) {
+                val arr = obj.getJSONArray("transaksiList")
+                val list = mutableListOf<Transaksi>()
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    list.add(Transaksi(
+                        id = o.optString("id"), waktu = o.optString("waktu"),
+                        kasir = o.optString("kasir"), kota = o.optString("kota"),
+                        paket = o.optString("paket"), total = o.optInt("total"),
+                    ))
+                }
+                StorageUtil.saveTransaksi(list)
+                _state.value = _state.value.copy(transaksiList = list)
+            }
+
+            addActivityLog("Restore backup")
+            "✅ Backup berhasil direstore! ${obj.optString("exportedAt", "")}"
+        } catch (e: Exception) {
+            "❌ Gagal restore: ${e.message}"
+        }
+    }
 
     fun switchUser(username: String) {
         val users = _state.value.users
@@ -610,7 +840,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         StorageUtil.saveTransaksi(merged)
                     }
                 }
-            } catch (_: Exception) { }
+            } catch (e: Exception) { Log.e("MainVM", "fetchTransaksiForUser in switchUser: ${e.message}") }
         }
     }
 
@@ -676,10 +906,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val trialEnd = System.currentTimeMillis() + 3 * 24 * 60 * 60 * 1000L
             _state.value = _state.value.copy(trialBatas = trialEnd, maxTv = 2)
             StorageUtil.saveTrial(trialEnd)
+            viewModelScope.launch { try { cloudRepo.saveTrialToCloud(key, trialEnd) } catch (e: Exception) { Log.e("MainVM", "saveTrialToCloud after daftarUser: ${e.message}") } }
         }
 
         // Sync user list ke Firestore agar License Generator melihat user baru
-        viewModelScope.launch { try { syncToCloud() } catch (_: Exception) { } }
+        viewModelScope.launch { try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after daftarUser: ${e.message}") } }
 
         if (normalizedEmail.isNotBlank()) {
             _state.value = _state.value.copy(
@@ -728,28 +959,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return newCode
     }
 
-    // ── Auto Update ────────────────────────────────────────
-    private val githubApiUrl = "https://api.github.com/repos/dedekemoking-commits/rrbillingprov2/releases/latest"
+    // ── Auto Update (via Firestore Cloud) ─────────────────
+    fun refreshTv() {
+        val list = StorageUtil.loadTvList()
+        _state.value = _state.value.copy(tvList = list)
+    }
 
     fun checkForUpdate() {
         viewModelScope.launch {
             _state.value = _state.value.copy(updateChecked = false, updateInfo = null)
             try {
-                val json = withContext(Dispatchers.IO) {
-                    URL(githubApiUrl).readText()
-                }
-                val obj = JSONObject(json)
-                val tagName = obj.optString("tag_name", "").removePrefix("v")
-                val apkUrl = obj.optJSONArray("assets")
-                    ?.optJSONObject(0)
-                    ?.optString("browser_download_url", "") ?: ""
-                val changelog = obj.optString("body", "")
-
-                if (tagName > APP_VERSION && apkUrl.isNotBlank()) {
-                    _state.value = _state.value.copy(
-                        updateInfo = UpdateInfo(tagName, apkUrl, changelog),
-                        updateChecked = true,
-                    )
+                val remote = withContext(Dispatchers.IO) { cloudRepo.fetchLatestVersion() }
+                if (remote != null) {
+                    val (versionName, apkUrl, changelog) = remote
+                    if (versionName > APP_VERSION && apkUrl.isNotBlank()) {
+                        _state.value = _state.value.copy(
+                            updateInfo = UpdateInfo(versionName, apkUrl, changelog),
+                            updateChecked = true,
+                        )
+                    } else {
+                        _state.value = _state.value.copy(updateChecked = true)
+                    }
                 } else {
                     _state.value = _state.value.copy(updateChecked = true)
                 }
@@ -762,6 +992,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissUpdate() {
         _state.value = _state.value.copy(updateInfo = null)
+    }
+
+    fun publishUpdate(versionName: String, apkUrl: String, changelog: String, onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val ok = withContext(Dispatchers.IO) { cloudRepo.publishUpdate(versionName, apkUrl, changelog) }
+                if (ok) {
+                    addActivityLog("Publish update v$versionName")
+                    onResult(true, "✅ Update v$versionName dipublikasikan!")
+                } else {
+                    onResult(false, "❌ Gagal publish (auth/network)")
+                }
+            } catch (e: Exception) {
+                onResult(false, "❌ ${e.message}")
+            }
+        }
     }
 
     fun downloadAndInstall(ctx: android.content.Context) {
@@ -835,6 +1081,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             "jenisPs" -> t.copy(jenisPs = v as? String ?: return@forEach)
                             "paketAktif" -> t.copy(paketAktif = v as? String ?: return@forEach)
                             "sisaDetik" -> t.copy(sisaDetik = (v as? Number)?.toLong() ?: return@forEach)
+                            "timerStart" -> t.copy(timerStart = (v as? Number)?.toLong() ?: return@forEach)
+                            "timerDurasi" -> t.copy(timerDurasi = (v as? Number)?.toLong() ?: return@forEach)
                             "timerActive" -> t.copy(timerActive = v as? Boolean ?: return@forEach)
                             "bebas" -> t.copy(bebas = v as? Boolean ?: return@forEach)
                             "paketHarga" -> t.copy(paketHarga = (v as? Number)?.toInt() ?: return@forEach)
@@ -873,6 +1121,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val list = (_state.value.transaksiList + tx)
         _state.value = _state.value.copy(transaksiList = list)
         StorageUtil.saveTransaksi(list)
+        addActivityLog("Transaksi ${tx.paket} Rp${tx.total} di ${tx.kota}")
         // Auto-sync to cloud after new transaction
         try {
             Log.i("MainVM", "auto-sync triggered after tambahTransaksi id=${tx.id}")
@@ -883,8 +1132,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun bersihkanTransaksi() {
         _state.value = _state.value.copy(transaksiList = emptyList())
         StorageUtil.saveTransaksi(emptyList())
+        addActivityLog("Bersihkan semua transaksi")
         // Auto-sync to cloud after clearing transactions
-        try { syncToCloud() } catch (_: Exception) { /* ignore */ }
+        try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after bersihkanTransaksi: ${e.message}") }
     }
 
     // ── Harga ──────────────────────────────────────────────
@@ -958,7 +1208,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     if (existingDate != null && existingDate.after(java.util.Date())) {
                         cal.time = existingDate
                     }
-                } catch (_: Exception) { }
+                } catch (e: Exception) { Log.e("MainVM", "parse existing expiry in aktivasiLisensi: ${e.message}") }
             }
             cal.add(java.util.Calendar.DAY_OF_YEAR, durasiHari)
             val expires = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
@@ -988,10 +1238,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     cloudRepo.ensureSignedIn()
                     cloudRepo.writeLicenseStatusToUserDoc(username, userLs)
-                } catch (_: Exception) { }
+                } catch (e: Exception) { Log.e("MainVM", "writeLicenseStatusToUserDoc in aktivasiLisensi: ${e.message}") }
             }
 
-            try { syncToCloud() } catch (_: Exception) { }
+            try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after aktivasiLisensi: ${e.message}") }
+            addActivityLog("Lisensi $paket diaktivasi (s.d. $expires)")
+            sendPushNotification("✅ Lisensi Aktif!", "Paket $paket aktif hingga $expires")
             onResult(true, ls.pesan)
         }
     }
@@ -1012,7 +1264,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         })
         val expiry = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
         val payload = """{"p":"$paket","u":"$username","e":"$expiry","n":"$nonce","m":"$email"}"""
-        val signature = ECDSAUtils.sign(payload)
+        val signature = ECDSAUtils.sign(payload) ?: run {
+            onDone("GAGAL: Private key tidak dikonfigurasi. Gunakan License Generator app.")
+            return
+        }
         val record = KodeGenerasi(
             waktu = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).format(java.util.Date()),
             username = _state.value.currentUser,
@@ -1042,7 +1297,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     com.google.firebase.firestore.FirebaseFirestore.getInstance()
                         .collection("licenses").add(doc)
                 }
-            } catch (_: Exception) { }
+            } catch (e: Exception) { Log.e("MainVM", "save license doc to Firestore in generateLicenseKode: ${e.message}") }
             onDone(kode)
         }
     }
@@ -1072,7 +1327,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(invoices = newList)
         _state.value = _state.value.copy(pendingInvoiceCount = newList.count { it.status == "WAITING_CONFIRMATION" })
         StorageUtil.saveInvoices(newList)
-        viewModelScope.launch { try { cloudRepo.saveInvoiceToCloud(inv) } catch (_: Exception) { } }
+        viewModelScope.launch { try { cloudRepo.saveInvoiceToCloud(inv) } catch (e: Exception) { Log.e("MainVM", "saveInvoiceToCloud in buatInvoice: ${e.message}") } }
         return inv
     }
 
@@ -1085,7 +1340,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         StorageUtil.saveInvoices(newList)
         val updated = newList.firstOrNull { it.id == invoiceId }
         if (updated != null) {
-            viewModelScope.launch { try { cloudRepo.saveInvoiceToCloud(updated) } catch (_: Exception) { } }
+            viewModelScope.launch { try { cloudRepo.saveInvoiceToCloud(updated) } catch (e: Exception) { Log.e("MainVM", "saveInvoiceToCloud in uploadBukti: ${e.message}") } }
         }
     }
 
@@ -1095,9 +1350,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.value = _state.value.copy(isBusy = true, statusMessage = "Memproses pembayaran...")
             generateLicenseKode(inv.paket, inv.username, inv.email) { kode ->
                 viewModelScope.launch {
-                    val maxTv = when (inv.paket) {
-                        "1 Bulan" -> 5; "BULANAN" -> 5; "3 Bulan" -> 8; "3BULAN" -> 8
-                        "1 Tahun" -> 15; "TAHUNAN" -> 15; "LIFETIME" -> 0; else -> 2
+                    val tvOverride = getAddTvOverride(inv.paket)
+                    val maxTv = tvOverride ?: when (inv.paket) {
+                        "1 Bulan", "BULANAN" -> 5; "3 Bulan", "3BULAN" -> 8
+                        "1 Tahun", "TAHUNAN" -> 15; "LIFETIME" -> 0; else -> 2
                     }
                     val cal = java.util.Calendar.getInstance()
                     val existingExp = _state.value.licenseStatus
@@ -1105,10 +1361,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         try {
                             val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
                             val existingDate = sdf.parse(existingExp.expiresAt)
-                            if (existingDate != null && existingDate.after(java.util.Date())) {
-                                cal.time = existingDate
-                            }
-                        } catch (_: Exception) { }
+                        if (existingDate != null && existingDate.after(java.util.Date())) {
+                            cal.time = existingDate
+                        }
+                    } catch (e: Exception) { Log.e("MainVM", "parse existing expiry in konfirmasiPembayaran: ${e.message}") }
                     }
                     cal.add(java.util.Calendar.DAY_OF_YEAR, when (inv.paket) {
                         "1 Bulan", "BULANAN" -> 30; "3 Bulan", "3BULAN" -> 90
@@ -1125,7 +1381,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     try {
                         val record = cloudRepo.findLicenseByCode(kode)
                         if (record != null) { cloudRepo.activateLicense(record.id, expiry) }
-                    } catch (_: Exception) { }
+                    } catch (e: Exception) { Log.e("MainVM", "activateLicense in konfirmasiPembayaran: ${e.message}") }
                     val confirmedInv = _state.value.invoices.firstOrNull { it.id == invoiceId }?.copy(
                         status = "CONFIRMED", dibayar = System.currentTimeMillis(),
                         confirmedBy = _state.value.currentUser, kodeLisensi = kode,
@@ -1135,8 +1391,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     _state.value = _state.value.copy(invoices = newInvoices, pendingInvoiceCount = newInvoices.count { it.status == "WAITING_CONFIRMATION" })
                     StorageUtil.saveInvoices(newInvoices)
-                    if (confirmedInv != null) { try { cloudRepo.saveInvoiceToCloud(confirmedInv) } catch (_: Exception) { } }
-                    try { syncToCloud() } catch (_: Exception) { }
+                    if (confirmedInv != null) { try { cloudRepo.saveInvoiceToCloud(confirmedInv) } catch (e: Exception) { Log.e("MainVM", "saveInvoiceToCloud in konfirmasiPembayaran: ${e.message}") } }
+                    addActivityLog("Pembayaran ${inv.paket} dikonfirmasi (kode: $kode)")
+                    sendPushNotification("💰 Pembayaran Dikonfirmasi", "${inv.paket} - Kode: $kode")
+                    try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after konfirmasiPembayaran: ${e.message}") }
                     _state.value = _state.value.copy(isBusy = false, statusMessage = "Pembayaran dikonfirmasi!")
                 }
             }
@@ -1144,6 +1402,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun getPendingInvoices(): List<Invoice> = _state.value.invoices.filter { it.status == "WAITING_CONFIRMATION" || it.status == "PENDING" }.sortedByDescending { it.dibuat }
+
+    // ── License Management ─────────────────────────────────
+    fun getActiveLicenses(callback: (List<LicenseRecord>) -> Unit) {
+        val username = _state.value.currentUser
+        viewModelScope.launch {
+            try {
+                val licenses = cloudRepo.getActiveLicensesForUser(username)
+                callback(licenses)
+            } catch (e: Exception) {
+                Log.e("MainVM", "getActiveLicenses failed: ${e.message}")
+                callback(emptyList())
+            }
+        }
+    }
+
+    fun revokeLicense(docId: String, onResult: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val ok = cloudRepo.revokeLicense(docId)
+            if (ok) {
+                addActivityLog("Lisensi direvoke (docId: $docId)")
+                sendPushNotification("⚠️ Lisensi Dicabut", "Lisensi $docId telah dicabut")
+            }
+            onResult(ok)
+        }
+    }
 
     fun getMyInvoices(): List<Invoice> = _state.value.invoices.filter { it.username == _state.value.currentUser }.sortedByDescending { it.dibuat }
 
@@ -1258,7 +1541,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        connectivityObserver.stop()
         stopLicenseListener()
+        stopPromoListener()
         super.onCleared()
     }
 }

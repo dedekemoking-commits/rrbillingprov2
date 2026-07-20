@@ -1,6 +1,7 @@
 package com.billingps.licensegen
 
 import android.app.Application
+import android.util.Base64
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -11,13 +12,23 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
+import java.io.StringReader
+import java.net.HttpURLConnection
+import java.net.URL
+import java.security.KeyFactory
 import java.security.MessageDigest
+import java.security.Signature
+import java.security.spec.PKCS8EncodedKeySpec
 
 private const val SUPER_ADMIN_USER = "rrbilling"
 private const val SUPER_ADMIN_PASS = "@rrcctv5555"
+private var cachedAccessToken: String? = null
+private var tokenExpiresAt: Long = 0L
 
 class LicenseGenViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -25,6 +36,7 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
     private val firestore = FirebaseFirestore.getInstance()
     private var usersListener: ListenerRegistration? = null
     private var invoicesListener: ListenerRegistration? = null
+    private var promoListener: ListenerRegistration? = null
 
     var isLoggedIn by mutableStateOf(false); private set
     var currentUser by mutableStateOf(""); private set
@@ -32,8 +44,12 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
     var userList by mutableStateOf(listOf<FirestoreUser>()); private set
     var invoiceList by mutableStateOf(listOf<Invoice>()); private set
     var firestoreReady by mutableStateOf(false); private set
+    var promo by mutableStateOf(PromoSettings()); private set
 
-    init { ensureAnonymous() }
+    init {
+        ECDSAUtils.init(application)
+        ensureAnonymous()
+    }
 
     private fun ensureAnonymous() {
         viewModelScope.launch {
@@ -74,6 +90,54 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
         onResult(true, "")
     }
 
+    fun setPromo(promoAktif: Boolean, diskonPerPaket: Map<String, Int>, addTvOverride: Map<String, Int>, onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val data = HashMap<String, Any>()
+                data["promoAktif"] = promoAktif
+                data["diskonPerPaket"] = diskonPerPaket.mapValues { it.value.coerceIn(0, 100) }
+                data["addTvOverride"] = addTvOverride
+                data["updatedBy"] = currentUser
+                data["updatedAt"] = System.currentTimeMillis()
+                firestore.document("settings/global").set(data, SetOptions.merge()).await()
+                promo = PromoSettings(
+                    promoAktif = promoAktif,
+                    diskonPerPaket = diskonPerPaket.mapValues { it.value.coerceIn(0, 100) },
+                    addTvOverride = addTvOverride,
+                    updatedBy = currentUser,
+                    updatedAt = System.currentTimeMillis(),
+                )
+                onResult(true, "Promo tersimpan!")
+            } catch (e: Exception) {
+                onResult(false, "Gagal: ${e.message}")
+            }
+        }
+    }
+
+    // ── Private Key Management ───────────────────────────────
+    fun hasPrivateKey(): Boolean = ECDSAUtils.hasPrivateKey()
+
+    fun getPrivateKey(): String = ECDSAUtils.getPrivateKey(getApplication()) ?: ""
+
+    fun setPrivateKey(b64: String) {
+        ECDSAUtils.setPrivateKey(getApplication(), b64)
+    }
+
+    fun generateNewKeyPair(onDone: (String) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val kpg = java.security.KeyPairGenerator.getInstance("EC")
+                kpg.initialize(256)
+                val kp = kpg.generateKeyPair()
+                val b64 = android.util.Base64.encodeToString(kp.private.encoded, android.util.Base64.DEFAULT)
+                setPrivateKey(b64)
+                withContext(Dispatchers.Main) { onDone(b64) }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { onDone("ERROR: ${e.message}") }
+            }
+        }
+    }
+
     fun signOut() {
         isLoggedIn = false
         currentUser = ""
@@ -81,8 +145,11 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
         usersListener = null
         invoicesListener?.remove()
         invoicesListener = null
+        promoListener?.remove()
+        promoListener = null
         userList = emptyList()
         invoiceList = emptyList()
+        promo = PromoSettings()
     }
 
     private fun startListening() {
@@ -130,6 +197,31 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                 Log.i("LicenseGen", "snapshot received: ${snap.documents.size} docs, ${allUsers.size} users parsed, userList.size=${userList.size}")
             }
 
+        // Listen promo settings
+        promoListener?.remove()
+        promoListener = firestore.document("settings/global")
+            .addSnapshotListener { snap, error ->
+                if (error != null || snap == null || !snap.exists()) return@addSnapshotListener
+                val promoAktif = snap.getBoolean("promoAktif") ?: false
+                val rawDiskon = snap.get("diskonPerPaket") as? Map<*, *>
+                val diskonPerPaket = mutableMapOf<String, Int>()
+                rawDiskon?.forEach { (k, v) ->
+                    if (k is String && v is Number) diskonPerPaket[k] = v.toInt()
+                }
+                val rawOverride = snap.get("addTvOverride") as? Map<*, *>
+                val addTvOverride = mutableMapOf<String, Int>()
+                rawOverride?.forEach { (k, v) ->
+                    if (k is String && v is Number) addTvOverride[k] = v.toInt()
+                }
+                promo = PromoSettings(
+                    promoAktif = promoAktif,
+                    diskonPerPaket = diskonPerPaket,
+                    addTvOverride = addTvOverride,
+                    updatedBy = snap.getString("updatedBy") ?: "",
+                    updatedAt = snap.getLong("updatedAt") ?: 0L,
+                )
+            }
+
         invoicesListener?.remove()
         invoicesListener = firestore.collection("invoices")
             .addSnapshotListener { snap, error ->
@@ -156,6 +248,10 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun konfirmasiInvoice(invoice: Invoice, onDone: (Boolean, String) -> Unit) {
+        if (!ECDSAUtils.hasPrivateKey()) {
+            onDone(false, "Private key belum dikonfigurasi! Buka tab Settings.")
+            return
+        }
         isBusy = true
         val kode = generateKode(invoice.paket)
         val nonce = java.util.UUID.randomUUID().toString().take(8)
@@ -214,7 +310,12 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                 firestore.collection("invoices").document(invoice.id).update(update).await()
 
                 // Also write licenseStatus to user doc so main app can detect it
-                val maxTv = when (invoice.paket) {
+                val promoKey = when (invoice.paket) {
+                    "1 Bulan", "BULANAN" -> "1 Bulan"; "3 Bulan", "3BULAN" -> "3 Bulan"
+                    "1 Tahun", "TAHUNAN" -> "1 Tahun"; "LIFETIME" -> "LIFETIME"; else -> null
+                }
+                val tvOverride = if (promo.promoAktif && promoKey != null) promo.addTvOverride[promoKey] else null
+                val maxTv = tvOverride ?: when (invoice.paket) {
                     "1 Bulan", "BULANAN" -> 5; "3 Bulan", "3BULAN" -> 8
                     "1 Tahun", "TAHUNAN" -> 15; "LIFETIME" -> 0; else -> 2
                 }
@@ -227,6 +328,22 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                 )
                 firestore.collection("billingps_users").document(invoice.username)
                     .set(userLicUpdate, SetOptions.merge()).await()
+
+                // Auto-send push notification
+                val notifTitle = "🎉 Lisensi Aktif!"
+                val notifBody = "${invoice.paket} aktif hingga $expiry"
+                sendFcmToUser(invoice.username, notifTitle, notifBody)
+
+                // Save notification history
+                try {
+                    val notifData = HashMap<String, Any>()
+                    notifData["username"] = invoice.username
+                    notifData["title"] = notifTitle
+                    notifData["body"] = notifBody
+                    notifData["type"] = "license_confirmed"
+                    notifData["sentAt"] = System.currentTimeMillis()
+                    firestore.collection("notifications").add(notifData)
+                } catch (_: Exception) { }
 
                 isBusy = false
                 onDone(true, kode)
@@ -252,6 +369,10 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun generateLicense(paket: String, username: String, email: String, onDone: (String) -> Unit) {
+        if (!ECDSAUtils.hasPrivateKey()) {
+            onDone("ERROR: Private key belum dikonfigurasi! Buka tab Settings.")
+            return
+        }
         isBusy = true
         val kode = generateKode(paket)
         val nonce = java.util.UUID.randomUUID().toString().take(8)
@@ -262,7 +383,7 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
         })
         val expiry = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
         val payload = """{"p":"$paket","u":"$username","e":"$expiry","n":"$nonce","m":"$email"}"""
-        val signature = ECDSAUtils.sign(payload)
+        val signature = try { ECDSAUtils.sign(payload) } catch (e: Exception) { onDone("ERROR: Signing gagal: ${e.message}"); return }
 
         viewModelScope.launch {
             try {
@@ -320,9 +441,146 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
             }
     }
 
+    fun sendFcmToUser(username: String, title: String, body: String) {
+        viewModelScope.launch {
+            try {
+                val token = suspendCancellableCoroutine<String?> { cont ->
+                    firestore.collection("billingps_users").document(username).get()
+                        .addOnSuccessListener { cont.resume(it.getString("fcmToken")) }
+                        .addOnFailureListener { cont.resume(null) }
+                }
+                if (token.isNullOrBlank()) {
+                    Log.w("FCM", "sendFcmToUser: no token for $username")
+                    return@launch
+                }
+                sendFcmV1(token, title, body)
+            } catch (e: Exception) {
+                Log.e("FCM", "sendFcmToUser exception: ${e.message}")
+            }
+        }
+    }
+
+    fun sendFcmToAllUsers(title: String, body: String, onDone: ((Int) -> Unit)? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val allTokens = suspendCancellableCoroutine<MutableList<String>> { cont ->
+                    firestore.collection("billingps_users").get()
+                        .addOnSuccessListener { snap ->
+                            val tokens = mutableListOf<String>()
+                            for (doc in snap.documents) {
+                                val t = doc.getString("fcmToken")
+                                if (!t.isNullOrBlank()) tokens.add(t)
+                            }
+                            cont.resume(tokens)
+                        }
+                        .addOnFailureListener { cont.resume(mutableListOf()) }
+                }
+                var sent = 0
+                for (token in allTokens) {
+                    sendFcmV1(token, title, body)
+                    sent++
+                }
+                withContext(Dispatchers.Main) { onDone?.invoke(sent) }
+            } catch (_: Exception) { withContext(Dispatchers.Main) { onDone?.invoke(0) } }
+        }
+    }
+
+    private fun sendFcmV1(deviceToken: String, title: String, body: String) {
+        try {
+            val accessToken = getAccessToken() ?: return
+            val url = URL("https://fcm.googleapis.com/v1/projects/rrbillingpro/messages:send")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty("Authorization", "Bearer $accessToken")
+            val escapedTitle = title.replace("\"", "\\\"").replace("\n", "\\n")
+            val escapedBody = body.replace("\"", "\\\"").replace("\n", "\\n")
+            val json = """{"message":{"token":"$deviceToken","notification":{"title":"$escapedTitle","body":"$escapedBody"},"data":{"title":"$escapedTitle","body":"$escapedBody"}}}"""
+            conn.outputStream.write(json.toByteArray(Charsets.UTF_8))
+            val code = conn.responseCode
+            if (code != 200) {
+                val err = conn.errorStream?.bufferedReader()?.readText() ?: ""
+                Log.e("FCM", "sendFcmV1 failed: HTTP $code — $err")
+            } else {
+                Log.i("FCM", "sendFcmV1 success for token=${deviceToken.take(20)}...")
+            }
+            conn.disconnect()
+        } catch (e: Exception) {
+            Log.e("FCM", "sendFcmV1 exception: ${e.message}")
+        }
+    }
+
+    private fun getAccessToken(): String? {
+        val now = System.currentTimeMillis() / 1000
+        if (cachedAccessToken != null && now < tokenExpiresAt - 60) return cachedAccessToken
+        try {
+            val ctx = getApplication<Application>()
+            val inputStream = ctx.resources.openRawResource(com.billingps.licensegen.R.raw.fcm_key)
+            val jsonStr = inputStream.bufferedReader().use { it.readText() }
+            val json = org.json.JSONObject(jsonStr)
+            val clientEmail = json.getString("client_email")
+            val privateKeyPem = json.getString("private_key")
+
+            // Parse PEM private key
+            val pemStr = privateKeyPem.replace("-----BEGIN PRIVATE KEY-----", "")
+                .replace("-----END PRIVATE KEY-----", "")
+                .replace("\n", "").replace("\r", "")
+            val keyBytes = Base64.decode(pemStr, Base64.DEFAULT)
+            val keySpec = PKCS8EncodedKeySpec(keyBytes)
+            val keyFactory = KeyFactory.getInstance("RSA")
+            val privateKey = keyFactory.generatePrivate(keySpec)
+
+            // Build JWT
+            val header = org.json.JSONObject().apply {
+                put("alg", "RS256")
+                put("typ", "JWT")
+            }
+            val claim = org.json.JSONObject().apply {
+                put("iss", clientEmail)
+                put("scope", "https://www.googleapis.com/auth/firebase.messaging")
+                put("aud", "https://oauth2.googleapis.com/token")
+                put("exp", now + 3600)
+                put("iat", now)
+            }
+
+            val b64Header = Base64.encodeToString(header.toString().toByteArray(), Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+            val b64Claim = Base64.encodeToString(claim.toString().toByteArray(), Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+            val toSign = "$b64Header.$b64Claim"
+
+            val sig = Signature.getInstance("SHA256withRSA")
+            sig.initSign(privateKey)
+            sig.update(toSign.toByteArray())
+            val signature = sig.sign()
+            val b64Sig = Base64.encodeToString(signature, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+
+            val jwt = "$toSign.$b64Sig"
+
+            // Exchange JWT for access token
+            val tokenUrl = URL("https://oauth2.googleapis.com/token")
+            val tokenConn = tokenUrl.openConnection() as HttpURLConnection
+            tokenConn.doOutput = true
+            tokenConn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+            val body = "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=$jwt"
+            tokenConn.outputStream.write(body.toByteArray(Charsets.UTF_8))
+            val resp = tokenConn.inputStream.bufferedReader().use { it.readText() }
+            tokenConn.disconnect()
+
+            val respJson = org.json.JSONObject(resp)
+            val token = respJson.getString("access_token")
+            val expiresIn = respJson.optInt("expires_in", 3600)
+            cachedAccessToken = token
+            tokenExpiresAt = now + expiresIn
+            return token
+        } catch (e: Exception) {
+            Log.e("FCM", "getAccessToken failed: ${e.message}")
+            return null
+        }
+    }
+
     override fun onCleared() {
         usersListener?.remove()
         invoicesListener?.remove()
+        promoListener?.remove()
         super.onCleared()
     }
 }

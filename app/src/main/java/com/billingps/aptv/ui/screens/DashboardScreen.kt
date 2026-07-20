@@ -46,6 +46,7 @@ fun fmtRp(amount: Int): String {
     return "Rp${nf.format(amount)}"
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
     viewModel: MainViewModel,
@@ -53,6 +54,7 @@ fun DashboardScreen(
 ) {
     val state by viewModel.state.collectAsState()
 
+    var searchQuery by remember { mutableStateOf("") }
     var showTambah by remember { mutableStateOf(false) }
     var showPaket by remember { mutableStateOf(false) }
     var selectedTV by remember { mutableStateOf<TvData?>(null) }
@@ -112,6 +114,33 @@ fun DashboardScreen(
             }
         }
 
+        // Search Bar
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            placeholder = { Text("Cari TV...", color = TextDim) },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp)) },
+            trailingIcon = {
+                if (searchQuery.isNotEmpty()) {
+                    IconButton(onClick = { searchQuery = "" }) {
+                        Icon(Icons.Filled.Clear, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp))
+                    }
+                }
+            },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = NeonGreen, unfocusedBorderColor = DarkSurfaceV3,
+                cursorColor = NeonGreen, focusedLabelColor = NeonGreen,
+                unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+            ),
+            textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextPrimary),
+        )
+
+        val filteredList = if (searchQuery.isBlank()) state.tvList
+            else state.tvList.filter { it.nama.contains(searchQuery, ignoreCase = true) || it.ip.contains(searchQuery, ignoreCase = true) || it.jenisPs.contains(searchQuery, ignoreCase = true) }
+
         if (state.tvList.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -121,17 +150,26 @@ fun DashboardScreen(
                     Text("Tap \"Tambah TV\" untuk memulai", style = MaterialTheme.typography.bodySmall, color = TextDim)
                 }
             }
+        } else if (searchQuery.isNotBlank() && filteredList.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Filled.SearchOff, contentDescription = null, modifier = Modifier.size(64.dp), tint = TextDim)
+                    Spacer(Modifier.height(12.dp))
+                    Text("TV \"$searchQuery\" tidak ditemukan", style = MaterialTheme.typography.bodyLarge, color = TextSecondary)
+                    Text("Coba kata kunci lain", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                }
+            }
         } else {
             val listState = rememberLazyListState()
-            val tvList = state.tvList
+            val tvList = filteredList
             val scope = rememberCoroutineScope()
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
-                state = listState,
-            ) {
-                itemsIndexed(tvList, key = { _, tv -> tv.id }) { idx, tv ->
+                    state = listState,
+                ) {
+                    itemsIndexed(tvList, key = { _, tv -> tv.id }) { idx, tv ->
                     TVCard(
                         tv = tv,
                         showPindah = tvList.size > 1,
@@ -216,7 +254,14 @@ fun DashboardScreen(
                         viewModel.updateTV(tv.id, mapOf("cancelBatas" to 0L))
                     }
                     if (tv.timerActive && !tv.bebas && tv.sisaDetik > 0) {
-                        val newSisa = tv.sisaDetik - 1
+                        // Backward compat: seed timerStart/timerDurasi for old saved data
+                        if (tv.timerStart == 0L) {
+                            viewModel.updateTV(tv.id, mapOf("timerStart" to now, "timerDurasi" to tv.timerDurasi.coerceAtLeast(tv.sisaDetik)))
+                        }
+                        val timerStart = if (tv.timerStart > 0) tv.timerStart else now
+                        val timerDurasi = if (tv.timerDurasi > 0) tv.timerDurasi else tv.sisaDetik
+                        val elapsed = (now - timerStart) / 1000
+                        val newSisa = (timerDurasi - elapsed).coerceAtLeast(0)
                         if (newSisa <= 0) {
                             viewModel.updateTV(tv.id, mapOf("timerActive" to false, "sisaDetik" to 0L, "paketAktif" to "WAKTU HABIS"))
                             tvHabis = tv
@@ -224,7 +269,7 @@ fun DashboardScreen(
                             if (tv.certPem.isNotEmpty() && tv.keyPem.isNotEmpty()) {
                                 tvViewModel.sendPower(tv.ip, tv.certPem, tv.keyPem)
                             }
-                        } else {
+                        } else if (newSisa != tv.sisaDetik) {
                             viewModel.updateTV(tv.id, mapOf("sisaDetik" to newSisa))
                         }
                     }
@@ -259,37 +304,41 @@ fun DashboardScreen(
         )
     }
 
-    if (showSelesaiSummary && selesaiSummaryTV != null) {
+    val selesaiSummaryTv = selesaiSummaryTV
+    if (showSelesaiSummary && selesaiSummaryTv != null) {
         SelesaiSummaryDialog(
-            tv = selesaiSummaryTV!!,
+            tv = selesaiSummaryTv,
             onDismiss = { showSelesaiSummary = false; selesaiSummaryTV = null },
         )
     }
 
-    if (showKonfirmasiBayar && tvBayar != null) {
+    val tvBayarValue = tvBayar
+    if (showKonfirmasiBayar && tvBayarValue != null) {
         KonfirmasiBayarDialog(
-            tvNama = tvBayar!!.nama,
+            tvNama = tvBayarValue.nama,
             onSudahBayar = {
-                viewModel.updateTV(tvBayar!!.id, mapOf("sudahBayar" to true))
+                viewModel.updateTV(tvBayarValue.id, mapOf("sudahBayar" to true))
                 showKonfirmasiBayar = false; tvBayar = null
             },
             onBelumBayar = {
-                viewModel.updateTV(tvBayar!!.id, mapOf("sudahBayar" to false))
+                viewModel.updateTV(tvBayarValue.id, mapOf("sudahBayar" to false))
                 showKonfirmasiBayar = false; tvBayar = null
             },
         )
     }
 
-    if (showHabisDialog && tvHabis != null) {
+    val tvHabisValue = tvHabis
+    if (showHabisDialog && tvHabisValue != null) {
         HabisDialog(
-            tv = tvHabis!!,
+            tv = tvHabisValue,
             onDismiss = { showHabisDialog = false; tvHabis = null },
         )
     }
 
-    if (showTambahWaktu && tambahWaktuTV != null) {
-        val tvData = tambahWaktuTV!!
-        val hargaPaketList = state.paketMain[tvData.jenisPs] ?: state.paketMain["PS3"]!!
+    val tambahWaktuTvValue = tambahWaktuTV
+    if (showTambahWaktu && tambahWaktuTvValue != null) {
+        val tvData = tambahWaktuTvValue
+        val hargaPaketList = state.paketMain[tvData.jenisPs] ?: state.paketMain["PS3"] ?: emptyMap()
         val durasiMap = state.paketDurasi
         var selectedPaket by remember { mutableStateOf(hargaPaketList.keys.firstOrNull() ?: "30 Menit") }
         val tambahDetik = (durasiMap[selectedPaket] ?: 30) * 60
@@ -344,6 +393,8 @@ fun DashboardScreen(
                         "totalPesanan" to (tvData.totalPesanan + tambahHarga),
                         "sisaDetik" to newSisa,
                         "timerActive" to (newSisa > 0),
+                        "timerStart" to System.currentTimeMillis(),
+                        "timerDurasi" to newSisa,
                     )
                     viewModel.updateTV(tvData.id, updates)
                     viewModel.tambahTransaksi(Transaksi(
@@ -361,8 +412,9 @@ fun DashboardScreen(
         )
     }
 
-    if (showBatalDialog && selectedTV != null) {
-        val tvData = selectedTV!!
+    val selectedTvBatal = selectedTV
+    if (showBatalDialog && selectedTvBatal != null) {
+        val tvData = selectedTvBatal
         AlertDialog(
             onDismissRequest = { showBatalDialog = false; selectedTV = null },
             containerColor = DarkSurface,
@@ -417,10 +469,11 @@ fun DashboardScreen(
         )
     }
 
-    if (showPaket && selectedTV != null) {
+    val selectedTvPaket = selectedTV
+    if (showPaket && selectedTvPaket != null) {
         ModalPaket(
-            tv = selectedTV!!,
-            paketData = state.paketMain[selectedTV!!.jenisPs] ?: state.paketMain["PS3"]!!,
+            tv = selectedTvPaket,
+            paketData = state.paketMain[selectedTvPaket.jenisPs] ?: state.paketMain["PS3"] ?: emptyMap(),
             paketDurasi = state.paketDurasi,
             makananData = state.menuMakanan,
             minumanData = state.menuMinuman,
@@ -428,14 +481,14 @@ fun DashboardScreen(
             onDismiss = { showPaket = false; selectedTV = null },
             onConfirm = { paketNm, paketHarga, pesanan, total, durasi, updates ->
                 if (paketNm == null && updates != null) {
-                    viewModel.updateTV(selectedTV!!.id, updates)
+                    viewModel.updateTV(selectedTvPaket.id, updates)
                 } else if (paketNm != null) {
-                    viewModel.updateTV(selectedTV!!.id, updates ?: emptyMap())
+                    viewModel.updateTV(selectedTvPaket.id, updates ?: emptyMap())
                 }
                 viewModel.tambahTransaksi(Transaksi(
                     waktu = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).format(java.util.Date()),
                     kasir = state.currentUser,
-                    kota = selectedTV!!.nama,
+                    kota = selectedTvPaket.nama,
                     paket = paketNm ?: "Pesanan Tambahan",
                     pesanan = pesanan,
                     total = total,
@@ -494,7 +547,8 @@ fun DashboardScreen(
     }
 
     // ── Buat Password TV Dialog ──────────────────────────
-    if (showBuatPasswordDialog && tvHapusTarget != null) {
+    val tvHapusTargetBuat = tvHapusTarget
+    if (showBuatPasswordDialog && tvHapusTargetBuat != null) {
         AlertDialog(
             onDismissRequest = { showBuatPasswordDialog = false; tvHapusTarget = null },
             containerColor = DarkSurface,
@@ -536,7 +590,7 @@ fun DashboardScreen(
                         if (buatPasswordInput.length < 4) { buatPasswordError = "Minimal 4 karakter"; return@Button }
                         if (buatPasswordInput != buatPasswordConfirm) { buatPasswordError = "Konfirmasi tidak cocok"; return@Button }
                         viewModel.setTvPassword(buatPasswordInput)
-                        viewModel.hapusTV(tvHapusTarget!!.id)
+                        viewModel.hapusTV(tvHapusTargetBuat.id)
                         showBuatPasswordDialog = false
                         tvHapusTarget = null
                     },
@@ -551,14 +605,15 @@ fun DashboardScreen(
     }
 
     // ── Masukkan Password TV Dialog ──────────────────────────
-    if (showHapusPasswordDialog && tvHapusTarget != null) {
+    val tvHapusTargetHapus = tvHapusTarget
+    if (showHapusPasswordDialog && tvHapusTargetHapus != null) {
         AlertDialog(
             onDismissRequest = { showHapusPasswordDialog = false; tvHapusTarget = null },
             containerColor = DarkSurface,
             title = { Text("HAPUS TV", color = NeonRed, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
-                    Text("Masukkan password TV untuk menghapus ${tvHapusTarget!!.nama}.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    Text("Masukkan password TV untuk menghapus ${tvHapusTargetHapus.nama}.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                     Spacer(Modifier.height(12.dp))
                     OutlinedTextField(
                         value = hapusPasswordInput,
@@ -583,7 +638,7 @@ fun DashboardScreen(
                             hapusPasswordError = "Password salah"
                             return@Button
                         }
-                        viewModel.hapusTV(tvHapusTarget!!.id)
+                        viewModel.hapusTV(tvHapusTargetHapus.id)
                         showHapusPasswordDialog = false
                         tvHapusTarget = null
                     },
@@ -999,9 +1054,12 @@ fun ModalPaket(
                     } else {
                         val pesananTotal = maxOf(0, total - hargaPaket)
                         val isBebas = selectedPaket == "Main Bebas"
+                        val durasiDetik = durasiMnt * 60L
                         val updates = mutableMapOf<String, Any>(
                             "paketAktif" to if (isBebas) "Main Bebas" else "$selectedPaket (${durasiMnt}m)",
-                            "sisaDetik" to (if (isBebas) 0 else durasiMnt * 60L),
+                            "sisaDetik" to (if (isBebas) 0 else durasiDetik),
+                            "timerStart" to System.currentTimeMillis(),
+                            "timerDurasi" to durasiDetik,
                             "timerActive" to (durasiMnt > 0 && !isBebas),
                             "bebas" to isBebas,
                             "paketHarga" to hargaPaket,

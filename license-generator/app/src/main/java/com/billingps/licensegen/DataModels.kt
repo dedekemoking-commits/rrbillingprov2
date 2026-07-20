@@ -1,5 +1,13 @@
 package com.billingps.licensegen
 
+data class PromoSettings(
+    val promoAktif: Boolean = false,
+    val diskonPerPaket: Map<String, Int> = emptyMap(),
+    val addTvOverride: Map<String, Int> = emptyMap(),
+    val updatedBy: String = "",
+    val updatedAt: Long = 0L,
+)
+
 data class LicenseRecord(
     val id: String = "",
     val kode: String = "",
@@ -19,6 +27,15 @@ data class FirestoreUser(
     val role: String = "",
     val email: String = "",
     val dibuat: String = "",
+)
+
+data class NotifikasiHistory(
+    val id: String = "",
+    val judul: String = "",
+    val pesan: String = "",
+    val target: String = "", // "all" atau username
+    val jumlahTerima: Int = 0,
+    val dikirimPada: Long = 0L,
 )
 
 data class Invoice(

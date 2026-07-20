@@ -174,6 +174,39 @@ class CloudRepository(private val app: Application) {
             }
         }
 
+    suspend fun publishUpdate(versionName: String, apkUrl: String, changelog: String): Boolean {
+        if (!ensureSignedIn()) return false
+        return suspendCancellableCoroutine { cont ->
+            val data = mapOf(
+                "versionName" to versionName,
+                "apkUrl" to apkUrl,
+                "changelog" to changelog,
+                "updatedAt" to System.currentTimeMillis(),
+            )
+            firestore.collection("settings").document("appVersion")
+                .set(data, com.google.firebase.firestore.SetOptions.merge())
+                .addOnSuccessListener { if (!cont.isCompleted) cont.resume(true) }
+                .addOnFailureListener { if (!cont.isCompleted) cont.resume(false) }
+        }
+    }
+
+    suspend fun fetchLatestVersion(): Triple<String, String, String>? {
+        if (!ensureSignedIn()) return null
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("settings").document("appVersion")
+                .get()
+                .addOnSuccessListener { snap ->
+                    if (!snap.exists()) { cont.resume(null); return@addOnSuccessListener }
+                    val version = snap.getString("versionName") ?: ""
+                    val url = snap.getString("apkUrl") ?: ""
+                    val changelog = snap.getString("changelog") ?: ""
+                    if (version.isBlank() || url.isBlank()) { cont.resume(null); return@addOnSuccessListener }
+                    cont.resume(Triple(version, url, changelog))
+                }
+                .addOnFailureListener { cont.resume(null) }
+        }
+    }
+
     private suspend fun queryLicenseByField(field: String, value: String): LicenseStatus? {
         return suspendCancellableCoroutine { cont ->
             firestore.collection("licenses")
@@ -546,6 +579,118 @@ class CloudRepository(private val app: Application) {
                 }
                 .addOnFailureListener { cont.resume(false) }
         }
+    }
+
+    suspend fun saveFcmToken(username: String, token: String) {
+        if (username.isBlank() || token.isBlank()) return
+        try {
+            firestore.collection("billingps_users").document(username)
+                .set(mapOf("fcmToken" to token), com.google.firebase.firestore.SetOptions.merge())
+        } catch (e: Exception) { Log.e("CloudRepo", "saveFcmToken: ${e.message}") }
+    }
+
+    fun listenGlobalSettings(onUpdate: (PromoSettings) -> Unit): ListenerRegistration? {
+        return firestore.document("settings/global")
+            .addSnapshotListener { snap, error ->
+                if (error != null || snap == null || !snap.exists()) return@addSnapshotListener
+                val promoAktif = snap.getBoolean("promoAktif") ?: false
+                val rawDiskon = snap.get("diskonPerPaket") as? Map<*, *>
+                val diskonPerPaket = mutableMapOf<String, Int>()
+                rawDiskon?.forEach { (k, v) ->
+                    if (k is String && v is Number) diskonPerPaket[k] = v.toInt()
+                }
+                val rawOverride = snap.get("addTvOverride") as? Map<*, *>
+                val addTvOverride = mutableMapOf<String, Int>()
+                rawOverride?.forEach { (k, v) ->
+                    if (k is String && v is Number) addTvOverride[k] = v.toInt()
+                }
+                val updatedBy = snap.getString("updatedBy") ?: ""
+                val updatedAt = snap.getLong("updatedAt") ?: 0L
+                onUpdate(PromoSettings(
+                    promoAktif = promoAktif,
+                    diskonPerPaket = diskonPerPaket,
+                    addTvOverride = addTvOverride,
+                    updatedBy = updatedBy,
+                    updatedAt = updatedAt,
+                ))
+            }
+    }
+
+    suspend fun getActiveLicensesForUser(username: String): List<LicenseRecord> {
+        if (username.isBlank() || !ensureSignedIn()) return emptyList()
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("licenses")
+                .whereEqualTo("username", username)
+                .whereEqualTo("revoked", false)
+                .get()
+                .addOnSuccessListener { snap ->
+                    val list = snap.documents.mapNotNull { doc ->
+                        val d = doc.data ?: return@mapNotNull null
+                        val rawDevices = d["activatedDevices"] as? List<Map<String, Any>>
+                        val activatedDevices = rawDevices?.mapNotNull { dev ->
+                            val dt = dev["deviceType"] as? String ?: return@mapNotNull null
+                            val di = dev["deviceId"] as? String ?: ""
+                            val da = (dev["activatedAt"] as? Number)?.toLong() ?: 0L
+                            ActivatedDevice(deviceType = dt, deviceId = di, activatedAt = da)
+                        } ?: emptyList()
+                        LicenseRecord(
+                            id = doc.id, kode = d["kode"] as? String ?: "",
+                            payload = d["payload"] as? String ?: "",
+                            signature = d["signature"] as? String ?: "",
+                            paket = d["paket"] as? String ?: "",
+                            username = d["username"] as? String ?: "",
+                            email = d["email"] as? String ?: "",
+                            expiry = d["expiry"] as? String ?: "",
+                            generatedBy = d["generatedBy"] as? String ?: "",
+                            generatedAt = d["generatedAt"] as? Long ?: 0,
+                            activatedAt = d["activatedAt"] as? Long ?: 0,
+                            activatedDeviceId = d["activatedDeviceId"] as? String ?: "",
+                            revoked = d["revoked"] as? Boolean ?: false,
+                            maxActivations = (d["maxActivations"] as? Number)?.toInt() ?: 2,
+                            activatedDevices = activatedDevices,
+                        )
+                    }
+                    val active = list.filter { it.activatedAt > 0 }
+                    Log.i("CloudRepo", "getActiveLicensesForUser: ${active.size} active for $username")
+                    cont.resume(active)
+                }
+                .addOnFailureListener { ex ->
+                    Log.e("CloudRepo", "getActiveLicensesForUser failed: ${ex.message}")
+                    cont.resume(emptyList())
+                }
+        }
+    }
+
+    suspend fun revokeLicense(docId: String): Boolean {
+        if (!ensureSignedIn()) return false
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("licenses").document(docId)
+                .update("revoked", true)
+                .addOnSuccessListener { cont.resume(true) }
+                .addOnFailureListener { cont.resume(false) }
+        }
+    }
+
+    suspend fun saveTrialToCloud(username: String, trialBatas: Long) {
+        if (username.isBlank()) return
+        try {
+            firestore.collection("billingps_users").document(username)
+                .set(mapOf("trialBatas" to trialBatas), com.google.firebase.firestore.SetOptions.merge())
+        } catch (e: Exception) { Log.e("CloudRepo", "saveTrialToCloud: ${e.message}") }
+    }
+
+    suspend fun loadTrialFromCloud(username: String): Long {
+        if (username.isBlank()) return 0L
+        return try {
+            suspendCancellableCoroutine { cont ->
+                firestore.collection("billingps_users").document(username).get()
+                    .addOnSuccessListener { snap ->
+                        val result = if (snap.exists()) snap.getLong("trialBatas") ?: 0L else 0L
+                        cont.resume(result)
+                    }
+                    .addOnFailureListener { cont.resume(0L) }
+            }
+        } catch (e: Exception) { Log.e("CloudRepo", "loadTrialFromCloud: ${e.message}"); 0L }
     }
 
     fun listenUserLicense(username: String, onUpdate: (LicenseStatus?) -> Unit): ListenerRegistration? {

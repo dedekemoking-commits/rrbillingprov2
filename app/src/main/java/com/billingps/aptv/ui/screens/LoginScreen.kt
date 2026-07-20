@@ -303,7 +303,8 @@ fun LoginScreen(
                         Spacer(Modifier.height(16.dp))
                         OutlinedTextField(value = regUser, onValueChange = { regUser = it; regMsg = "" }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
                         Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(value = regPass, onValueChange = { regPass = it; regMsg = "" }, label = { Text("Password (min 6, huruf besar & angka)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
+                        var regPassVisible by remember { mutableStateOf(false) }
+                        OutlinedTextField(value = regPass, onValueChange = { regPass = it; regMsg = "" }, label = { Text("Password (min 6, huruf besar & angka)") }, singleLine = true, visualTransformation = if (regPassVisible) VisualTransformation.None else PasswordVisualTransformation(), trailingIcon = { IconButton(onClick = { regPassVisible = !regPassVisible }) { Icon(if (regPassVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, null, tint = TextSecondary) } }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
                         Spacer(Modifier.height(8.dp))
                         OutlinedTextField(value = regEmail, onValueChange = { regEmail = it }, label = { Text("Email (wajib untuk verifikasi)") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
                         if (regMsg.isNotEmpty()) {
@@ -408,7 +409,8 @@ fun LoginScreen(
                             Spacer(Modifier.height(16.dp))
                             OutlinedTextField(value = forgotCode, onValueChange = { forgotCode = it; forgotMsg = "" }, label = { Text("Kode Verifikasi") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
                             Spacer(Modifier.height(8.dp))
-                            OutlinedTextField(value = forgotNewPass, onValueChange = { forgotNewPass = it; forgotMsg = "" }, label = { Text("Password Baru (min 6, huruf besar & angka)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
+                            var forgotPassVisible by remember { mutableStateOf(false) }
+                            OutlinedTextField(value = forgotNewPass, onValueChange = { forgotNewPass = it; forgotMsg = "" }, label = { Text("Password Baru (min 6, huruf besar & angka)") }, singleLine = true, visualTransformation = if (forgotPassVisible) VisualTransformation.None else PasswordVisualTransformation(), trailingIcon = { IconButton(onClick = { forgotPassVisible = !forgotPassVisible }) { Icon(if (forgotPassVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, null, tint = TextSecondary) } }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
                             if (forgotMsg.isNotEmpty()) {
                                 Spacer(Modifier.height(8.dp))
                                 Text(forgotMsg, style = MaterialTheme.typography.bodySmall, color = if (forgotMsgOk) NeonGreen else NeonRed, textAlign = TextAlign.Center)
@@ -571,7 +573,8 @@ fun LoginScreen(
                             }
                             if (selectedKasir.isNotEmpty()) {
                                 Spacer(Modifier.height(12.dp))
-                                OutlinedTextField(value = kasirPass, onValueChange = { kasirPass = it; kasirErr = "" }, label = { Text("Password") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
+                                var kasirPassVisible by remember { mutableStateOf(false) }
+                                OutlinedTextField(value = kasirPass, onValueChange = { kasirPass = it; kasirErr = "" }, label = { Text("Password") }, singleLine = true, visualTransformation = if (kasirPassVisible) VisualTransformation.None else PasswordVisualTransformation(), trailingIcon = { IconButton(onClick = { kasirPassVisible = !kasirPassVisible }) { Icon(if (kasirPassVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, null, tint = TextSecondary) } }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
                             }
                             if (kasirErr.isNotEmpty()) {
                                 Spacer(Modifier.height(6.dp))

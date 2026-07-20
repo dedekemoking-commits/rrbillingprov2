@@ -27,6 +27,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -722,11 +723,16 @@ fun TVCard(
     ) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                val psColor = when (tv.jenisPs) {
+                    "PS4" -> Color(0xFF003791)
+                    "PS5" -> Color(0xFF003791)
+                    else -> Color(0xFF0066CC)
+                }
                 Box(
-                    modifier = Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).background(DarkSurfaceV2),
+                    modifier = Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).background(psColor),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(tv.jenisPs, style = MaterialTheme.typography.labelSmall, color = NeonGreen, fontWeight = FontWeight.Bold)
+                    Text(tv.jenisPs, style = MaterialTheme.typography.labelSmall, color = Color.White, fontWeight = FontWeight.Bold)
                 }
                 Spacer(Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
@@ -834,17 +840,17 @@ fun TVCard(
                     OutlinedButton(
                         onClick = onHdmi,
                         shape = RoundedCornerShape(6.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonPurple),
-                        border = BorderStroke(1.dp, NeonPurple),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
+                        border = BorderStroke(1.dp, NeonGreen),
                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
                     ) { Icon(Icons.Filled.Input, contentDescription = null, modifier = Modifier.size(12.dp)); Spacer(Modifier.width(2.dp)); Text("HDMI", style = MaterialTheme.typography.labelSmall) }
                     OutlinedButton(
                         onClick = onOk,
                         shape = RoundedCornerShape(6.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonPurple),
-                        border = BorderStroke(1.dp, NeonPurple),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
+                        border = BorderStroke(1.dp, NeonGreen),
                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                    ) { Text("OK", style = MaterialTheme.typography.labelSmall, color = NeonPurple) }
+                    ) { Text("OK", style = MaterialTheme.typography.labelSmall, color = NeonGreen) }
                     if (tv.timerActive || tv.bebas) {
                         OutlinedButton(
                             onClick = onSelesai,

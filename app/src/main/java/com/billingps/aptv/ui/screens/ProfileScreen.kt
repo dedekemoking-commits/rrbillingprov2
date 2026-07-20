@@ -177,7 +177,7 @@ fun ProfileScreen(
             if (state.currentRole == "admin") {
                 Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
                     Column(Modifier.padding(16.dp)) {
-                        Text("MANAJEMEN USER", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
+                        Text("MANAJEMEN KASIR", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
                         Spacer(Modifier.height(8.dp))
                         OutlinedTextField(value = regUser, onValueChange = { regUser = it; regMsg = "" }, label = { Text("Username baru") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
                         var regPassVisible by remember { mutableStateOf(false) }
@@ -271,50 +271,6 @@ fun ProfileScreen(
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
                     ) { Text("Cek Update") }
-                }
-            }
-
-            // Publish Update (Admin only)
-            if (state.currentRole == "admin") {
-                var pubVersion by remember { mutableStateOf(state.appVersionName) }
-                var pubUrl by remember { mutableStateOf("") }
-                var pubChangelog by remember { mutableStateOf("") }
-                var pubMsg by remember { mutableStateOf("") }
-                var pubMsgOk by remember { mutableStateOf(false) }
-                var pubBusy by remember { mutableStateOf(false) }
-                Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("PUBLISH UPDATE KE USER", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
-                        Spacer(Modifier.height(4.dp))
-                        Text("User akan dapat notifikasi update baru di Dashboard & Profile", style = MaterialTheme.typography.bodySmall, color = TextDim)
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(value = pubVersion, onValueChange = { pubVersion = it }, label = { Text("Versi") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
-                        Spacer(Modifier.height(6.dp))
-                        OutlinedTextField(value = pubUrl, onValueChange = { pubUrl = it }, label = { Text("URL Download APK") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
-                        Spacer(Modifier.height(6.dp))
-                        OutlinedTextField(value = pubChangelog, onValueChange = { pubChangelog = it }, label = { Text("Changelog") }, minLines = 3, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = {
-                                if (pubVersion.isBlank() || pubUrl.isBlank()) { pubMsg = "Isi versi & URL"; pubMsgOk = false; return@Button }
-                                pubBusy = true; pubMsg = "Mempublikasikan..."
-                                viewModel.publishUpdate(pubVersion.trim(), pubUrl.trim(), pubChangelog.trim()) { ok, msg ->
-                                    pubBusy = false; pubMsg = msg; pubMsgOk = ok
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(10.dp),
-                            enabled = !pubBusy,
-                            colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground),
-                        ) {
-                            if (pubBusy) { CircularProgressIndicator(modifier = Modifier.size(18.dp), color = DarkBackground, strokeWidth = 2.dp) }
-                            else { Text("PUBLISH") }
-                        }
-                        if (pubMsg.isNotEmpty()) {
-                            Spacer(Modifier.height(4.dp))
-                            Text(pubMsg, style = MaterialTheme.typography.bodySmall, color = if (pubMsgOk) NeonGreen else NeonRed)
-                        }
-                    }
                 }
             }
 

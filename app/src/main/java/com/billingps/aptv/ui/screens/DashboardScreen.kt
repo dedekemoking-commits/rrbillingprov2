@@ -723,21 +723,20 @@ fun TVCard(
     ) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                val psColor = when (tv.jenisPs) {
-                    "PS4" -> Color(0xFF003791)
-                    "PS5" -> Color(0xFF003791)
-                    else -> Color(0xFF0066CC)
+                val psLogoRes = when (tv.jenisPs) {
+                    "PS4" -> com.billingps.aptv.R.drawable.ps4
+                    "PS5" -> com.billingps.aptv.R.drawable.ps5
+                    else -> com.billingps.aptv.R.drawable.ps3
                 }
                 Box(
-                    modifier = Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).background(psColor),
+                    modifier = Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).background(Color.White),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(tv.jenisPs, style = MaterialTheme.typography.labelSmall, color = Color.White, fontWeight = FontWeight.Bold)
-                }
-                Spacer(Modifier.width(10.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(tv.nama, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
-                    Text("${tv.ip}:${tv.port}", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                    Image(
+                        painter = painterResource(psLogoRes),
+                        contentDescription = tv.jenisPs,
+                        modifier = Modifier.size(36.dp).clip(RoundedCornerShape(6.dp)),
+                    )
                 }
             }
 
@@ -901,10 +900,22 @@ fun ModalTambahTV(
                 Text("Jenis PS", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     JENIS_PS.forEach { j ->
+                        val logoRes = when (j) {
+                            "PS4" -> com.billingps.aptv.R.drawable.ps4
+                            "PS5" -> com.billingps.aptv.R.drawable.ps5
+                            else -> com.billingps.aptv.R.drawable.ps3
+                        }
                         FilterChip(
                             selected = jenis == j,
                             onClick = { jenis = j },
                             label = { Text(j) },
+                            leadingIcon = {
+                                Image(
+                                    painter = painterResource(logoRes),
+                                    contentDescription = j,
+                                    modifier = Modifier.size(20.dp).clip(RoundedCornerShape(4.dp)),
+                                )
+                            },
                             colors = FilterChipDefaults.filterChipColors(selectedContainerColor = NeonGreen, selectedLabelColor = DarkBackground),
                         )
                     }

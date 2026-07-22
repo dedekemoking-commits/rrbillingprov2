@@ -250,6 +250,7 @@ fun loadUsers(): Map<String, UserData> {
             .putString("licensePesan", status.pesan)
             .putString("licenseExpires", status.expiresAt)
             .putInt("licenseMaxTv", status.maxTv)
+            .putInt("licensePromoAddTv", status.promoAddTv)
             .apply()
     }
 
@@ -258,6 +259,7 @@ fun loadUsers(): Map<String, UserData> {
         pesan = prefs.getString("licensePesan", "") ?: "",
         expiresAt = prefs.getString("licenseExpires", "") ?: "",
         maxTv = prefs.getInt("licenseMaxTv", 0),
+        promoAddTv = prefs.getInt("licensePromoAddTv", 0),
     )
 
     fun saveTrial(trialBatas: Long) {
@@ -494,11 +496,30 @@ fun loadUsers(): Map<String, UserData> {
         // Keep: themeOption, loginMethod, fcmToken, notifDialogShown, smtpSkipPermanently
         // Keep: printerAddress, printerName (device-level)
         // Keep: ECDSA keys, TV password (secure prefs, cleared separately if needed)
+        // Keep: business data — TV list, transactions, users, prices, invoices
         val keepTheme = prefs.getString("themeOption", "GAMING_DARK")
         val keepLoginMethod = prefs.getString("loginMethod", "password")
         val keepFcm = prefs.getString("fcmToken", "")
         val keepNotifDialog = prefs.getBoolean("notifDialogShown", false)
         val keepSmtpSkip = prefs.getBoolean("smtpSkipPermanently", false)
+        val keepTvList = prefs.getString("tvList", null)
+        val keepTransaksi = prefs.getString("transaksiList", null)
+        val keepUsers = prefs.getString("users", null)
+        val keepPaketMain = prefs.getString("paketMain", null)
+        val keepPaketDurasi = prefs.getString("paketDurasi", null)
+        val keepMakanan = prefs.getString("menuMakanan", null)
+        val keepMinuman = prefs.getString("menuMinuman", null)
+        val keepJenisPs = prefs.getString("jenisPsList", null)
+        val keepInvoices = prefs.getString("invoices", null)
+        val keepNotifications = prefs.getString("notifications", null)
+        val keepPromo = prefs.getString("promo", null)
+        val keepSmtp = prefs.getString("smtp", null)
+        val keepLicStatus = prefs.getString("licenseStatus", null)
+        val keepLicPesan = prefs.getString("licensePesan", null)
+        val keepLicExpires = prefs.getString("licenseExpires", null)
+        val keepLicMaxTv = if (prefs.contains("licenseMaxTv")) prefs.getInt("licenseMaxTv", 0) else null
+        val keepTrial = if (prefs.contains("trialBatas")) prefs.getLong("trialBatas", 0L) else null
+        val keepKodeGen = prefs.getString("kodeGenerasiList", null)
         editor.clear()
         // Restore kept values
         keepTheme?.let { editor.putString("themeOption", it) }
@@ -506,6 +527,24 @@ fun loadUsers(): Map<String, UserData> {
         editor.putString("fcmToken", keepFcm)
         editor.putBoolean("notifDialogShown", keepNotifDialog)
         editor.putBoolean("smtpSkipPermanently", keepSmtpSkip)
+        if (keepTvList != null) editor.putString("tvList", keepTvList)
+        if (keepTransaksi != null) editor.putString("transaksiList", keepTransaksi)
+        if (keepUsers != null) editor.putString("users", keepUsers)
+        if (keepPaketMain != null) editor.putString("paketMain", keepPaketMain)
+        if (keepPaketDurasi != null) editor.putString("paketDurasi", keepPaketDurasi)
+        if (keepMakanan != null) editor.putString("menuMakanan", keepMakanan)
+        if (keepMinuman != null) editor.putString("menuMinuman", keepMinuman)
+        if (keepJenisPs != null) editor.putString("jenisPsList", keepJenisPs)
+        if (keepInvoices != null) editor.putString("invoices", keepInvoices)
+        if (keepNotifications != null) editor.putString("notifications", keepNotifications)
+        if (keepPromo != null) editor.putString("promo", keepPromo)
+        if (keepSmtp != null) editor.putString("smtp", keepSmtp)
+        if (keepLicStatus != null) editor.putString("licenseStatus", keepLicStatus)
+        if (keepLicPesan != null) editor.putString("licensePesan", keepLicPesan)
+        if (keepLicExpires != null) editor.putString("licenseExpires", keepLicExpires)
+        if (keepLicMaxTv != null) editor.putInt("licenseMaxTv", keepLicMaxTv)
+        if (keepTrial != null) editor.putLong("trialBatas", keepTrial)
+        if (keepKodeGen != null) editor.putString("kodeGenerasiList", keepKodeGen)
         editor.apply()
     }
 

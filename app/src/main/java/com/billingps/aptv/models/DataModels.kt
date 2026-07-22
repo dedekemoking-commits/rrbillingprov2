@@ -65,6 +65,7 @@ data class LicenseStatus(
     val pesan: String = "",
     val expiresAt: String = "",
     val maxTv: Int = 0, // 0 = unlimited
+    val promoAddTv: Int = 0, // promo add-on TV count (from promoMaxTv in license code)
 )
 
 data class KodeGenerasi(
@@ -96,6 +97,7 @@ data class LicenseRecord(
     val revoked: Boolean = false,
     val maxActivations: Int = 2,
     val activatedDevices: List<ActivatedDevice> = emptyList(),
+    val promoMaxTv: Int = 0,
 )
 
 data class SmtpConfig(

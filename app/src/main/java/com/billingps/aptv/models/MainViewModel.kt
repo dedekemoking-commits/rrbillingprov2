@@ -98,6 +98,7 @@ data class AppUiState(
     val showNotifPopup: Boolean = false,
     val notifPopupTitle: String = "",
     val notifPopupBody: String = "",
+    val habisDismissedIds: Set<String> = emptySet(),
 )
 
 fun defaultPaketMain(groups: List<String> = listOf("PS3", "PS4", "PS5")): Map<String, Map<String, Int>> {
@@ -450,26 +451,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     currentRole = sessionUser.role,
                     needsSmtpSetup = smtp.user.isBlank() || smtp.pass.isBlank(),
                 )
+                restoreLocalDataAfterLogin()
                 restoreLicenseAndTrial(sessionUser.username)
                 return AuthResult(true, "")
             }
             // Firebase gagal — fallback ke cek password lokal
             val fallbackUser = matchingEmailUser ?: localUser
-            if (fallbackUser != null) {
-                val hash = sha256(password)
-                if (fallbackUser.passwordHash == hash) {
-                    StorageUtil.saveCurrentSession(fallbackUser.username, fallbackUser.role)
-                    val smtp = _state.value.smtp
-                    _state.value = _state.value.copy(
-                        isLoggedIn = true,
-                        currentUser = fallbackUser.username,
-                        currentRole = fallbackUser.role,
-                        needsSmtpSetup = smtp.user.isBlank() || smtp.pass.isBlank(),
-                    )
-                    restoreLicenseAndTrial(fallbackUser.username)
-                    return AuthResult(true, "")
+                if (fallbackUser != null) {
+                    val hash = sha256(password)
+                    if (fallbackUser.passwordHash == hash) {
+                        StorageUtil.saveCurrentSession(fallbackUser.username, fallbackUser.role)
+                        val smtp = _state.value.smtp
+                        _state.value = _state.value.copy(
+                            isLoggedIn = true,
+                            currentUser = fallbackUser.username,
+                            currentRole = fallbackUser.role,
+                            needsSmtpSetup = smtp.user.isBlank() || smtp.pass.isBlank(),
+                        )
+                        restoreLocalDataAfterLogin()
+                        restoreLicenseAndTrial(fallbackUser.username)
+                        return AuthResult(true, "")
+                    }
                 }
-            }
             return firebaseResult
         }
 
@@ -485,6 +488,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             currentRole = localUser.role,
             needsSmtpSetup = smtp.user.isBlank() || smtp.pass.isBlank(),
         )
+        restoreLocalDataAfterLogin()
         // After successful login, pull remote transaksi & sync local
         viewModelScope.launch {
             try {
@@ -543,6 +547,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         needsSmtpSetup = _state.value.smtp.user.isEmpty(),
                         isBusy = false, statusMessage = "", loginMethod = "google",
                     )
+                    restoreLocalDataAfterLogin()
                     restoreLicenseAndTrial(existing.username)
                 } else {
                     val remoteUsername = withContext(Dispatchers.IO) { cloudRepo.findUsernameByEmail(verifiedEmail) }
@@ -560,6 +565,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             users = updatedUsers, isLoggedIn = true, currentUser = remoteUsername, currentRole = "admin",
                             isBusy = false, statusMessage = "", loginMethod = "google",
                         )
+                        restoreLocalDataAfterLogin()
                         restoreLicenseAndTrial(remoteUsername)
                         // Restore transaksi & TV list from cloud so old data doesn't get overwritten with empty
                         launch {
@@ -697,30 +703,104 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    private fun restoreLocalDataAfterLogin() {
+        val lic = StorageUtil.loadLicense()
+        _state.value = _state.value.copy(
+            tvList = StorageUtil.loadTvList(),
+            transaksiList = StorageUtil.loadTransaksi(),
+            licenseStatus = lic,
+            trialBatas = StorageUtil.loadTrialBatas(),
+            maxTv = if (lic.status == "active") (if (lic.promoAddTv > 0) lic.promoAddTv else lic.maxTv) else 0,
+        )
+    }
+
     private suspend fun restoreLicenseAndTrial(username: String) {
+        // 1) Cek lisensi dari penyimpanan lokal dulu — dan cek masa kedaluwarsa
+        var lic = StorageUtil.loadLicense()
+        var trial = StorageUtil.loadTrialBatas()
+        Log.i("MainVM", "restoreLicenseAndTrial: local lic status='${lic.status}' maxTv=${lic.maxTv} promoAddTv=${lic.promoAddTv} expiresAt='${lic.expiresAt}' trial=$trial")
+
+        if (lic.status == "active" && lic.expiresAt.isNotEmpty()) {
+            try {
+                val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                val expiryDate = sdf.parse(lic.expiresAt)
+                if (expiryDate != null && !expiryDate.after(java.util.Date())) {
+                    Log.i("MainVM", "restoreLicenseAndTrial: local license EXPIRED on ${lic.expiresAt}")
+                    lic = lic.copy(status = "inactive", pesan = "❌ Lisensi telah kedaluwarsa pada ${lic.expiresAt}")
+                    StorageUtil.saveLicense(lic)
+                }
+            } catch (e: Exception) { Log.e("MainVM", "expiry check: ${e.message}") }
+        }
+
+        // 2) Coba ambil data terbaru dari cloud — PRIORITAS UTAMA
         try {
             val cloudLic = withContext(Dispatchers.IO) { cloudRepo.fetchLicenseForUser(username) }
-            if (cloudLic != null && cloudLic.status.isNotEmpty()) {
-                _state.value = _state.value.copy(licenseStatus = cloudLic, trialBatas = 0L, maxTv = cloudLic.maxTv)
-                StorageUtil.saveLicense(cloudLic)
+            if (cloudLic != null && cloudLic.status == "active") {
+                Log.i("MainVM", "restoreLicenseAndTrial: cloud FOUND status=${cloudLic.status} maxTv=${cloudLic.maxTv} promoAddTv=${cloudLic.promoAddTv} pesan='${cloudLic.pesan}'")
+                // Cloud adalah primary — tapi jika cloud tidak punya promoAddTv, pertahankan dari lokal
+                var mergedPromoAddTv = if (cloudLic.promoAddTv > 0) cloudLic.promoAddTv
+                    else lic.promoAddTv
+                // Jika masih 0, coba langsung dari user doc (mungkin promo ada di sana)
+                if (mergedPromoAddTv == 0) {
+                    try {
+                        val userDocLic = withContext(Dispatchers.IO) { cloudRepo.fetchUserLicenseStatus(username) }
+                        if (userDocLic != null && userDocLic.promoAddTv > 0) {
+                            mergedPromoAddTv = userDocLic.promoAddTv
+                            Log.i("MainVM", "restoreLicenseAndTrial: promoAddTv from userDoc=$mergedPromoAddTv")
+                        }
+                    } catch (e: Exception) { Log.e("MainVM", "fetchUserDoc promo failed: ${e.message}") }
+                }
+                lic = cloudLic.copy(promoAddTv = mergedPromoAddTv)
+                if (mergedPromoAddTv > 0) {
+                    lic = lic.copy(maxTv = mergedPromoAddTv)
+                }
+                trial = 0L
+                StorageUtil.saveLicense(lic)
+            } else {
+                Log.i("MainVM", "restoreLicenseAndTrial: cloud null or not active: $cloudLic")
             }
-        } catch (e: Exception) { Log.e("MainVM", "fetchLicenseForUser in restoreLicenseAndTrial: ${e.message}") }
-        val s = _state.value
-        if (s.trialBatas == 0L && s.licenseStatus.status != "active") {
-            val cloudTrial = withContext(Dispatchers.IO) { cloudRepo.loadTrialFromCloud(username) }
-            if (cloudTrial <= 0L) {
-                // No existing trial in cloud — this is a truly new user, give trial
-                val trialEnd = System.currentTimeMillis() + 3 * 24 * 60 * 60 * 1000L
-                _state.value = _state.value.copy(trialBatas = trialEnd, maxTv = 2)
-                StorageUtil.saveTrial(trialEnd)
-                withContext(Dispatchers.IO) { cloudRepo.saveTrialToCloud(username, trialEnd) }
-            } else if (cloudTrial > System.currentTimeMillis()) {
-                // Cloud trial still active — restore it
-                _state.value = _state.value.copy(trialBatas = cloudTrial, maxTv = 2)
-                StorageUtil.saveTrial(cloudTrial)
-            }
-            // else: cloud trial expired — don't give new trial, leave trialBatas = 0
+        } catch (e: Exception) { Log.e("MainVM", "cloud fetch license failed: ${e.message}") }
+
+        // 3) Kalau ada lisensi aktif — terapkan hak penuh sesuai paket
+        if (lic.status == "active") {
+            val effectiveMaxTv = if (lic.promoAddTv > 0) lic.promoAddTv
+                else (parseMaxTvFromPesan(lic.pesan) ?: lic.maxTv)
+            Log.i("MainVM", "restoreLicenseAndTrial: ACTIVE lic.maxTv=${lic.maxTv} pesan='${lic.pesan}' -> effectiveMaxTv=$effectiveMaxTv")
+            _state.value = _state.value.copy(licenseStatus = lic, trialBatas = 0L, maxTv = effectiveMaxTv)
+            startListeners(username)
+            return
         }
+
+        // 4) Tidak ada lisensi — cek trial dari cloud, atau beri trial baru
+        Log.i("MainVM", "restoreLicenseAndTrial: no active license, trial=$trial")
+        if (trial <= System.currentTimeMillis()) {
+            try {
+                val cloudTrial = withContext(Dispatchers.IO) { cloudRepo.loadTrialFromCloud(username) }
+                if (cloudTrial > System.currentTimeMillis()) trial = cloudTrial else trial = 0L
+            } catch (e: Exception) { trial = 0L }
+        }
+        if (trial <= 0L) {
+            trial = System.currentTimeMillis() + 3 * 24 * 60 * 60 * 1000L
+            try { withContext(Dispatchers.IO) { cloudRepo.saveTrialToCloud(username, trial) } } catch (e: Exception) {}
+        }
+        Log.i("MainVM", "restoreLicenseAndTrial: setting trial maxTv=2 trial=$trial")
+        _state.value = _state.value.copy(trialBatas = trial, maxTv = 2)
+        StorageUtil.saveTrial(trial)
+        startListeners(username)
+    }
+
+    private fun parseMaxTvFromPesan(pesan: String): Int? {
+        val u = pesan.uppercase()
+        return when {
+            u.contains("LIFETIME") -> 0
+            u.contains("TAHUNAN") || u.contains("1 TAHUN") -> 15
+            u.contains("3BULAN") || u.contains("3 BULAN") -> 8
+            u.contains("BULANAN") || u.contains("1 BULAN") -> 5
+            else -> null
+        }
+    }
+
+    private suspend fun startListeners(username: String) {
         startLicenseListener(username)
         startPromoListener()
         startNotifListener(username)
@@ -970,10 +1050,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             currentUser = user.username,
             currentRole = user.role,
         )
+        restoreLocalDataAfterLogin()
         addActivityLog("Login kasir")
         startPromoListener()
         startNotifListener(user.username)
         initFcmToken(user.username)
+        viewModelScope.launch { restoreLicenseAndTrial(user.username) }
         return true
     }
 
@@ -1404,6 +1486,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshTimerService()
     }
 
+    fun dismissWaktuHabis(id: String) {
+        _state.value = _state.value.copy(
+            habisDismissedIds = _state.value.habisDismissedIds + id
+        )
+    }
+
     private fun refreshTimerService() {
         val activeTvs = _state.value.tvList.filter { it.timerActive || it.bebas }
         if (activeTvs.isEmpty()) {
@@ -1518,7 +1606,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val activatedDevices = record.activatedDevices
             val maxActivations = record.maxActivations
             if (activatedDevices.isNotEmpty()) {
-                // Check if this device type already registered
                 val alreadyAndroid = activatedDevices.any { it.deviceType == DEVICE_TYPE }
                 if (alreadyAndroid) {
                     onResult(false, "Kode ini sudah teraktivasi di perangkat Android lain.")
@@ -1530,8 +1617,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } else if (record.activatedAt > 0) {
                 // Backward compat: old single-activation code
-                // Allow it on Android since it was activated on Desktop (or vice versa)
-                // We'll let it pass and record as multi-device
             }
             if (!ECDSAUtils.verify(record.payload, record.signature)) {
                 onResult(false, "Kode tidak valid (signature mismatch). Hubungi admin.")
@@ -1542,31 +1627,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 onResult(false, "Kode ini khusus untuk ${record.email}. Gunakan akun email yang sesuai.")
                 return@launch
             }
+
             val paket = record.paket
             val durasiHari = when (paket) {
                 "BULANAN" -> 30; "3BULAN" -> 90; "TAHUNAN" -> 360; "LIFETIME" -> 99999; else -> 30
             }
-            val maxTv = when (paket) {
+            val baseMaxTv = when (paket) {
                 "BULANAN" -> 5; "3BULAN" -> 8; "TAHUNAN" -> 15; "LIFETIME" -> 0; else -> 2
             }
+
+            // ── Baca lisensi lokal & kalkulasi expired_date (akumulasi hari) ──
+            val localLic = StorageUtil.loadLicense()
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+            val today = java.util.Date()
+
+            val oldActive = localLic.status == "active" && localLic.expiresAt.isNotEmpty()
+            val oldExpiryDate = if (oldActive) {
+                try { sdf.parse(localLic.expiresAt) } catch (e: Exception) { null }
+            } else null
+            val oldStillValid = oldExpiryDate != null && oldExpiryDate.after(today)
+
             val cal = java.util.Calendar.getInstance()
-            val existingExp = _state.value.licenseStatus
-            if (existingExp.status == "active" && existingExp.expiresAt.isNotEmpty()) {
-                try {
-                    val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
-                    val existingDate = sdf.parse(existingExp.expiresAt)
-                    if (existingDate != null && existingDate.after(java.util.Date())) {
-                        cal.time = existingDate
-                    }
-                } catch (e: Exception) { Log.e("MainVM", "parse existing expiry in aktivasiLisensi: ${e.message}") }
+            if (oldStillValid) {
+                cal.time = oldExpiryDate!!
             }
             cal.add(java.util.Calendar.DAY_OF_YEAR, durasiHari)
-            val expires = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
+            val expires = sdf.format(cal.time)
+
+            // ── Hitung promo_add_tv: dari kode baru, fallback ke global settings, atau lanjutkan ──
+            val oldPromoAddTv = localLic.promoAddTv
+            val newPromoFromRecord = record.promoMaxTv
+            val newPromoFromGlobal = if (newPromoFromRecord == 0) {
+                getAddTvOverride(paket) ?: 0
+            } else 0
+            val newPromoAddTv = maxOf(newPromoFromRecord, newPromoFromGlobal)
+            val promoAddTv = when {
+                newPromoAddTv > 0 && oldPromoAddTv > 0 && oldStillValid -> oldPromoAddTv + newPromoAddTv
+                newPromoAddTv > 0 -> newPromoAddTv
+                oldPromoAddTv > 0 && oldStillValid -> oldPromoAddTv
+                else -> 0
+            }
+            val maxTv = if (promoAddTv > 0) promoAddTv else baseMaxTv
+
             val ls = LicenseStatus(
                 status = "active",
                 pesan = "✅ Lisensi $paket aktif hingga $expires",
                 expiresAt = expires,
                 maxTv = maxTv,
+                promoAddTv = promoAddTv,
             )
             _state.value = _state.value.copy(licenseStatus = ls, trialBatas = 0L, maxTv = maxTv)
             StorageUtil.saveLicense(ls)
@@ -1582,8 +1690,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         "status" to "active",
                         "pesan" to ls.pesan,
                         "expiresAt" to expires,
+                        "paket" to paket,
                         "maxTv" to maxTv,
                         "maxPc" to maxTv,
+                        "promoAddTv" to promoAddTv,
                         "cloud_restored" to true,
                     )
                     cloudRepo.ensureSignedIn()
@@ -1605,7 +1715,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return "RR$paketChar$random"
     }
 
-    fun generateLicenseKode(paket: String, username: String, email: String = "", onDone: (String) -> Unit) {
+    fun generateLicenseKode(paket: String, username: String, email: String = "", promoMaxTv: Int = 0, onDone: (String) -> Unit) {
         val kode = generateKode(paket)
         val nonce = java.util.UUID.randomUUID().toString().take(8)
         val cal = java.util.Calendar.getInstance()
@@ -1644,6 +1754,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     doc["activatedAt"] = 0L
                     doc["activatedDeviceId"] = ""
                     doc["revoked"] = false
+                    if (promoMaxTv > 0) doc["promoMaxTv"] = promoMaxTv
                     com.google.firebase.firestore.FirebaseFirestore.getInstance()
                         .collection("licenses").add(doc)
                 }
@@ -1698,36 +1809,71 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val inv = _state.value.invoices.firstOrNull { it.id == invoiceId } ?: return
         viewModelScope.launch {
             _state.value = _state.value.copy(isBusy = true, statusMessage = "Memproses pembayaran...")
-            generateLicenseKode(inv.paket, inv.username, inv.email) { kode ->
+            val tvOverride = getAddTvOverride(inv.paket)
+            val baseMaxTv = tvOverride ?: when (inv.paket.uppercase()) {
+                "BULANAN", "1 BULAN" -> 5; "3BULAN", "3 BULAN" -> 8
+                "TAHUNAN", "1 TAHUN" -> 15; "LIFETIME" -> 0; else -> 2
+            }
+            val durasiHari = when (inv.paket.uppercase()) {
+                "BULANAN", "1 BULAN" -> 30; "3BULAN", "3 BULAN" -> 90
+                "TAHUNAN", "1 TAHUN" -> 360; "LIFETIME" -> 99999; else -> 30
+            }
+            generateLicenseKode(inv.paket, inv.username, inv.email, promoMaxTv = tvOverride ?: 0) { kode ->
                 viewModelScope.launch {
-                    val tvOverride = getAddTvOverride(inv.paket)
-                    val maxTv = tvOverride ?: when (inv.paket) {
-                        "1 Bulan", "BULANAN" -> 5; "3 Bulan", "3BULAN" -> 8
-                        "1 Tahun", "TAHUNAN" -> 15; "LIFETIME" -> 0; else -> 2
-                    }
+                    // ── Baca lisensi lokal & kalkulasi expired_date (akumulasi hari) ──
+                    val localLic = StorageUtil.loadLicense()
+                    val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                    val today = java.util.Date()
+
+                    val oldActive = localLic.status == "active" && localLic.expiresAt.isNotEmpty()
+                    val oldExpiryDate = if (oldActive) {
+                        try { sdf.parse(localLic.expiresAt) } catch (e: Exception) { null }
+                    } else null
+                    val oldStillValid = oldExpiryDate != null && oldExpiryDate.after(today)
+
                     val cal = java.util.Calendar.getInstance()
-                    val existingExp = _state.value.licenseStatus
-                    if (existingExp.status == "active" && existingExp.expiresAt.isNotEmpty()) {
-                        try {
-                            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
-                            val existingDate = sdf.parse(existingExp.expiresAt)
-                        if (existingDate != null && existingDate.after(java.util.Date())) {
-                            cal.time = existingDate
-                        }
-                    } catch (e: Exception) { Log.e("MainVM", "parse existing expiry in konfirmasiPembayaran: ${e.message}") }
+                    if (oldStillValid) {
+                        cal.time = oldExpiryDate!!
                     }
-                    cal.add(java.util.Calendar.DAY_OF_YEAR, when (inv.paket) {
-                        "1 Bulan", "BULANAN" -> 30; "3 Bulan", "3BULAN" -> 90
-                        "1 Tahun", "TAHUNAN" -> 360; "LIFETIME" -> 99999; else -> 30
-                    })
-                    val expiry = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
+                    cal.add(java.util.Calendar.DAY_OF_YEAR, durasiHari)
+                    val expiry = sdf.format(cal.time)
+
+                    // ── Hitung promo_add_tv ──
+                    val oldPromoAddTv = localLic.promoAddTv
+                    val newPromoAddTv = tvOverride ?: 0
+                    val promoAddTv = when {
+                        newPromoAddTv > 0 && oldPromoAddTv > 0 && oldStillValid -> oldPromoAddTv + newPromoAddTv
+                        newPromoAddTv > 0 -> newPromoAddTv
+                        oldPromoAddTv > 0 && oldStillValid -> oldPromoAddTv
+                        else -> 0
+                    }
+                    val maxTv = if (promoAddTv > 0) promoAddTv else baseMaxTv
+
                     val ls = LicenseStatus(
                         status = "active",
                         pesan = "✅ Lisensi ${inv.paket} aktif hingga $expiry",
-                        expiresAt = expiry, maxTv = maxTv,
+                        expiresAt = expiry,
+                        maxTv = maxTv,
+                        promoAddTv = promoAddTv,
                     )
                     _state.value = _state.value.copy(licenseStatus = ls, trialBatas = 0L, maxTv = maxTv)
                     StorageUtil.saveLicense(ls)
+                    // Write ke user doc (cloud) agar terbaca saat ganti HP
+                    try {
+                        if (cloudRepo.ensureSignedIn()) {
+                            val userLs = mapOf(
+                                "status" to "active",
+                                "pesan" to ls.pesan,
+                                "expiresAt" to expiry,
+                                "paket" to inv.paket,
+                                "maxTv" to maxTv,
+                                "maxPc" to maxTv,
+                                "promoAddTv" to promoAddTv,
+                                "cloud_restored" to true,
+                            )
+                            cloudRepo.writeLicenseStatusToUserDoc(inv.username, userLs)
+                        }
+                    } catch (e: Exception) { Log.e("MainVM", "writeLicenseStatusToUserDoc in konfirmasiPembayaran: ${e.message}") }
                     try {
                         val record = cloudRepo.findLicenseByCode(kode)
                         if (record != null) { cloudRepo.activateLicense(record.id, expiry) }

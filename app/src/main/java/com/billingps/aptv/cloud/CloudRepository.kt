@@ -41,11 +41,12 @@ class CloudRepository(private val app: Application) {
     suspend fun writeLicenseStatusToUserDoc(username: String, ls: Map<String, Any>): Boolean {
         if (username.isBlank()) return false
         if (!ensureSignedIn()) return false
+        Log.i("CloudRepo", "writeLicenseStatusToUserDoc: username=$username ls=$ls")
         return suspendCancellableCoroutine { cont ->
             firestore.collection("billingps_users").document(username)
                 .set(mapOf("licenseStatus" to ls), com.google.firebase.firestore.SetOptions.merge())
-                .addOnSuccessListener { cont.resume(true) }
-                .addOnFailureListener { cont.resume(false) }
+                .addOnSuccessListener { Log.i("CloudRepo", "writeLicenseStatusToUserDoc success"); cont.resume(true) }
+                .addOnFailureListener { Log.i("CloudRepo", "writeLicenseStatusToUserDoc failed: ${it.message}"); cont.resume(false) }
         }
     }
 
@@ -94,6 +95,7 @@ class CloudRepository(private val app: Application) {
                     "pesan" to state.licenseStatus.pesan,
                     "expiresAt" to state.licenseStatus.expiresAt,
                     "maxTv" to state.licenseStatus.maxTv,
+                    "promoAddTv" to state.licenseStatus.promoAddTv,
                 )
             }
 
@@ -259,25 +261,33 @@ class CloudRepository(private val app: Application) {
                     val activated = snap.documents
                         .filter { doc -> (doc.getLong("activatedAt") ?: 0) > 0 && doc.getBoolean("revoked") != true }
                         .maxByOrNull { doc -> doc.getLong("activatedAt") ?: 0 }
-                    if (activated == null) { cont.resume(null); return@addOnSuccessListener }
-                    val data = activated.data ?: run { cont.resume(null); return@addOnSuccessListener }
+                    if (activated == null) { Log.i("CloudRepo", "queryLicenseByField($field=$value): no activated doc"); cont.resume(null); return@addOnSuccessListener }
+                    val data = activated.data ?: run { Log.i("CloudRepo", "queryLicenseByField($field=$value): no data"); cont.resume(null); return@addOnSuccessListener }
                     val paket = data["paket"] as? String ?: ""
                     val expiry = data["expiry"] as? String ?: ""
-                    val maxTv = when (paket) {
-                        "BULANAN" -> 5; "3BULAN" -> 8; "TAHUNAN" -> 15; "LIFETIME" -> 0; else -> 2
+                    Log.i("CloudRepo", "queryLicenseByField($field=$value): found paket='$paket' expiry=$expiry")
+                    val maxTv = when (paket.uppercase()) {
+                        "BULANAN", "1 BULAN" -> 5
+                        "3BULAN", "3 BULAN" -> 8
+                        "TAHUNAN", "1 TAHUN" -> 15
+                        "LIFETIME" -> 0
+                        else -> 2
                     }
+                    val promoAddTv = (data["promoMaxTv"] as? Number)?.toInt() ?: 0
+                    val effectiveMaxTv = if (promoAddTv > 0) promoAddTv else maxTv
                     cont.resume(LicenseStatus(
                         status = "active",
                         pesan = "✅ Lisensi $paket aktif hingga $expiry",
                         expiresAt = expiry,
-                        maxTv = maxTv,
+                        maxTv = effectiveMaxTv,
+                        promoAddTv = promoAddTv,
                     ))
                 }
-                .addOnFailureListener { cont.resume(null) }
+                .addOnFailureListener { ex -> Log.i("CloudRepo", "queryLicenseByField($field=$value) failed: ${ex.message}"); cont.resume(null) }
         }
     }
 
-    private suspend fun fetchUserLicenseStatus(username: String): LicenseStatus? {
+    suspend fun fetchUserLicenseStatus(username: String): LicenseStatus? {
         if (username.isBlank()) return null
         if (!ensureSignedIn()) return null
         return suspendCancellableCoroutine { cont ->
@@ -289,10 +299,20 @@ class CloudRepository(private val app: Application) {
                     val status = ls["status"] as? String ?: ""
                     if (status != "active") { cont.resume(null); return@addOnSuccessListener }
                     val expiry = ls["expiresAt"] as? String ?: ""
-                    val maxTv = (ls["maxTv"] as? Number)?.toInt() ?: 2
+                    val storedMaxTv = (ls["maxTv"] as? Number)?.toInt() ?: 0
                     val pesan = ls["pesan"] as? String ?: "✅ Lisensi aktif hingga $expiry"
+                    val promoAddTv = (ls["promoAddTv"] as? Number)?.toInt() ?: 0
+                    val maxTv = when {
+                        promoAddTv > 0 -> promoAddTv
+                        storedMaxTv > 0 -> storedMaxTv // trust stored value (was set by syncToCloud or aktivasiLisensi)
+                        pesan.contains("LIFETIME") -> 0
+                        pesan.contains("TAHUNAN") || pesan.contains("1 Tahun") -> 15
+                        pesan.contains("3BULAN") || pesan.contains("3 Bulan") -> 8
+                        pesan.contains("BULANAN") || pesan.contains("1 Bulan") -> 5
+                        else -> 2
+                    }
                     Log.i("CloudRepo", "fetchUserLicenseStatus: found active license for $username, expiry=$expiry")
-                    cont.resume(LicenseStatus(status = "active", pesan = pesan, expiresAt = expiry, maxTv = maxTv))
+                    cont.resume(LicenseStatus(status = "active", pesan = pesan, expiresAt = expiry, maxTv = maxTv, promoAddTv = promoAddTv))
                 }
                 .addOnFailureListener { ex ->
                     Log.i("CloudRepo", "fetchUserLicenseStatus failed: ${ex.message}")
@@ -303,26 +323,27 @@ class CloudRepository(private val app: Application) {
 
     suspend fun fetchLicenseForUser(usernameOrEmail: String): LicenseStatus? {
         if (usernameOrEmail.isBlank()) return null
-        Log.i("CloudRepo", "fetchLicenseForUser start: $usernameOrEmail")
-        if (!ensureSignedIn()) return null
+        Log.i("CloudRepo", "fetchLicenseForUser start: '$usernameOrEmail'")
+        if (!ensureSignedIn()) { Log.i("CloudRepo", "fetchLicenseForUser: ensureSignedIn failed"); return null }
         var result = queryLicenseByField("username", usernameOrEmail)
-        if (result == null && usernameOrEmail.contains("@")) {
+        if (result == null) {
+            Log.i("CloudRepo", "fetchLicenseForUser: also trying email field for '$usernameOrEmail'")
             result = queryLicenseByField("email", usernameOrEmail)
         }
         // Fallback: check user doc for licenseStatus written by License Generator
         if (result == null && !usernameOrEmail.contains("@")) {
-            Log.i("CloudRepo", "fetchLicenseForUser: trying user doc fallback for $usernameOrEmail")
+            Log.i("CloudRepo", "fetchLicenseForUser: trying user doc fallback for '$usernameOrEmail'")
             result = fetchUserLicenseStatus(usernameOrEmail)
         }
         // Final fallback: check CONFIRMED invoices with kodeLisensi
         if (result == null && !usernameOrEmail.contains("@")) {
-            Log.i("CloudRepo", "fetchLicenseForUser: trying confirmed invoice fallback for $usernameOrEmail")
+            Log.i("CloudRepo", "fetchLicenseForUser: trying confirmed invoice fallback for '$usernameOrEmail'")
             result = findConfirmedInvoiceLicense(usernameOrEmail)
         }
         if (result != null) {
-            Log.i("CloudRepo", "fetchLicenseForUser: found ${result.status} for $usernameOrEmail")
+            Log.i("CloudRepo", "fetchLicenseForUser: FOUND status=${result.status} maxTv=${result.maxTv} expires=${result.expiresAt} pesan='${result.pesan}'")
         } else {
-            Log.i("CloudRepo", "fetchLicenseForUser: no active license for $usernameOrEmail")
+            Log.i("CloudRepo", "fetchLicenseForUser: NO active license for '$usernameOrEmail'")
         }
         return result
     }
@@ -434,9 +455,12 @@ class CloudRepository(private val app: Application) {
                     val paket = data["paket"] as? String ?: ""
                     val expiry = data["expiry"] as? String ?: ""
                     if (kode.isEmpty() || paket.isEmpty()) { cont.resume(null); return@addOnSuccessListener }
-                    val maxTv = when (paket) {
-                        "BULANAN" -> 5; "3BULAN" -> 8; "TAHUNAN" -> 15; "LIFETIME" -> 0; else -> 2
+                    val baseMaxTv = when (paket.uppercase()) {
+                        "BULANAN", "1 BULAN" -> 5; "3BULAN", "3 BULAN" -> 8
+                        "TAHUNAN", "1 TAHUN" -> 15; "LIFETIME" -> 0; else -> 2
                     }
+                    val promoAddTv = (data["promoMaxTv"] as? Number)?.toInt() ?: 0
+                    val maxTv = if (promoAddTv > 0) promoAddTv else baseMaxTv
                     Log.i("CloudRepo", "findConfirmedInvoiceLicense: found unactivated $kode for $username, expiry=$expiry")
                     
                     // Activate with multi-device support
@@ -472,6 +496,7 @@ class CloudRepository(private val app: Application) {
                         pesan = "✅ Lisensi $paket aktif hingga $expiry",
                         expiresAt = expiry,
                         maxTv = maxTv,
+                        promoAddTv = promoAddTv,
                     ))
                 }
                 .addOnFailureListener { ex ->
@@ -514,6 +539,7 @@ class CloudRepository(private val app: Application) {
                         activatedDeviceId = data["activatedDeviceId"] as? String ?: "",
                         revoked = data["revoked"] as? Boolean ?: false,
                         maxActivations = (data["maxActivations"] as? Number)?.toInt() ?: 2,
+                        promoMaxTv = (data["promoMaxTv"] as? Number)?.toInt() ?: 0,
                         activatedDevices = activatedDevices,
                     ))
                 }
@@ -748,10 +774,20 @@ class CloudRepository(private val app: Application) {
                 val status = ls["status"] as? String ?: ""
                 if (status != "active") { onUpdate(null); return@addSnapshotListener }
                 val expiry = ls["expiresAt"] as? String ?: ""
-                val maxTv = (ls["maxTv"] as? Number)?.toInt() ?: 2
+                val storedMaxTv = (ls["maxTv"] as? Number)?.toInt() ?: 0
                 val pesan = ls["pesan"] as? String ?: "✅ Lisensi aktif hingga $expiry"
+                val promoAddTv = (ls["promoAddTv"] as? Number)?.toInt() ?: 0
+                val maxTv = when {
+                    promoAddTv > 0 -> promoAddTv
+                    storedMaxTv > 0 -> storedMaxTv
+                    pesan.contains("LIFETIME") -> 0
+                    pesan.contains("TAHUNAN") || pesan.contains("1 Tahun") -> 15
+                    pesan.contains("3BULAN") || pesan.contains("3 Bulan") -> 8
+                    pesan.contains("BULANAN") || pesan.contains("1 Bulan") -> 5
+                    else -> 2
+                }
                 Log.i("CloudRepo", "listenUserLicense: license updated for $username, expiry=$expiry")
-                onUpdate(LicenseStatus(status = "active", pesan = pesan, expiresAt = expiry, maxTv = maxTv))
+                onUpdate(LicenseStatus(status = "active", pesan = pesan, expiresAt = expiry, maxTv = maxTv, promoAddTv = promoAddTv))
             }
     }
 

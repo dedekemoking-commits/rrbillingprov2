@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -20,11 +21,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.res.painterResource
@@ -75,7 +78,7 @@ fun DashboardScreen(
     var bayarUpdates by remember { mutableStateOf<Map<String, Any>?>(null) }
     var showHabisDialog by remember { mutableStateOf(false) }
     var tvHabis by remember { mutableStateOf<TvData?>(null) }
-    var habisShownIds by remember { mutableStateOf(setOf<String>()) }
+    val habisDismissedIds = state.habisDismissedIds
     var showHapusPasswordDialog by remember { mutableStateOf(false) }
     var tvHapusTarget by remember { mutableStateOf<TvData?>(null) }
     var hapusPasswordInput by remember { mutableStateOf("") }
@@ -175,9 +178,11 @@ fun DashboardScreen(
                     state = listState,
                 ) {
                     itemsIndexed(tvList, key = { _, tv -> tv.id }) { idx, tv ->
+                    val forceDisabled = state.licenseStatus.status != "active" && idx >= 2
                     TVCard(
                         tv = tv,
                         showPindah = tvList.size > 1,
+                        forceDisabled = forceDisabled,
                         onPilihPaket = { selectedTV = tv; showPaket = true },
                         onHapus = {
                             if (state.tvPasswordHash.isEmpty()) {
@@ -211,15 +216,8 @@ fun DashboardScreen(
                             }
                         },
                         onSelesai = {
-                            viewModel.updateTV(tv.id, mapOf(
-                                "timerActive" to false, "sisaDetik" to 0L,
-                                "bebas" to false, "paketAktif" to "SELESAI",
-                            ))
                             selesaiSummaryTV = tv
                             showSelesaiSummary = true
-                            if (tv.certPem.isNotEmpty() && tv.keyPem.isNotEmpty()) {
-                                tvViewModel.sendPower(tv.ip, tv.certPem, tv.keyPem)
-                            }
                         },
                         onHdmi = {
                             if (tv.certPem.isNotEmpty() && tv.keyPem.isNotEmpty()) {
@@ -269,15 +267,14 @@ fun DashboardScreen(
             }
         }
 
-        // Monitor expired timers from state changes (triggered by TimerService broadcasts)
+        // Monitor expired timers — show dialog once per session, never again after dismissed
         LaunchedEffect(state.tvList) {
-            val expiredIds = state.tvList.filter { it.paketAktif == "WAKTU HABIS" && it.sisaDetik == 0L }.map { it.id }.toSet()
-            habisShownIds = habisShownIds.filter { it in expiredIds }.toSet()
-            val expiredTv = state.tvList.firstOrNull { it.paketAktif == "WAKTU HABIS" && it.sisaDetik == 0L && it.id !in habisShownIds }
+            val expiredTv = state.tvList.firstOrNull {
+                it.paketAktif == "WAKTU HABIS" && it.sisaDetik == 0L && it.id !in habisDismissedIds
+            }
             if (expiredTv != null && tvHabis == null) {
                 tvHabis = expiredTv
                 showHabisDialog = true
-                habisShownIds = habisShownIds + expiredTv.id
                 if (expiredTv.certPem.isNotEmpty() && expiredTv.keyPem.isNotEmpty()) {
                     tvViewModel.sendPower(expiredTv.ip, expiredTv.certPem, expiredTv.keyPem)
                 }
@@ -317,7 +314,18 @@ fun DashboardScreen(
     if (showSelesaiSummary && selesaiSummaryTv != null) {
         SelesaiSummaryDialog(
             tv = selesaiSummaryTv,
-            onDismiss = { showSelesaiSummary = false; selesaiSummaryTV = null },
+            onBatal = { showSelesaiSummary = false; selesaiSummaryTV = null },
+            onSelesai = {
+                viewModel.updateTV(selesaiSummaryTv.id, mapOf(
+                    "timerActive" to false, "sisaDetik" to 0L,
+                    "bebas" to false, "paketAktif" to "SELESAI",
+                ))
+                showSelesaiSummary = false
+                selesaiSummaryTV = null
+                if (selesaiSummaryTv.certPem.isNotEmpty() && selesaiSummaryTv.keyPem.isNotEmpty()) {
+                    tvViewModel.sendPower(selesaiSummaryTv.ip, selesaiSummaryTv.certPem, selesaiSummaryTv.keyPem)
+                }
+            },
             onPrint = {
                 val lastTx = state.transaksiList.filter { it.kota == selesaiSummaryTv.nama }.maxByOrNull { it.waktu }
                 if (lastTx != null) {
@@ -346,7 +354,10 @@ fun DashboardScreen(
     if (showHabisDialog && tvHabisValue != null) {
         HabisDialog(
             tv = tvHabisValue,
-            onDismiss = { showHabisDialog = false; tvHabis = null },
+            onDismiss = {
+                viewModel.dismissWaktuHabis(tvHabisValue.id)
+                showHabisDialog = false; tvHabis = null
+            },
             onSudahBayar = { viewModel.updateTV(tvHabisValue.id, mapOf("sudahBayar" to true)) },
         )
     }
@@ -697,14 +708,29 @@ fun TVCard(
     onPindahTV: () -> Unit = {},
     onBatal: () -> Unit = {},
     showPindah: Boolean = false,
+    forceDisabled: Boolean = false,
 ) {
+    val alpha = if (forceDisabled) 0.38f else 1f
+    var bebasTick by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(tv.bebas, tv.id) {
+        while (tv.bebas && isActive) {
+            bebasTick = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+
+    var showEditHarga by remember { mutableStateOf(false) }
+    var editHargaValue by remember { mutableStateOf("") }
+
     val sisaWaktu = if (tv.timerActive && !tv.bebas) {
         val m = tv.sisaDetik / 60
         val d = tv.sisaDetik % 60
         "${m}m ${d}d"
     } else if (tv.bebas) {
-        val elapsed = (System.currentTimeMillis() - tv.bebasMulai) / 60000
-        "${elapsed}m"
+        val elapsedDetik = ((bebasTick - tv.bebasMulai) / 1000).toInt()
+        val m = elapsedDetik / 60
+        val d = elapsedDetik % 60
+        "${m}m ${d}d"
     } else ""
     val isHabis = tv.paketAktif == "WAKTU HABIS" || tv.paketAktif == "SELESAI"
     val isAlmostHabis = tv.timerActive && !tv.bebas && tv.sisaDetik in 1..60
@@ -729,6 +755,7 @@ fun TVCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
+            .alpha(alpha)
             .then(
                 if (tv.timerActive || tv.bebas || isHabis)
                     Modifier.border(
@@ -776,11 +803,18 @@ fun TVCard(
                 Text(tv.paketAktif, style = MaterialTheme.typography.bodySmall,
                     color = if (isHabis) NeonRed else NeonGreen, fontWeight = FontWeight.Bold)
                 if (!isHabis && tv.bebas) {
-                    val jam = maxOf(1, ((System.currentTimeMillis() - tv.bebasMulai) / 3600000).toInt())
-                    val runningTotal = (jam * tv.bebasHargaPerJam) + tv.bebasPesananTotal
+                    val elapsedMs = bebasTick - tv.bebasMulai
+                    val runningTotal = ((elapsedMs * tv.bebasHargaPerJam) / 3600000).toInt() + tv.bebasPesananTotal
                     Spacer(Modifier.height(2.dp))
-                    Text("Biaya: ${fmtRp(runningTotal)} (${fmtRp(tv.bebasHargaPerJam)}/jam)",
-                        style = MaterialTheme.typography.bodySmall, color = NeonGreen)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Biaya: ${fmtRp(runningTotal)} (${fmtRp(tv.bebasHargaPerJam)}/jam)",
+                            style = MaterialTheme.typography.bodySmall, color = NeonGreen,
+                            modifier = Modifier.weight(1f))
+                        IconButton(
+                            onClick = { showEditHarga = true; editHargaValue = tv.bebasHargaPerJam.toString() },
+                            modifier = Modifier.size(18.dp),
+                        ) { Icon(Icons.Filled.Edit, contentDescription = "Ubah harga", tint = NeonYellow, modifier = Modifier.size(14.dp)) }
+                    }
                 }
                 if (!isHabis && !tv.bebas) {
                     val totalBelanja = tv.paketHarga + tv.totalPesanan
@@ -795,7 +829,8 @@ fun TVCard(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (!tv.paired) {
                     OutlinedButton(
-                        onClick = onPair,
+                        onClick = { if (!forceDisabled) onPair() },
+                        enabled = !forceDisabled,
                         shape = RoundedCornerShape(6.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan),
                         border = BorderStroke(1.dp, NeonCyan),
@@ -803,21 +838,24 @@ fun TVCard(
                     ) { Icon(Icons.Filled.Cast, contentDescription = null, modifier = Modifier.size(12.dp)); Spacer(Modifier.width(2.dp)); Text("Pair", style = MaterialTheme.typography.labelSmall) }
                 }
                 Button(
-                    onClick = onPilihPaket,
+                    onClick = { if (!forceDisabled) onPilihPaket() },
+                    enabled = !forceDisabled,
                     shape = RoundedCornerShape(6.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                 ) { Text(if (tv.timerActive || tv.bebas) "Pesanan" else "Paket", style = MaterialTheme.typography.labelSmall) }
                 if (tv.paired) {
                     OutlinedButton(
-                        onClick = onVolDown,
+                        onClick = { if (!forceDisabled) onVolDown() },
+                        enabled = !forceDisabled,
                         shape = RoundedCornerShape(6.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
                         border = BorderStroke(1.dp, NeonGreen),
                         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
                     ) { Icon(Icons.Filled.VolumeDown, contentDescription = null, modifier = Modifier.size(12.dp)) }
                     OutlinedButton(
-                        onClick = onVolUp,
+                        onClick = { if (!forceDisabled) onVolUp() },
+                        enabled = !forceDisabled,
                         shape = RoundedCornerShape(6.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
                         border = BorderStroke(1.dp, NeonGreen),
@@ -826,7 +864,8 @@ fun TVCard(
                 }
                 if (tv.timerActive || tv.bebas) {
                     OutlinedButton(
-                        onClick = onTambahWaktu,
+                        onClick = { if (!forceDisabled) onTambahWaktu() },
+                        enabled = !forceDisabled,
                         shape = RoundedCornerShape(6.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonYellow),
                         border = BorderStroke(1.dp, NeonYellow),
@@ -835,7 +874,8 @@ fun TVCard(
                 }
                 if (tv.cancelBatas > 0 && System.currentTimeMillis() < tv.cancelBatas) {
                     OutlinedButton(
-                        onClick = onBatal,
+                        onClick = { if (!forceDisabled) onBatal() },
+                        enabled = !forceDisabled,
                         shape = RoundedCornerShape(6.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonOrange),
                         border = BorderStroke(1.dp, NeonOrange),
@@ -844,7 +884,8 @@ fun TVCard(
                 }
                 Spacer(Modifier.weight(1f))
                 OutlinedButton(
-                    onClick = onHapus,
+                    onClick = { if (!forceDisabled) onHapus() },
+                    enabled = !forceDisabled,
                     shape = RoundedCornerShape(6.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
                     border = BorderStroke(1.dp, NeonRed),
@@ -856,21 +897,24 @@ fun TVCard(
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                     OutlinedButton(
-                        onClick = onPower,
+                        onClick = { if (!forceDisabled) onPower() },
+                        enabled = !forceDisabled,
                         shape = RoundedCornerShape(6.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonOrange),
                         border = BorderStroke(1.dp, NeonOrange),
                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
                     ) { Icon(Icons.Filled.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(12.dp)); Spacer(Modifier.width(2.dp)); Text("Power", style = MaterialTheme.typography.labelSmall) }
                     OutlinedButton(
-                        onClick = onHdmi,
+                        onClick = { if (!forceDisabled) onHdmi() },
+                        enabled = !forceDisabled,
                         shape = RoundedCornerShape(6.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
                         border = BorderStroke(1.dp, NeonGreen),
                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
                     ) { Icon(Icons.Filled.Input, contentDescription = null, modifier = Modifier.size(12.dp)); Spacer(Modifier.width(2.dp)); Text("HDMI", style = MaterialTheme.typography.labelSmall) }
                     OutlinedButton(
-                        onClick = onOk,
+                        onClick = { if (!forceDisabled) onOk() },
+                        enabled = !forceDisabled,
                         shape = RoundedCornerShape(6.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
                         border = BorderStroke(1.dp, NeonGreen),
@@ -878,7 +922,8 @@ fun TVCard(
                     ) { Text("OK", style = MaterialTheme.typography.labelSmall, color = NeonGreen) }
                     if (tv.timerActive || tv.bebas) {
                         OutlinedButton(
-                            onClick = onSelesai,
+                            onClick = { if (!forceDisabled) onSelesai() },
+                            enabled = !forceDisabled,
                             shape = RoundedCornerShape(6.dp),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
                             border = BorderStroke(1.dp, NeonRed),
@@ -886,15 +931,48 @@ fun TVCard(
                         ) { Icon(Icons.Filled.Stop, contentDescription = null, modifier = Modifier.size(12.dp)); Spacer(Modifier.width(2.dp)); Text("Selesai", style = MaterialTheme.typography.labelSmall) }
                     }
                     if (showPindah) {
-                        TextButton(onClick = onPindahTV, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) {
-                            Icon(Icons.Filled.SwapHoriz, contentDescription = null, modifier = Modifier.size(12.dp), tint = NeonCyan)
+                        TextButton(onClick = { if (!forceDisabled) onPindahTV() }, enabled = !forceDisabled, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) {
+                            Icon(Icons.Filled.SwapHoriz, contentDescription = null, modifier = Modifier.size(12.dp), tint = if (forceDisabled) TextDim else NeonCyan)
                             Spacer(Modifier.width(2.dp))
-                            Text("Pindah", style = MaterialTheme.typography.labelSmall, color = NeonCyan)
+                            Text("Pindah", style = MaterialTheme.typography.labelSmall, color = if (forceDisabled) TextDim else NeonCyan)
                         }
                     }
                 }
             }
         }
+    }
+
+    if (showEditHarga) {
+        AlertDialog(
+            onDismissRequest = { showEditHarga = false },
+            containerColor = DarkSurface,
+            title = { Text("UBAH HARGA PER JAM", color = NeonYellow) },
+            text = {
+                OutlinedTextField(
+                    value = editHargaValue,
+                    onValueChange = { editHargaValue = it },
+                    label = { Text("Harga per jam (Rp)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = fieldColors(),
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val newRate = editHargaValue.toIntOrNull()
+                        if (newRate != null && newRate > 0) {
+                            onUpdate(mapOf("bebasHargaPerJam" to newRate))
+                        }
+                        showEditHarga = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
+                ) { Text("Simpan") }
+            },
+            dismissButton = { TextButton(onClick = { showEditHarga = false }) { Text("Batal", color = TextSecondary) } },
+        )
     }
 }
 
@@ -1226,12 +1304,13 @@ fun PairingDialog(
 @Composable
 fun SelesaiSummaryDialog(
     tv: TvData,
-    onDismiss: () -> Unit,
+    onBatal: () -> Unit,
+    onSelesai: () -> Unit,
     onPrint: (() -> Unit)? = null,
 ) {
     val totalBiaya = if (tv.bebas) {
-        val jam = maxOf(1, ((System.currentTimeMillis() - tv.bebasMulai) / 3600000).toInt())
-        (jam * tv.bebasHargaPerJam) + tv.bebasPesananTotal
+        val elapsedMs = System.currentTimeMillis() - tv.bebasMulai
+        ((elapsedMs * tv.bebasHargaPerJam) / 3600000).toInt() + tv.bebasPesananTotal
     } else {
         tv.paketHarga + tv.totalPesanan
     }
@@ -1243,7 +1322,7 @@ fun SelesaiSummaryDialog(
     }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = onBatal,
         containerColor = DarkSurface,
         title = { Text("SELESAI", color = NeonRed) },
         text = {
@@ -1261,7 +1340,6 @@ fun SelesaiSummaryDialog(
                 if (tv.totalPesanan > 0 || tv.bebasPesananTotal > 0) {
                     Spacer(Modifier.height(4.dp))
                     Text("Pesanan:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                    // We don't store pesanan items per TV, just totals. Show the total.
                     Text(fmtRp(tv.totalPesanan + tv.bebasPesananTotal), style = MaterialTheme.typography.bodySmall, color = TextPrimary)
                 }
                 Spacer(Modifier.height(12.dp))
@@ -1288,8 +1366,19 @@ fun SelesaiSummaryDialog(
                         border = BorderStroke(1.dp, NeonCyan),
                     ) { Icon(Icons.Filled.Print, contentDescription = null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Cetak") }
                 }
-                Button(onClick = onDismiss, colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("OK") }
+                Button(
+                    onClick = onSelesai,
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
+                ) { Text("OK, Selesai") }
             }
+        },
+        dismissButton = {
+            OutlinedButton(
+                onClick = onBatal,
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
+                border = BorderStroke(1.dp, NeonRed),
+            ) { Text("Batal") }
         },
     )
 }

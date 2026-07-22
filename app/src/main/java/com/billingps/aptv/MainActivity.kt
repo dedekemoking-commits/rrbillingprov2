@@ -357,24 +357,15 @@ fun MainScreen(
     val connectivityObserver = remember { ConnectivityObserver(context.applicationContext as android.app.Application).also { it.start() } }
     val networkStatus by connectivityObserver.status.collectAsState()
     DisposableEffect(Unit) { onDispose { connectivityObserver.stop() } }
-    val tabList = remember(role, isLocked) {
-        val base = when (role) {
+    val tabList = remember(role) {
+        when (role) {
             "kasir" -> listOf(BottomTab.DASHBOARD, BottomTab.RIWAYAT, BottomTab.VERIFIKASI)
             else -> BottomTab.entries.toList()
         }
-        if (isLocked) base.filter { it == BottomTab.VERIFIKASI || it == BottomTab.PROFILE }
-        else base
     }
     var selectedTab by remember { mutableStateOf(BottomTab.DASHBOARD) }
 
     LaunchedEffect(role) { selectedTab = BottomTab.DASHBOARD }
-
-    // Auto-redirect to VERIFIKASI if current tab is locked
-    LaunchedEffect(isLocked) {
-        if (isLocked && selectedTab != BottomTab.VERIFIKASI && selectedTab != BottomTab.PROFILE) {
-            selectedTab = BottomTab.VERIFIKASI
-        }
-    }
 
     Scaffold(
         bottomBar = {

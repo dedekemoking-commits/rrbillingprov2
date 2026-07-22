@@ -110,9 +110,9 @@ fun KontrolHargaScreen(viewModel: MainViewModel) {
                     Spacer(Modifier.height(8.dp))
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Paket", style = MaterialTheme.typography.labelSmall, color = TextPrimary, modifier = Modifier.weight(1.5f), fontWeight = FontWeight.Bold)
+                        Text("Paket", style = MaterialTheme.typography.labelSmall, color = TextPrimary, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
                         state.jenisPsList.forEach { grup ->
-                            Box(modifier = Modifier.weight(1.5f)) {
+                            Box(modifier = Modifier.weight(1f)) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.Center,
@@ -152,7 +152,7 @@ fun KontrolHargaScreen(viewModel: MainViewModel) {
                                     cd[baru] = cd.remove(nama) ?: "60"
                                     editDurasi = cd
                                 },
-                                singleLine = true, modifier = Modifier.weight(1.5f), textStyle = MaterialTheme.typography.bodySmall,
+                                singleLine = true, modifier = Modifier.weight(1f), textStyle = MaterialTheme.typography.bodySmall,
                                 shape = RoundedCornerShape(6.dp), colors = fieldColors(),
                             )
                             state.jenisPsList.forEach { t ->
@@ -160,7 +160,7 @@ fun KontrolHargaScreen(viewModel: MainViewModel) {
                                     value = editPaket[t]?.get(nama) ?: "0",
                                     onValueChange = { v -> editPaket = editPaket + (t to ((editPaket[t] ?: emptyMap()) + (nama to v))) },
                                     singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    modifier = Modifier.weight(1.5f), textStyle = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1f), textStyle = MaterialTheme.typography.bodySmall,
                                     shape = RoundedCornerShape(6.dp), colors = fieldColors(),
                                 )
                             }

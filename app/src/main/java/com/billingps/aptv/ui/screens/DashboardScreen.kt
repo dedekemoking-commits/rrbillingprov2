@@ -37,7 +37,10 @@ import com.billingps.aptv.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import androidx.compose.ui.platform.LocalContext
 import java.text.NumberFormat
 import java.util.Locale
@@ -72,6 +75,7 @@ fun DashboardScreen(
     var bayarUpdates by remember { mutableStateOf<Map<String, Any>?>(null) }
     var showHabisDialog by remember { mutableStateOf(false) }
     var tvHabis by remember { mutableStateOf<TvData?>(null) }
+    var habisShownIds by remember { mutableStateOf(setOf<String>()) }
     var showHapusPasswordDialog by remember { mutableStateOf(false) }
     var tvHapusTarget by remember { mutableStateOf<TvData?>(null) }
     var hapusPasswordInput by remember { mutableStateOf("") }
@@ -244,36 +248,38 @@ fun DashboardScreen(
             }
         }
 
-        // Timer countdown effect — reactive to state.tvList changes
+        // Start background timer service when any timer is active
+        LaunchedEffect(state.tvList) {
+            val hasActiveTimer = state.tvList.any { it.timerActive && !it.bebas && it.sisaDetik > 0 } || state.tvList.any { it.bebas }
+            if (hasActiveTimer) {
+                viewModel.startTimerService()
+            }
+        }
+
+        // Monitor cancelBatas expiry (10-minute cancellation window)
         LaunchedEffect(Unit) {
             while (isActive) {
-                delay(1000)
+                kotlinx.coroutines.delay(1000)
                 val now = System.currentTimeMillis()
                 state.tvList.forEach { tv ->
-                    if (!isActive) return@forEach
                     if (tv.cancelBatas > 0 && now > tv.cancelBatas) {
                         viewModel.updateTV(tv.id, mapOf("cancelBatas" to 0L))
                     }
-                    if (tv.timerActive && !tv.bebas && tv.sisaDetik > 0) {
-                        // Backward compat: seed timerStart/timerDurasi for old saved data
-                        if (tv.timerStart == 0L) {
-                            viewModel.updateTV(tv.id, mapOf("timerStart" to now, "timerDurasi" to tv.timerDurasi.coerceAtLeast(tv.sisaDetik)))
-                        }
-                        val timerStart = if (tv.timerStart > 0) tv.timerStart else now
-                        val timerDurasi = if (tv.timerDurasi > 0) tv.timerDurasi else tv.sisaDetik
-                        val elapsed = (now - timerStart) / 1000
-                        val newSisa = (timerDurasi - elapsed).coerceAtLeast(0)
-                        if (newSisa <= 0) {
-                            viewModel.updateTV(tv.id, mapOf("timerActive" to false, "sisaDetik" to 0L, "paketAktif" to "WAKTU HABIS"))
-                            tvHabis = tv
-                            showHabisDialog = true
-                            if (tv.certPem.isNotEmpty() && tv.keyPem.isNotEmpty()) {
-                                tvViewModel.sendPower(tv.ip, tv.certPem, tv.keyPem)
-                            }
-                        } else if (newSisa != tv.sisaDetik) {
-                            viewModel.updateTV(tv.id, mapOf("sisaDetik" to newSisa))
-                        }
-                    }
+                }
+            }
+        }
+
+        // Monitor expired timers from state changes (triggered by TimerService broadcasts)
+        LaunchedEffect(state.tvList) {
+            val expiredIds = state.tvList.filter { it.paketAktif == "WAKTU HABIS" && it.sisaDetik == 0L }.map { it.id }.toSet()
+            habisShownIds = habisShownIds.filter { it in expiredIds }.toSet()
+            val expiredTv = state.tvList.firstOrNull { it.paketAktif == "WAKTU HABIS" && it.sisaDetik == 0L && it.id !in habisShownIds }
+            if (expiredTv != null && tvHabis == null) {
+                tvHabis = expiredTv
+                showHabisDialog = true
+                habisShownIds = habisShownIds + expiredTv.id
+                if (expiredTv.certPem.isNotEmpty() && expiredTv.keyPem.isNotEmpty()) {
+                    tvViewModel.sendPower(expiredTv.ip, expiredTv.certPem, expiredTv.keyPem)
                 }
             }
         }
@@ -281,6 +287,7 @@ fun DashboardScreen(
 
     if (showTambah) {
         ModalTambahTV(
+            jenisPsList = state.jenisPsList,
             onDismiss = { showTambah = false },
             onConfirm = { tvData ->
                 val ok = viewModel.tambahTV(tvData)
@@ -293,6 +300,7 @@ fun DashboardScreen(
             nomorTV = state.tvList.size + 1,
             maxTv = state.maxTv,
             currentTvCount = state.tvList.size,
+            hasAccess = state.licenseStatus.status == "active" || state.trialBatas > System.currentTimeMillis(),
         )
     }
 
@@ -310,6 +318,12 @@ fun DashboardScreen(
         SelesaiSummaryDialog(
             tv = selesaiSummaryTv,
             onDismiss = { showSelesaiSummary = false; selesaiSummaryTV = null },
+            onPrint = {
+                val lastTx = state.transaksiList.filter { it.kota == selesaiSummaryTv.nama }.maxByOrNull { it.waktu }
+                if (lastTx != null) {
+                    viewModel.printReceipt(lastTx, selesaiSummaryTv)
+                }
+            },
         )
     }
 
@@ -333,6 +347,7 @@ fun DashboardScreen(
         HabisDialog(
             tv = tvHabisValue,
             onDismiss = { showHabisDialog = false; tvHabis = null },
+            onSudahBayar = { viewModel.updateTV(tvHabisValue.id, mapOf("sudahBayar" to true)) },
         )
     }
 
@@ -405,6 +420,8 @@ fun DashboardScreen(
                         paket = "Tambah Waktu: $selectedPaket",
                         pesanan = emptyMap(),
                         total = tambahHarga,
+                        paketHarga = tambahHarga,
+                        tvJenisPs = tvData.jenisPs,
                     ))
                     showTambahWaktu = false; tambahWaktuTV = null
                 }, colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("Tambah Rp$tambahHarga") }
@@ -446,6 +463,8 @@ fun DashboardScreen(
                             paket = "BATAL: ${lastTx.paket}",
                             pesanan = emptyMap(),
                             total = -lastTx.total,
+                            paketHarga = -lastTx.paketHarga,
+                            tvJenisPs = tvData.jenisPs,
                         ))
                         val isPaket = lastTx.paket != "Pesanan Tambahan"
                         if (isPaket) {
@@ -486,6 +505,10 @@ fun DashboardScreen(
                 } else if (paketNm != null) {
                     viewModel.updateTV(selectedTvPaket.id, updates ?: emptyMap())
                 }
+                val pesananHarga = pesanan.entries.associate { (name, qty) ->
+                    val unitPrice = state.menuMakanan[name] ?: state.menuMinuman[name] ?: 0
+                    name to (unitPrice * qty)
+                }
                 viewModel.tambahTransaksi(Transaksi(
                     waktu = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).format(java.util.Date()),
                     kasir = state.currentUser,
@@ -493,6 +516,9 @@ fun DashboardScreen(
                     paket = paketNm ?: "Pesanan Tambahan",
                     pesanan = pesanan,
                     total = total,
+                    paketHarga = if (paketNm != null) paketHarga else 0,
+                    pesananHarga = pesananHarga,
+                    tvJenisPs = selectedTvPaket.jenisPs,
                 ))
                 if (paketNm != null) {
                     tvBayar = selectedTV
@@ -874,16 +900,19 @@ fun TVCard(
 
 @Composable
 fun ModalTambahTV(
+    jenisPsList: List<String>,
     onDismiss: () -> Unit,
     onConfirm: (TvData) -> Unit,
     nomorTV: Int,
     maxTv: Int = 0,
     currentTvCount: Int = 0,
+    hasAccess: Boolean = true,
 ) {
     var nama by remember { mutableStateOf("TV $nomorTV") }
-    var jenis by remember { mutableStateOf("PS3") }
+    var jenis by remember { mutableStateOf(jenisPsList.firstOrNull() ?: "PS3") }
 
     val terlampaui = maxTv > 0 && currentTvCount >= maxTv
+    val blocked = !hasAccess
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -891,7 +920,10 @@ fun ModalTambahTV(
         title = { Text("Tambah TV", color = NeonGreen) },
         text = {
             Column {
-                if (terlampaui) {
+                if (blocked) {
+                    Text("Lisensi tidak aktif. Aktifkan lisensi terlebih dahulu.", style = MaterialTheme.typography.bodySmall, color = NeonRed)
+                    Spacer(Modifier.height(8.dp))
+                } else if (terlampaui) {
                     Text("Batas maksimal TV ($maxTv) telah tercapai!", style = MaterialTheme.typography.bodySmall, color = NeonRed)
                     Spacer(Modifier.height(8.dp))
                 }
@@ -899,7 +931,7 @@ fun ModalTambahTV(
                 Spacer(Modifier.height(8.dp))
                 Text("Jenis PS", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    JENIS_PS.forEach { j ->
+                    jenisPsList.forEach { j ->
                         val logoRes = when (j) {
                             "PS4" -> com.billingps.aptv.R.drawable.ps4
                             "PS5" -> com.billingps.aptv.R.drawable.ps5
@@ -928,7 +960,7 @@ fun ModalTambahTV(
             Button(onClick = {
                 val id = "tv_${System.currentTimeMillis()}"
                 onConfirm(TvData(id = id, nama = nama, jenisPs = jenis))
-            }, enabled = nama.isNotBlank() && !terlampaui, colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("Tambah & Pairing") }
+            }, enabled = nama.isNotBlank() && !terlampaui && !blocked, colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("Tambah & Pairing") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Batal", color = TextSecondary) } },
     )
@@ -1195,6 +1227,7 @@ fun PairingDialog(
 fun SelesaiSummaryDialog(
     tv: TvData,
     onDismiss: () -> Unit,
+    onPrint: (() -> Unit)? = null,
 ) {
     val totalBiaya = if (tv.bebas) {
         val jam = maxOf(1, ((System.currentTimeMillis() - tv.bebasMulai) / 3600000).toInt())
@@ -1245,7 +1278,19 @@ fun SelesaiSummaryDialog(
                 )
             }
         },
-        confirmButton = { Button(onClick = onDismiss, colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("OK") } },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (onPrint != null) {
+                    OutlinedButton(
+                        onClick = onPrint,
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan),
+                        border = BorderStroke(1.dp, NeonCyan),
+                    ) { Icon(Icons.Filled.Print, contentDescription = null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Cetak") }
+                }
+                Button(onClick = onDismiss, colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("OK") }
+            }
+        },
     )
 }
 
@@ -1283,6 +1328,7 @@ fun KonfirmasiBayarDialog(
 fun HabisDialog(
     tv: TvData,
     onDismiss: () -> Unit,
+    onSudahBayar: (() -> Unit)? = null,
 ) {
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -1303,7 +1349,18 @@ fun HabisDialog(
                     style = MaterialTheme.typography.titleMedium,
                 )
                 Spacer(Modifier.height(16.dp))
-                Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("OK") }
+                if (tv.sudahBayar) {
+                    Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("OK") }
+                } else {
+                    Button(
+                        onClick = {
+                            onSudahBayar?.invoke()
+                            onDismiss()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
+                    ) { Text("Sudah Bayar") }
+                }
             }
         }
     }

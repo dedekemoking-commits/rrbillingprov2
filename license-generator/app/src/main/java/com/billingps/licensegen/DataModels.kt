@@ -6,6 +6,10 @@ data class PromoSettings(
     val addTvOverride: Map<String, Int> = emptyMap(),
     val updatedBy: String = "",
     val updatedAt: Long = 0L,
+    val newUserPromoActive: Boolean = false,
+    val newUserDiscountPercent: Int = 30,
+    val newUserPromoDurationHours: Int = 96,
+    val newUserDiskonPerPaket: Map<String, Int> = emptyMap(),
 )
 
 data class LicenseRecord(

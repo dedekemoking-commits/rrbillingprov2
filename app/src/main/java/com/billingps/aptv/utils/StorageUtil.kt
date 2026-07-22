@@ -39,43 +39,51 @@ object StorageUtil {
     }
 
     // ── Users ──────────────────────────────────────────────
-    fun saveUsers(users: Map<String, UserData>) {
-        val obj = JSONObject()
-        users.forEach { (k, v) ->
-            obj.put(k, JSONObject().apply {
-                put("passwordHash", v.passwordHash)
-                put("role", v.role)
-                put("email", v.email)
-                put("dibuat", v.dibuat)
-                put("emailVerified", v.emailVerified)
-                put("verificationCode", v.verificationCode)
-                put("resetCode", v.resetCode)
-                put("resetCodeExpiry", v.resetCodeExpiry)
-            })
-        }
-        prefs.edit().putString("users", obj.toString()).apply()
+fun saveUsers(users: Map<String, UserData>) {
+    val obj = JSONObject()
+    users.forEach { (k, v) ->
+        obj.put(k, JSONObject().apply {
+            put("passwordHash", v.passwordHash)
+            put("role", v.role)
+            put("email", v.email)
+            put("dibuat", v.dibuat)
+            put("emailVerified", v.emailVerified)
+            put("verificationCode", v.verificationCode)
+            put("resetCode", v.resetCode)
+            put("resetCodeExpiry", v.resetCodeExpiry)
+            put("namaRental", v.namaRental)
+            put("alamatRental", v.alamatRental)
+            put("whatsappRental", v.whatsappRental)
+            put("registeredAt", v.registeredAt)
+        })
     }
+    prefs.edit().putString("users", obj.toString()).apply()
+}
 
-    fun loadUsers(): Map<String, UserData> {
-        val raw = prefs.getString("users", "{}") ?: "{}"
-        val obj = JSONObject(raw)
-        val map = mutableMapOf<String, UserData>()
-        obj.keys().forEach { key ->
-            val u = obj.getJSONObject(key)
-            map[key] = UserData(
-                username = key,
-                passwordHash = u.optString("passwordHash", ""),
-                role = u.optString("role", "kasir"),
-                email = u.optString("email", ""),
-                dibuat = u.optString("dibuat", ""),
-                emailVerified = u.optBoolean("emailVerified", false),
-                verificationCode = u.optString("verificationCode", ""),
-                resetCode = u.optString("resetCode", ""),
-                resetCodeExpiry = u.optLong("resetCodeExpiry", 0),
-            )
-        }
-        return map
+fun loadUsers(): Map<String, UserData> {
+    val raw = prefs.getString("users", "{}") ?: "{}"
+    val obj = JSONObject(raw)
+    val map = mutableMapOf<String, UserData>()
+    obj.keys().forEach { key ->
+        val u = obj.getJSONObject(key)
+        map[key] = UserData(
+            username = key,
+            passwordHash = u.optString("passwordHash", ""),
+            role = u.optString("role", "kasir"),
+            email = u.optString("email", ""),
+            dibuat = u.optString("dibuat", ""),
+            emailVerified = u.optBoolean("emailVerified", false),
+            verificationCode = u.optString("verificationCode", ""),
+            resetCode = u.optString("resetCode", ""),
+            resetCodeExpiry = u.optLong("resetCodeExpiry", 0),
+            namaRental = u.optString("namaRental", ""),
+            alamatRental = u.optString("alamatRental", ""),
+            whatsappRental = u.optString("whatsappRental", ""),
+            registeredAt = u.optLong("registeredAt", 0),
+        )
     }
+    return map
+}
 
     fun saveCurrentSession(username: String, role: String) {
         prefs.edit()
@@ -109,6 +117,17 @@ object StorageUtil {
     fun loadPaketDurasi(): Map<String, Int> = jsonToMap(prefs.getString("paketDurasi", null))
     fun loadMenuMakanan(): Map<String, Int> = jsonToMap(prefs.getString("menuMakanan", null))
     fun loadMenuMinuman(): Map<String, Int> = jsonToMap(prefs.getString("menuMinuman", null))
+
+    fun saveJenisPsList(list: List<String>) {
+        val arr = org.json.JSONArray(list)
+        prefs.edit().putString("jenisPsList", arr.toString()).apply()
+    }
+
+    fun loadJenisPsList(): List<String> {
+        val raw = prefs.getString("jenisPsList", null) ?: return emptyList()
+        val arr = org.json.JSONArray(raw)
+        return (0 until arr.length()).map { arr.optString(it, "") }.filter { it.isNotBlank() }
+    }
 
     // ── TV List ────────────────────────────────────────────
     fun saveTvList(list: List<TvData>) {
@@ -183,9 +202,14 @@ object StorageUtil {
                 put("kota", t.kota)
                 put("paket", t.paket)
                 put("total", t.total)
+                put("paketHarga", t.paketHarga)
+                put("tvJenisPs", t.tvJenisPs)
                 val pesananObj = JSONObject()
                 t.pesanan.forEach { (k, v) -> pesananObj.put(k, v) }
                 put("pesanan", pesananObj)
+                val pesananHargaObj = JSONObject()
+                t.pesananHarga.forEach { (k, v) -> pesananHargaObj.put(k, v) }
+                put("pesananHarga", pesananHargaObj)
             })
         }
         prefs.edit().putString("transaksiList", arr.toString()).apply()
@@ -200,6 +224,9 @@ object StorageUtil {
             val pesananRaw = o.optJSONObject("pesanan") ?: JSONObject()
             val pesanan = mutableMapOf<String, Int>()
             pesananRaw.keys().forEach { k -> pesanan[k] = pesananRaw.optInt(k) }
+            val pesananHargaRaw = o.optJSONObject("pesananHarga") ?: JSONObject()
+            val pesananHarga = mutableMapOf<String, Int>()
+            pesananHargaRaw.keys().forEach { k -> pesananHarga[k] = pesananHargaRaw.optInt(k) }
             list.add(Transaksi(
                 id = o.optString("id"),
                 waktu = o.optString("waktu"),
@@ -208,6 +235,9 @@ object StorageUtil {
                 paket = o.optString("paket"),
                 pesanan = pesanan,
                 total = o.optInt("total"),
+                paketHarga = o.optInt("paketHarga"),
+                pesananHarga = pesananHarga,
+                tvJenisPs = o.optString("tvJenisPs"),
             ))
         }
         return list
@@ -312,12 +342,17 @@ object StorageUtil {
             .putString("addTvOverride", mapToJson(promo.addTvOverride.mapValues { it.value }))
             .putString("promoUpdatedBy", promo.updatedBy)
             .putLong("promoUpdatedAt", promo.updatedAt)
+            .putBoolean("newUserPromoActive", promo.newUserPromoActive)
+            .putInt("newUserDiscountPercent", promo.newUserDiscountPercent)
+            .putInt("newUserPromoDurationHours", promo.newUserPromoDurationHours)
+            .putString("newUserDiskonPerPaket", mapToJson(promo.newUserDiskonPerPaket.mapValues { it.value }))
             .apply()
     }
 
     fun loadPromo(): PromoSettings {
         val rawDiskon = prefs.getString("diskonPerPaket", null)
         val rawTv = prefs.getString("addTvOverride", null)
+        val rawNewDiskon = prefs.getString("newUserDiskonPerPaket", null)
         val diskonMap = rawDiskon?.let { jsonToMap(it) } ?: emptyMap()
         return PromoSettings(
             promoAktif = prefs.getBoolean("promoAktif", false),
@@ -325,7 +360,45 @@ object StorageUtil {
             addTvOverride = rawTv?.let { jsonToMap(it) } ?: emptyMap(),
             updatedBy = prefs.getString("promoUpdatedBy", "") ?: "",
             updatedAt = prefs.getLong("promoUpdatedAt", 0L),
+            newUserPromoActive = prefs.getBoolean("newUserPromoActive", false),
+            newUserDiscountPercent = prefs.getInt("newUserDiscountPercent", 30),
+            newUserPromoDurationHours = prefs.getInt("newUserPromoDurationHours", 96),
+            newUserDiskonPerPaket = rawNewDiskon?.let { jsonToMap(it) } ?: emptyMap(),
         )
+    }
+
+    // ── Notifications ───────────────────────────────────────
+    fun saveNotifications(list: List<AppNotification>) {
+        val arr = JSONArray()
+        list.forEach { n ->
+            arr.put(JSONObject().apply {
+                put("id", n.id)
+                put("title", n.title)
+                put("body", n.body)
+                put("type", n.type)
+                put("sentAt", n.sentAt)
+                put("read", n.read)
+            })
+        }
+        prefs.edit().putString("appNotifications", arr.toString()).apply()
+    }
+
+    fun loadNotifications(): List<AppNotification> {
+        val raw = prefs.getString("appNotifications", "[]") ?: "[]"
+        val arr = JSONArray(raw)
+        val list = mutableListOf<AppNotification>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            list.add(AppNotification(
+                id = o.optString("id"),
+                title = o.optString("title"),
+                body = o.optString("body"),
+                type = o.optString("type"),
+                sentAt = o.optLong("sentAt"),
+                read = o.optBoolean("read"),
+            ))
+        }
+        return list
     }
 
     // ── Theme ───────────────────────────────────────────────
@@ -387,6 +460,13 @@ object StorageUtil {
         return map
     }
 
+    // ── Login Method ────────────────────────────────────────
+    fun saveLoginMethod(method: String) {
+        prefs.edit().putString("loginMethod", method).apply()
+    }
+
+    fun loadLoginMethod(): String = prefs.getString("loginMethod", "password") ?: "password"
+
     // ── FCM Token ───────────────────────────────────────────
     fun saveFcmToken(token: String) {
         prefs.edit().putString("fcmToken", token).apply()
@@ -406,6 +486,27 @@ object StorageUtil {
 
     fun putSecurePreference(key: String, value: String) {
         securePrefs.edit().putString(key, value).apply()
+    }
+
+    // ── Clear all app data (for Google account switch) ────
+    fun clearAllAppData() {
+        val editor = prefs.edit()
+        // Keep: themeOption, loginMethod, fcmToken, notifDialogShown, smtpSkipPermanently
+        // Keep: printerAddress, printerName (device-level)
+        // Keep: ECDSA keys, TV password (secure prefs, cleared separately if needed)
+        val keepTheme = prefs.getString("themeOption", "GAMING_DARK")
+        val keepLoginMethod = prefs.getString("loginMethod", "password")
+        val keepFcm = prefs.getString("fcmToken", "")
+        val keepNotifDialog = prefs.getBoolean("notifDialogShown", false)
+        val keepSmtpSkip = prefs.getBoolean("smtpSkipPermanently", false)
+        editor.clear()
+        // Restore kept values
+        keepTheme?.let { editor.putString("themeOption", it) }
+        editor.putString("loginMethod", keepLoginMethod)
+        editor.putString("fcmToken", keepFcm)
+        editor.putBoolean("notifDialogShown", keepNotifDialog)
+        editor.putBoolean("smtpSkipPermanently", keepSmtpSkip)
+        editor.apply()
     }
 
     // ── Activity Log ──────────────────────────────────────

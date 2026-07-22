@@ -114,6 +114,32 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun setNewUserPromo(active: Boolean, discountPercent: Int, durationHours: Int, diskonPerPaket: Map<String, Int>, onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val data = HashMap<String, Any>()
+                data["newUserPromoActive"] = active
+                data["newUserDiscountPercent"] = discountPercent.coerceIn(0, 100)
+                data["newUserPromoDurationHours"] = durationHours.coerceAtLeast(1)
+                data["newUserDiskonPerPaket"] = diskonPerPaket.mapValues { it.value.coerceIn(0, 100) }
+                data["updatedBy"] = currentUser
+                data["updatedAt"] = System.currentTimeMillis()
+                firestore.document("settings/global").set(data, SetOptions.merge()).await()
+                promo = promo.copy(
+                    newUserPromoActive = active,
+                    newUserDiscountPercent = discountPercent.coerceIn(0, 100),
+                    newUserPromoDurationHours = durationHours.coerceAtLeast(1),
+                    newUserDiskonPerPaket = diskonPerPaket.mapValues { it.value.coerceIn(0, 100) },
+                    updatedBy = currentUser,
+                    updatedAt = System.currentTimeMillis(),
+                )
+                onResult(true, "Promo user baru tersimpan!")
+            } catch (e: Exception) {
+                onResult(false, "Gagal: ${e.message}")
+            }
+        }
+    }
+
     // ── Private Key Management ───────────────────────────────
     fun hasPrivateKey(): Boolean = ECDSAUtils.hasPrivateKey()
 
@@ -213,12 +239,24 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                 rawOverride?.forEach { (k, v) ->
                     if (k is String && v is Number) addTvOverride[k] = v.toInt()
                 }
+                val newUserPromoActive = snap.getBoolean("newUserPromoActive") ?: false
+                val newUserDiscountPercent = (snap.get("newUserDiscountPercent") as? Number)?.toInt() ?: 30
+                val newUserPromoDurationHours = (snap.get("newUserPromoDurationHours") as? Number)?.toInt() ?: 96
+                val rawNewDiskon = snap.get("newUserDiskonPerPaket") as? Map<*, *>
+                val newUserDiskonPerPaket = mutableMapOf<String, Int>()
+                rawNewDiskon?.forEach { (k, v) ->
+                    if (k is String && v is Number) newUserDiskonPerPaket[k] = v.toInt()
+                }
                 promo = PromoSettings(
                     promoAktif = promoAktif,
                     diskonPerPaket = diskonPerPaket,
                     addTvOverride = addTvOverride,
                     updatedBy = snap.getString("updatedBy") ?: "",
                     updatedAt = snap.getLong("updatedAt") ?: 0L,
+                    newUserPromoActive = newUserPromoActive,
+                    newUserDiscountPercent = newUserDiscountPercent,
+                    newUserPromoDurationHours = newUserPromoDurationHours,
+                    newUserDiskonPerPaket = newUserDiskonPerPaket,
                 )
             }
 
@@ -441,6 +479,59 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
             }
     }
 
+    fun sendPopupToUser(username: String, title: String, body: String) {
+        viewModelScope.launch {
+            try {
+                val token = suspendCancellableCoroutine<String?> { cont ->
+                    firestore.collection("billingps_users").document(username).get()
+                        .addOnSuccessListener { cont.resume(it.getString("fcmToken")) }
+                        .addOnFailureListener { cont.resume(null) }
+                }
+                if (!token.isNullOrBlank()) {
+                    sendFcmV1(token, title, body, "admin")
+                }
+                // Save to Firestore with type=admin for inbox + popup trigger
+                saveNotifToFirestore(username, title, body)
+            } catch (e: Exception) {
+                Log.e("FCM", "sendPopupToUser exception: ${e.message}")
+            }
+        }
+    }
+
+    fun sendPopupToAllUsers(title: String, body: String, onDone: ((Int) -> Unit)? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val allUsers = suspendCancellableCoroutine<MutableList<Pair<String, String>>> { cont ->
+                    firestore.collection("billingps_users").get()
+                        .addOnSuccessListener { snap ->
+                            val list = mutableListOf<Pair<String, String>>()
+                            for (doc in snap.documents) {
+                                val token = doc.getString("fcmToken")
+                                val username = doc.id
+                                if (!token.isNullOrBlank()) list.add(username to token)
+                            }
+                            cont.resume(list)
+                        }
+                        .addOnFailureListener { cont.resume(mutableListOf()) }
+                }
+                var sent = 0
+                for ((_, token) in allUsers) {
+                    sendFcmV1(token, title, body, "admin")
+                    sent++
+                }
+                // Broadcast notification to all users
+                val notifData = HashMap<String, Any>()
+                notifData["username"] = "__all__"
+                notifData["title"] = title
+                notifData["body"] = body
+                notifData["type"] = "admin"
+                notifData["sentAt"] = System.currentTimeMillis()
+                try { firestore.collection("notifications").add(notifData) } catch (_: Exception) {}
+                withContext(Dispatchers.Main) { onDone?.invoke(sent) }
+            } catch (_: Exception) { withContext(Dispatchers.Main) { onDone?.invoke(0) } }
+        }
+    }
+
     fun sendFcmToUser(username: String, title: String, body: String) {
         viewModelScope.launch {
             try {
@@ -449,11 +540,11 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                         .addOnSuccessListener { cont.resume(it.getString("fcmToken")) }
                         .addOnFailureListener { cont.resume(null) }
                 }
-                if (token.isNullOrBlank()) {
-                    Log.w("FCM", "sendFcmToUser: no token for $username")
-                    return@launch
+                if (!token.isNullOrBlank()) {
+                    sendFcmV1(token, title, body)
                 }
-                sendFcmV1(token, title, body)
+                // Save to Firestore notifications collection
+                saveNotifToFirestore(username, title, body)
             } catch (e: Exception) {
                 Log.e("FCM", "sendFcmToUser exception: ${e.message}")
             }
@@ -463,29 +554,52 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
     fun sendFcmToAllUsers(title: String, body: String, onDone: ((Int) -> Unit)? = null) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val allTokens = suspendCancellableCoroutine<MutableList<String>> { cont ->
+                val allUsers = suspendCancellableCoroutine<MutableList<Pair<String, String>>> { cont ->
                     firestore.collection("billingps_users").get()
                         .addOnSuccessListener { snap ->
-                            val tokens = mutableListOf<String>()
+                            val list = mutableListOf<Pair<String, String>>()
                             for (doc in snap.documents) {
-                                val t = doc.getString("fcmToken")
-                                if (!t.isNullOrBlank()) tokens.add(t)
+                                val token = doc.getString("fcmToken")
+                                val username = doc.id
+                                if (!token.isNullOrBlank()) list.add(username to token)
                             }
-                            cont.resume(tokens)
+                            cont.resume(list)
                         }
                         .addOnFailureListener { cont.resume(mutableListOf()) }
                 }
                 var sent = 0
-                for (token in allTokens) {
+                for ((username, token) in allUsers) {
                     sendFcmV1(token, title, body)
                     sent++
                 }
+                // Save to Firestore — one doc per user or a single broadcast doc
+                val notifData = HashMap<String, Any>()
+                notifData["username"] = "__all__"
+                notifData["title"] = title
+                notifData["body"] = body
+                notifData["type"] = "admin"
+                notifData["sentAt"] = System.currentTimeMillis()
+                try {
+                    firestore.collection("notifications").add(notifData)
+                } catch (_: Exception) {}
                 withContext(Dispatchers.Main) { onDone?.invoke(sent) }
             } catch (_: Exception) { withContext(Dispatchers.Main) { onDone?.invoke(0) } }
         }
     }
 
-    private fun sendFcmV1(deviceToken: String, title: String, body: String) {
+    private fun saveNotifToFirestore(username: String, title: String, body: String) {
+        try {
+            val notifData = HashMap<String, Any>()
+            notifData["username"] = username
+            notifData["title"] = title
+            notifData["body"] = body
+            notifData["type"] = "admin"
+            notifData["sentAt"] = System.currentTimeMillis()
+            firestore.collection("notifications").add(notifData)
+        } catch (_: Exception) {}
+    }
+
+    private fun sendFcmV1(deviceToken: String, title: String, body: String, type: String = "info") {
         try {
             val accessToken = getAccessToken() ?: return
             val url = URL("https://fcm.googleapis.com/v1/projects/rrbillingpro/messages:send")
@@ -493,9 +607,11 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", "application/json")
             conn.setRequestProperty("Authorization", "Bearer $accessToken")
-            val escapedTitle = title.replace("\"", "\\\"").replace("\n", "\\n")
-            val escapedBody = body.replace("\"", "\\\"").replace("\n", "\\n")
-            val json = """{"message":{"token":"$deviceToken","notification":{"title":"$escapedTitle","body":"$escapedBody"},"data":{"title":"$escapedTitle","body":"$escapedBody"}}}"""
+            val esc = { s: String -> s.replace("\"", "\\\"").replace("\n", "\\n") }
+            val escapedTitle = esc(title)
+            val escapedBody = esc(body)
+            val escapedType = esc(type)
+            val json = """{"message":{"token":"$deviceToken","notification":{"title":"$escapedTitle","body":"$escapedBody"},"data":{"title":"$escapedTitle","body":"$escapedBody","type":"$escapedType"}}}"""
             conn.outputStream.write(json.toByteArray(Charsets.UTF_8))
             val code = conn.responseCode
             if (code != 200) {

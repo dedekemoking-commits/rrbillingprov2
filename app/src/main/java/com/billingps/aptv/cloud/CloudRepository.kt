@@ -25,6 +25,7 @@ class CloudRepository(private val app: Application) {
         UUID.randomUUID().toString()
     }
 
+
     suspend fun ensureSignedIn(): Boolean = suspendCancellableCoroutine { cont ->
         val user = auth.currentUser
         if (user != null) { Log.i("CloudRepo", "Already signed in as ${user.uid}"); cont.resume(true); return@suspendCancellableCoroutine }
@@ -73,6 +74,9 @@ class CloudRepository(private val app: Application) {
                     "paket" to t.paket,
                     "total" to t.total,
                     "pesanan" to t.pesanan,
+                    "paketHarga" to t.paketHarga,
+                    "pesananHarga" to t.pesananHarga,
+                    "tvJenisPs" to t.tvJenisPs,
                 )
             }
 
@@ -121,6 +125,9 @@ class CloudRepository(private val app: Application) {
                     "role" to u.role,
                     "email" to u.email,
                     "dibuat" to u.dibuat,
+                    "namaRental" to u.namaRental,
+                    "alamatRental" to u.alamatRental,
+                    "whatsappRental" to u.whatsappRental,
                 )
                 firestore.collection("billingps_users").document("_user_$key").set(doc)
             }
@@ -160,7 +167,13 @@ class CloudRepository(private val app: Application) {
                                     val pesananMap = mutableMapOf<String, Int>()
                                     val pes = item["pesanan"] as? Map<*, *>
                                     pes?.forEach { (k, v) -> if (k is String && v is Number) pesananMap[k] = v.toInt() }
-                                    list.add(Transaksi(id = id, waktu = waktu, kasir = kasir, kota = kota, paket = paket, pesanan = pesananMap, total = total))
+                                    val pesananHarga = mutableMapOf<String, Int>()
+                                    val ph = item["pesananHarga"] as? Map<*, *>
+                                    ph?.forEach { (k, v) -> if (k is String && v is Number) pesananHarga[k] = v.toInt() }
+                                    list.add(Transaksi(id = id, waktu = waktu, kasir = kasir, kota = kota, paket = paket, pesanan = pesananMap, total = total,
+                                        paketHarga = (item["paketHarga"] as? Number)?.toInt() ?: 0,
+                                        pesananHarga = pesananHarga,
+                                        tvJenisPs = item["tvJenisPs"] as? String ?: ""))
                                 }
                             }
                             Log.i("CloudRepo", "fetchTransaksiForUser: got ${list.size} items for $username")
@@ -173,6 +186,36 @@ class CloudRepository(private val app: Application) {
                     .addOnFailureListener { ex -> Log.i("CloudRepo", "fetchTransaksiForUser failed: ${ex.message}"); if (!cont.isCompleted) cont.resume(emptyList()) }
             }
         }
+
+    suspend fun fetchTvListForUser(username: String): List<TvData> {
+        if (username.isBlank()) return emptyList()
+        if (!ensureSignedIn()) return emptyList()
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("billingps_users").document(username).get()
+                .addOnSuccessListener { snap ->
+                    if (!snap.exists()) { cont.resume(emptyList()); return@addOnSuccessListener }
+                    try {
+                        val raw = snap.get("tvList") as? List<*>
+                        val list = mutableListOf<TvData>()
+                        raw?.forEach { item ->
+                            if (item is Map<*, *>) {
+                                list.add(TvData(
+                                    id = item["id"] as? String ?: "",
+                                    nama = item["nama"] as? String ?: "",
+                                    ip = item["ip"] as? String ?: "",
+                                    port = (item["port"] as? Number)?.toInt() ?: 5555,
+                                    jenisPs = item["jenisPs"] as? String ?: "PS3",
+                                    paketAktif = item["paketAktif"] as? String ?: "",
+                                    sisaDetik = (item["sisaDetik"] as? Number)?.toLong() ?: 0,
+                                ))
+                            }
+                        }
+                        cont.resume(list)
+                    } catch (t: Throwable) { cont.resume(emptyList()) }
+                }
+                .addOnFailureListener { cont.resume(emptyList()) }
+        }
+    }
 
     suspend fun publishUpdate(versionName: String, apkUrl: String, changelog: String): Boolean {
         if (!ensureSignedIn()) return false
@@ -709,6 +752,90 @@ class CloudRepository(private val app: Application) {
                 val pesan = ls["pesan"] as? String ?: "✅ Lisensi aktif hingga $expiry"
                 Log.i("CloudRepo", "listenUserLicense: license updated for $username, expiry=$expiry")
                 onUpdate(LicenseStatus(status = "active", pesan = pesan, expiresAt = expiry, maxTv = maxTv))
+            }
+    }
+
+    // ── One-time fetch promo ─────────────────────────────────
+    suspend fun fetchPromoSettings(): PromoSettings? {
+        if (!ensureSignedIn()) return null
+        return suspendCancellableCoroutine { cont ->
+            firestore.document("settings/global").get()
+                .addOnSuccessListener { snap ->
+                    if (!snap.exists()) { cont.resume(null); return@addOnSuccessListener }
+                    val promoAktif = snap.getBoolean("promoAktif") ?: false
+                    val rawDiskon = snap.get("diskonPerPaket") as? Map<*, *>
+                    val diskonPerPaket = mutableMapOf<String, Int>()
+                    rawDiskon?.forEach { (k, v) -> if (k is String && v is Number) diskonPerPaket[k] = v.toInt() }
+                    val rawOverride = snap.get("addTvOverride") as? Map<*, *>
+                    val addTvOverride = mutableMapOf<String, Int>()
+                    rawOverride?.forEach { (k, v) -> if (k is String && v is Number) addTvOverride[k] = v.toInt() }
+                    val newUserPromoActive = snap.getBoolean("newUserPromoActive") ?: false
+                    val newUserDiscountPercent = (snap.get("newUserDiscountPercent") as? Number)?.toInt() ?: 30
+                    val newUserPromoDurationHours = (snap.get("newUserPromoDurationHours") as? Number)?.toInt() ?: 96
+                    val rawNewDiskon = snap.get("newUserDiskonPerPaket") as? Map<*, *>
+                    val newUserDiskonPerPaket = mutableMapOf<String, Int>()
+                    rawNewDiskon?.forEach { (k, v) -> if (k is String && v is Number) newUserDiskonPerPaket[k] = v.toInt() }
+                    cont.resume(PromoSettings(
+                        promoAktif = promoAktif,
+                        diskonPerPaket = diskonPerPaket,
+                        addTvOverride = addTvOverride,
+                        updatedBy = snap.getString("updatedBy") ?: "",
+                        updatedAt = snap.getLong("updatedAt") ?: 0L,
+                        newUserPromoActive = newUserPromoActive,
+                        newUserDiscountPercent = newUserDiscountPercent,
+                        newUserPromoDurationHours = newUserPromoDurationHours,
+                        newUserDiskonPerPaket = newUserDiskonPerPaket,
+                    ))
+                }
+                .addOnFailureListener { Log.e("CloudRepo", "fetchPromoSettings failed: ${it.message}"); cont.resume(null) }
+        }
+    }
+
+    // ── Listen notifications for user ────────────────────────
+    fun listenUserNotifications(username: String, onUpdate: (List<AppNotification>) -> Unit): ListenerRegistration? {
+        if (username.isBlank()) return null
+        if (auth.currentUser == null) return null
+        return firestore.collection("notifications")
+            .whereEqualTo("username", username)
+            .orderBy("sentAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
+            .limit(50)
+            .addSnapshotListener { snap, error ->
+                if (error != null) { Log.e("CloudRepo", "listenNotifications error: ${error.message}"); return@addSnapshotListener }
+                if (snap == null) return@addSnapshotListener
+                val list = snap.documents.mapNotNull { doc ->
+                    val d = doc.data ?: return@mapNotNull null
+                    AppNotification(
+                        id = doc.id,
+                        title = d["title"] as? String ?: "",
+                        body = d["body"] as? String ?: "",
+                        type = d["type"] as? String ?: "info",
+                        sentAt = d["sentAt"] as? Long ?: 0L,
+                    )
+                }
+                onUpdate(list)
+            }
+    }
+
+    fun listenBroadcastNotifications(onUpdate: (List<AppNotification>) -> Unit): ListenerRegistration? {
+        if (auth.currentUser == null) return null
+        return firestore.collection("notifications")
+            .whereEqualTo("username", "__all__")
+            .orderBy("sentAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
+            .limit(50)
+            .addSnapshotListener { snap, error ->
+                if (error != null) { Log.e("CloudRepo", "listenBroadcast error: ${error.message}"); return@addSnapshotListener }
+                if (snap == null) return@addSnapshotListener
+                val list = snap.documents.mapNotNull { doc ->
+                    val d = doc.data ?: return@mapNotNull null
+                    AppNotification(
+                        id = doc.id,
+                        title = d["title"] as? String ?: "",
+                        body = d["body"] as? String ?: "",
+                        type = d["type"] as? String ?: "info",
+                        sentAt = d["sentAt"] as? Long ?: 0L,
+                    )
+                }
+                onUpdate(list)
             }
     }
 }

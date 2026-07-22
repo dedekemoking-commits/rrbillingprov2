@@ -8,10 +8,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -25,12 +28,16 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import android.util.Log
 import com.billingps.aptv.models.MainViewModel
+import com.billingps.aptv.models.Transaksi
+import com.billingps.aptv.ui.charts.*
 import com.billingps.aptv.ui.theme.*
 
 @Composable
 fun RiwayatScreen(viewModel: MainViewModel) {
     val state by viewModel.state.collectAsState()
     val ctx = LocalContext.current
+    var detailTransaksi by remember { mutableStateOf<Transaksi?>(null) }
+    var cetakMsg by remember { mutableStateOf("") }
     // Filter mode: "DAY", "WEEK", "MONTH", "ALL"
     var filterMode by remember { mutableStateOf("DAY") }
     var searchQuery by remember { mutableStateOf("") }
@@ -143,6 +150,8 @@ fun RiwayatScreen(viewModel: MainViewModel) {
             Text("BULAN", style = MaterialTheme.typography.bodySmall, color = NeonGreen)
         }
 
+        // Analytics: summary cards + chart toggle
+        var showAnalytics by remember { mutableStateOf(true) }
         Row(
             modifier = Modifier.fillMaxWidth().background(DarkSurface).padding(12.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -157,6 +166,76 @@ fun RiwayatScreen(viewModel: MainViewModel) {
                 Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Pendapatan", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                     Text(fmtRp(totalPendapatan), style = MaterialTheme.typography.titleLarge, color = NeonGreen)
+                }
+            }
+            Card(modifier = Modifier.weight(1f), shape = RoundedCornerShape(10.dp), colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2), border = BorderStroke(1.dp, DarkSurfaceV3), onClick = { showAnalytics = !showAnalytics }) {
+                Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Analitik", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    Icon(if (showAnalytics) Icons.Filled.Leaderboard else Icons.Filled.Leaderboard, contentDescription = null, tint = NeonCyan, modifier = Modifier.size(20.dp))
+                }
+            }
+        }
+
+        // Charts section (collapsible)
+        if (showAnalytics && txList.isNotEmpty()) {
+            Column(
+                modifier = Modifier.fillMaxWidth().background(DarkSurface).padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                // Daily revenue bar chart (last 7 days from filtered data)
+                val dailyRevenue = remember(txList) {
+                    val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                    val dayTotal = mutableMapOf<String, Int>()
+                    txList.forEach { tx ->
+                        try {
+                            val day = dateFormat.format(java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).parse(tx.waktu)!!)
+                            dayTotal[day] = (dayTotal[day] ?: 0) + tx.total
+                        } catch (_: Exception) {}
+                    }
+                    dayTotal.entries.sortedBy { it.key }.takeLast(7).map { BarData(it.key.takeLast(5), it.value.toFloat()) }
+                }
+                if (dailyRevenue.isNotEmpty()) {
+                    Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+                        Column(Modifier.padding(12.dp)) {
+                            RevenueBarChart(data = dailyRevenue, title = "PENDAPATAN HARIAN")
+                        }
+                    }
+                }
+
+                // Package distribution pie chart
+                val packageData = remember(txList) {
+                    val pkgTotal = mutableMapOf<String, Int>()
+                    txList.forEach { tx ->
+                        val pkg = tx.paket.split("+").firstOrNull()?.take(15) ?: tx.paket
+                        pkgTotal[pkg] = (pkgTotal[pkg] ?: 0) + tx.total
+                    }
+                    pkgTotal.entries.sortedByDescending { it.value }.take(6).mapIndexed { i, (k, v) ->
+                        PieData(k, v.toFloat(), if (i < chartColorsList.size) chartColorsList[i] else chartColorsList[i % chartColorsList.size])
+                    }
+                }
+                if (packageData.isNotEmpty()) {
+                    Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+                        Column(Modifier.padding(12.dp)) {
+                            RevenuePieChart(data = packageData, title = "DISTRIBUSI PAKET")
+                        }
+                    }
+                }
+
+                // Top packages by revenue
+                val topPackages = remember(txList) {
+                    val pkgTotal = mutableMapOf<String, Int>()
+                    txList.forEach { tx ->
+                        val pkg = tx.paket.split("+").firstOrNull()?.take(20) ?: tx.paket
+                        pkgTotal[pkg] = (pkgTotal[pkg] ?: 0) + tx.total
+                    }
+                    pkgTotal.entries.sortedByDescending { it.value }.map { it.key to it.value }
+                }
+                if (topPackages.isNotEmpty()) {
+                    Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+                        Column(Modifier.padding(12.dp)) {
+                            TopPackagesList(data = topPackages, title = "PAKET TERLARIS")
+                        }
+                    }
                 }
             }
         }
@@ -294,7 +373,7 @@ fun RiwayatScreen(viewModel: MainViewModel) {
             LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 itemsIndexed(txList) { idx, tx ->
                     Row(
-                        modifier = Modifier.fillMaxWidth().background(if (idx % 2 == 0) DarkBackground else DarkSurfaceV2).padding(horizontal = 14.dp, vertical = 10.dp),
+                        modifier = Modifier.fillMaxWidth().background(if (idx % 2 == 0) DarkBackground else DarkSurfaceV2).clickable { detailTransaksi = tx }.padding(horizontal = 14.dp, vertical = 10.dp),
                     ) {
                         Column(modifier = Modifier.weight(2f)) {
                             Text(formatWaktu(tx.waktu), style = MaterialTheme.typography.bodySmall, color = TextDim)
@@ -312,6 +391,92 @@ fun RiwayatScreen(viewModel: MainViewModel) {
                 }
             }
         }
+
+        detailTransaksi?.let { tx ->
+            val sdf = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", java.util.Locale("id", "ID"))
+            val tglStr = try {
+                val p = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
+                sdf.format(p.parse(tx.waktu) ?: java.util.Date())
+            } catch (_: Exception) { tx.waktu }
+            val tvData = state.tvList.find { it.nama == tx.kota }
+            AlertDialog(
+                onDismissRequest = { detailTransaksi = null; cetakMsg = "" },
+                containerColor = DarkSurface,
+                titleContentColor = NeonCyan,
+                textContentColor = TextPrimary,
+                title = { Text("DETAIL TRANSAKSI") },
+                text = {
+                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                        Text("No    : ${tx.id.takeLast(12)}", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
+                        Text("Tgl   : $tglStr", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
+                        Text("TV    : ${tx.kota}", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
+                        if (tvData != null) Text("PS    : ${tvData.jenisPs}", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
+                        Text("Kasir : ${tx.kasir}", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.height(4.dp))
+                        HorizontalDivider(color = DarkSurfaceV3)
+                        Spacer(Modifier.height(4.dp))
+
+                        if (tx.paketHarga > 0) {
+                            Text(tx.paket, color = NeonYellow, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            Text("  Rp ${String.format("%,d", tx.paketHarga).replace(",", ".")}", color = NeonGreen, style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.height(4.dp))
+                        } else if (tx.paket.isNotBlank() && tx.paket != "Pesanan Tambahan") {
+                            Text("  ${tx.paket}", color = NeonYellow, style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.height(4.dp))
+                        }
+
+                        if (tx.pesanan.isNotEmpty()) {
+                            HorizontalDivider(color = DarkSurfaceV3)
+                            Spacer(Modifier.height(4.dp))
+                            tx.pesanan.forEach { (name, qty) ->
+                                val price = tx.pesananHarga[name] ?: 0
+                                val line = "$qty $name"
+                                val priceStr = if (price > 0) "Rp ${String.format("%,d", price).replace(",", ".")}" else ""
+                                Row(Modifier.fillMaxWidth()) {
+                                    Text(line, color = TextPrimary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                                    if (priceStr.isNotEmpty()) Text(priceStr, color = NeonGreen, style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+                        HorizontalDivider(color = DarkSurfaceV3)
+                        Spacer(Modifier.height(4.dp))
+                        Row(Modifier.fillMaxWidth()) {
+                            Text("TOTAL", color = TextPrimary, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Text("Rp ${String.format("%,d", tx.total).replace(",", ".")}", color = NeonGreen, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                        }
+
+                        if (cetakMsg.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(cetakMsg, color = NeonCyan, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (tvData != null) {
+                                cetakMsg = "Mencetak..."
+                                viewModel.printReceipt(tx, tvData)
+                                cetakMsg = "Struk dicetak"
+                            } else {
+                                cetakMsg = "Data TV tidak tersedia untuk cetak"
+                            }
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground),
+                    ) { Icon(Icons.Filled.Print, contentDescription = null, modifier = Modifier.size(14.dp)); Spacer(Modifier.width(4.dp)); Text("Cetak") }
+                },
+                dismissButton = {
+                    OutlinedButton(
+                        onClick = { detailTransaksi = null; cetakMsg = "" },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
+                    ) { Text("Tutup") }
+                },
+            )
+        }
     }
 }
 
@@ -322,5 +487,10 @@ private fun formatWaktu(iso: String): String {
         out.format(sdf.parse(iso) ?: return iso)
     } catch (e: Exception) { Log.e("RiwayatScreen", "formatWaktu: ${e.message}"); iso }
 }
+
+private val chartColorsList = listOf(
+    Color(0xFF39FF14), Color(0xFF00E5FF), Color(0xFFBB00FF),
+    Color(0xFFFF6B35), Color(0xFFFFD700), Color(0xFFFF4081),
+)
 
 

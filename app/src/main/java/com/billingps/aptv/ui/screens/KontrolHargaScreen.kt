@@ -3,6 +3,7 @@ package com.billingps.aptv.ui.screens
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -14,24 +15,30 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.billingps.aptv.models.*
 import com.billingps.aptv.ui.theme.*
-import kotlinx.coroutines.launch
 
 @Composable
 fun KontrolHargaScreen(viewModel: MainViewModel) {
     val state by viewModel.state.collectAsState()
     val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
 
     var editPaket by remember { mutableStateOf<Map<String, Map<String, String>>>(emptyMap()) }
     var editDurasi by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var editMakanan by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var editMinuman by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+
+    var showAddGrup by remember { mutableStateOf(false) }
+    var newGrupName by remember { mutableStateOf("") }
+    var renameGrupTarget by remember { mutableStateOf("") }
+    var renameGrupValue by remember { mutableStateOf("") }
+    var deleteGrupTarget by remember { mutableStateOf("") }
 
     LaunchedEffect(state.paketMain, state.paketDurasi, state.menuMakanan, state.menuMinuman) {
         editPaket = state.paketMain.mapValues { (_, inner) -> inner.mapValues { it.value.toString() } }
@@ -50,16 +57,30 @@ fun KontrolHargaScreen(viewModel: MainViewModel) {
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text("HARGA", style = MaterialTheme.typography.titleLarge, color = NeonGreen)
-            FilledTonalButton(
-                onClick = {
-                    val paketSaved = mutableMapOf<String, Map<String, Int>>()
-                    JENIS_PS.forEach { t -> paketSaved[t] = toIntMap(editPaket[t] ?: emptyMap()) }
-                    viewModel.saveHarga(paketSaved, toIntMap(editDurasi), toIntMap(editMakanan), toIntMap(editMinuman))
-                    Toast.makeText(ctx, "Data tersimpan!", Toast.LENGTH_SHORT).show()
-                },
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.filledTonalButtonColors(containerColor = NeonGreen.copy(alpha = 0.2f), contentColor = NeonGreen),
-            ) { Icon(Icons.Filled.Save, contentDescription = null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Simpan") }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton(
+                    onClick = {
+                        newGrupName = ""
+                        showAddGrup = true
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.filledTonalButtonColors(containerColor = NeonCyan.copy(0.2f), contentColor = NeonCyan),
+                ) {
+                    Icon(Icons.Filled.AddCircleOutline, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Grup")
+                }
+                FilledTonalButton(
+                    onClick = {
+                        val paketSaved = mutableMapOf<String, Map<String, Int>>()
+                        state.jenisPsList.forEach { t -> paketSaved[t] = toIntMap(editPaket[t] ?: emptyMap()) }
+                        viewModel.saveHarga(paketSaved, toIntMap(editDurasi), toIntMap(editMakanan), toIntMap(editMinuman))
+                        Toast.makeText(ctx, "Data tersimpan!", Toast.LENGTH_SHORT).show()
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.filledTonalButtonColors(containerColor = NeonGreen.copy(alpha = 0.2f), contentColor = NeonGreen),
+                ) { Icon(Icons.Filled.Save, contentDescription = null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Simpan") }
+            }
         }
 
         Column(
@@ -76,29 +97,52 @@ fun KontrolHargaScreen(viewModel: MainViewModel) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                         Text("PAKET WAKTU MAIN", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
                         FilledTonalButton(onClick = {
-                            val key = "Item Baru ${(editPaket["PS3"]?.size ?: 0) + 1}"
-                            editPaket = editPaket.mapValues { (_, v) -> v + (key to "0") }
-                            editDurasi = editDurasi + (key to "60")
+                            val groups = state.jenisPsList
+                            if (groups.isNotEmpty()) {
+                                val key = "Item Baru ${(editPaket[groups.first()]?.size ?: 0) + 1}"
+                                editPaket = editPaket.mapValues { (_, v) -> v + (key to "0") }
+                                editDurasi = editDurasi + (key to "60")
+                            }
                         }, shape = RoundedCornerShape(6.dp), colors = ButtonDefaults.filledTonalButtonColors(containerColor = NeonGreen.copy(0.2f), contentColor = NeonGreen)) {
-                            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp)); Spacer(Modifier.width(4.dp)); Text("Tambah", style = MaterialTheme.typography.labelSmall)
+                            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(14.dp)); Spacer(Modifier.width(4.dp)); Text("Paket", style = MaterialTheme.typography.labelSmall)
                         }
                     }
                     Spacer(Modifier.height(8.dp))
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Paket", style = MaterialTheme.typography.labelSmall, color = TextPrimary, modifier = Modifier.weight(1.5f), fontWeight = FontWeight.Bold)
-                        JENIS_PS.forEach { Text(it, style = MaterialTheme.typography.labelSmall, color = TextPrimary, modifier = Modifier.weight(1.5f), textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontWeight = FontWeight.Bold) }
-                        Text("Mnt", style = MaterialTheme.typography.labelSmall, color = TextPrimary, modifier = Modifier.width(50.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontWeight = FontWeight.Bold)
+                        state.jenisPsList.forEach { grup ->
+                            Box(modifier = Modifier.weight(1.5f)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(grup, style = MaterialTheme.typography.labelSmall, color = TextPrimary, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                                    IconButton(
+                                        onClick = { renameGrupTarget = grup; renameGrupValue = grup },
+                                        modifier = Modifier.size(16.dp),
+                                    ) { Icon(Icons.Filled.Edit, contentDescription = "Rename", tint = TextDim, modifier = Modifier.size(12.dp)) }
+                                    if (state.jenisPsList.size > 1) {
+                                        IconButton(
+                                            onClick = { deleteGrupTarget = grup },
+                                            modifier = Modifier.size(16.dp),
+                                        ) { Icon(Icons.Filled.Close, contentDescription = "Hapus", tint = NeonRed.copy(alpha = 0.6f), modifier = Modifier.size(12.dp)) }
+                                    }
+                                }
+                            }
+                        }
+                        Text("Mnt", style = MaterialTheme.typography.labelSmall, color = TextPrimary, modifier = Modifier.width(50.dp), textAlign = TextAlign.Center, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.width(28.dp))
                     }
 
-                    val unikNames = JENIS_PS.flatMap { t -> (editPaket[t]?.keys ?: emptySet()) }.distinct()
+                    val unikNames = state.jenisPsList.flatMap { t -> (editPaket[t]?.keys ?: emptySet()) }.distinct()
                     unikNames.forEach { nama ->
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
                             OutlinedTextField(
                                 value = nama, onValueChange = { baru ->
                                     val cp = editPaket.toMutableMap()
-                                    JENIS_PS.forEach { t ->
+                                    state.jenisPsList.forEach { t ->
                                         val inner = cp[t]?.toMutableMap() ?: return@forEach
                                         inner[baru] = inner.remove(nama) ?: "0"
                                         cp[t] = inner
@@ -111,7 +155,7 @@ fun KontrolHargaScreen(viewModel: MainViewModel) {
                                 singleLine = true, modifier = Modifier.weight(1.5f), textStyle = MaterialTheme.typography.bodySmall,
                                 shape = RoundedCornerShape(6.dp), colors = fieldColors(),
                             )
-                            JENIS_PS.forEach { t ->
+                            state.jenisPsList.forEach { t ->
                                 OutlinedTextField(
                                     value = editPaket[t]?.get(nama) ?: "0",
                                     onValueChange = { v -> editPaket = editPaket + (t to ((editPaket[t] ?: emptyMap()) + (nama to v))) },
@@ -128,7 +172,7 @@ fun KontrolHargaScreen(viewModel: MainViewModel) {
                             )
                             IconButton(onClick = {
                                 val cp = editPaket.toMutableMap()
-                                JENIS_PS.forEach { t -> cp[t] = cp[t]?.filterKeys { it != nama } ?: emptyMap() }
+                                state.jenisPsList.forEach { t -> cp[t] = cp[t]?.filterKeys { it != nama } ?: emptyMap() }
                                 editPaket = cp
                                 editDurasi = editDurasi.filterKeys { it != nama }
                             }, modifier = Modifier.size(28.dp)) { Icon(Icons.Filled.Delete, contentDescription = null, tint = NeonRed, modifier = Modifier.size(16.dp)) }
@@ -144,6 +188,114 @@ fun KontrolHargaScreen(viewModel: MainViewModel) {
 
             Spacer(Modifier.height(30.dp))
         }
+    }
+
+    // Dialog Tambah Grup
+    if (showAddGrup) {
+        AlertDialog(
+            onDismissRequest = { showAddGrup = false },
+            containerColor = DarkSurface,
+            title = { Text("TAMBAH GRUP BARU", color = NeonCyan, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) },
+            text = {
+                OutlinedTextField(
+                    value = newGrupName,
+                    onValueChange = { newGrupName = it },
+                    label = { Text("Nama Grup") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = fieldColors(),
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newGrupName.isNotBlank()) {
+                            viewModel.tambahGrup(newGrupName.trim())
+                            showAddGrup = false
+                        }
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground),
+                ) { Text("Tambah") }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = { showAddGrup = false },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
+                ) { Text("Batal") }
+            },
+        )
+    }
+
+    // Dialog Rename Grup
+    if (renameGrupTarget.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { renameGrupTarget = "" },
+            containerColor = DarkSurface,
+            title = { Text("RENAME GRUP", color = NeonCyan, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) },
+            text = {
+                OutlinedTextField(
+                    value = renameGrupValue,
+                    onValueChange = { renameGrupValue = it },
+                    label = { Text("Nama Baru") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = fieldColors(),
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (renameGrupValue.isNotBlank() && renameGrupValue != renameGrupTarget) {
+                            viewModel.renameGrup(renameGrupTarget, renameGrupValue.trim())
+                            renameGrupTarget = ""
+                            renameGrupValue = ""
+                        }
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground),
+                ) { Text("Simpan") }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = { renameGrupTarget = ""; renameGrupValue = "" },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
+                ) { Text("Batal") }
+            },
+        )
+    }
+
+    // Dialog Hapus Grup
+    if (deleteGrupTarget.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { deleteGrupTarget = "" },
+            containerColor = DarkSurface,
+            title = { Text("HAPUS GRUP", color = NeonRed, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) },
+            text = {
+                Text("Hapus grup \"$deleteGrupTarget\"? TV dengan grup ini akan pindah ke grup pertama.", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.hapusGrup(deleteGrupTarget)
+                        deleteGrupTarget = ""
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonRed, contentColor = Color.White),
+                ) { Text("Hapus") }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = { deleteGrupTarget = "" },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
+                ) { Text("Batal") }
+            },
+        )
     }
 }
 
@@ -192,8 +344,6 @@ private fun EditFlatSection(title: String, editMap: Map<String, String>, onEditM
         }
     }
 }
-
-private fun <K, V> Map<K, V>.plus(pair: Pair<K, V>): Map<K, V> = this + pair
 
 @Composable private fun fieldColors() = OutlinedTextFieldDefaults.colors(
     focusedBorderColor = NeonGreen, unfocusedBorderColor = DarkSurfaceV3,

@@ -1,8 +1,12 @@
 package com.billingps.aptv.models
 
 import android.app.Application
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import android.util.Patterns
 import androidx.core.content.FileProvider
@@ -49,7 +53,8 @@ data class AppUiState(
     val users: Map<String, UserData> = emptyMap(),
     val tvList: List<TvData> = emptyList(),
     val transaksiList: List<Transaksi> = emptyList(),
-    val paketMain: Map<String, Map<String, Int>> = defaultPaketMain(),
+    val jenisPsList: List<String> = listOf("PS3", "PS4", "PS5"),
+    val paketMain: Map<String, Map<String, Int>> = defaultPaketMain(listOf("PS3", "PS4", "PS5")),
     val paketDurasi: Map<String, Int> = defaultPaketDurasi(),
     val menuMakanan: Map<String, Int> = emptyMap(),
     val menuMinuman: Map<String, Int> = emptyMap(),
@@ -63,6 +68,10 @@ data class AppUiState(
     val cloudLastSync: Long = 0L,
     val isBusy: Boolean = false,
     val statusMessage: String = "",
+    val pendingGoogleRegistration: Boolean = false,
+    val pendingGoogleEmail: String = "",
+    val pendingGoogleDisplayName: String = "",
+    val pendingGoogleIdToken: String = "",
     val pendingVerifyUser: String = "",
     val pendingVerifyCode: String = "",
     val pendingResetCode: String = "",
@@ -76,14 +85,27 @@ data class AppUiState(
     val tvPasswordHash: String = "",
     val themeOption: ThemeOption = ThemeOption.GAMING_DARK,
     val promo: PromoSettings = PromoSettings(),
+    val loginMethod: String = "password", // "password" or "google"
+    val printerAddress: String = "",
+    val printerName: String = "",
+    val printerConnected: Boolean = false,
+    val notifications: List<AppNotification> = emptyList(),
+    val unreadNotifCount: Int = 0,
+    val showPromoPopup: Boolean = false,
+    val promoPopupTitle: String = "",
+    val promoPopupBody: String = "",
+    val promoFetched: Boolean = false,
+    val showNotifPopup: Boolean = false,
+    val notifPopupTitle: String = "",
+    val notifPopupBody: String = "",
 )
 
-fun defaultPaketMain(): Map<String, Map<String, Int>> {
+fun defaultPaketMain(groups: List<String> = listOf("PS3", "PS4", "PS5")): Map<String, Map<String, Int>> {
     val defaultPS = mapOf(
         "15 Menit" to 5000, "30 Menit" to 10000, "1 Jam" to 15000,
         "2 Jam" to 25000, "3 Jam" to 35000,
     )
-    return mapOf("PS3" to defaultPS, "PS4" to defaultPS, "PS5" to defaultPS)
+    return groups.associateWith { defaultPS }
 }
 
 fun defaultPaketDurasi(): Map<String, Int> = mapOf(
@@ -99,16 +121,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val firebaseAuth = FirebaseAuth.getInstance()
     private var userDocListener: ListenerRegistration? = null
     private var invoicesListener: ListenerRegistration? = null
+    private var notifListener: ListenerRegistration? = null
     private val connectivityObserver = ConnectivityObserver(application)
 
     private val _state = MutableStateFlow(AppUiState())
     val state: StateFlow<AppUiState> = _state.asStateFlow()
+    private var timerReceiver: BroadcastReceiver? = null
 
     init {
         StorageUtil.init(application)
         ECDSAUtils.init(application)
         FcmSender.init(application)
         loadAll()
+        registerTimerReceiver()
         // Offline-first: auto-sync when connectivity restored
         connectivityObserver.start()
         viewModelScope.launch {
@@ -121,6 +146,72 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun registerTimerReceiver() {
+        timerReceiver?.let { getApplication<Application>().unregisterReceiver(it) }
+        timerReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                when (intent.action) {
+                    com.billingps.aptv.TimerService.ACTION_TICK -> {
+                        val tvId = intent.getStringExtra(com.billingps.aptv.TimerService.EXTRA_TV_ID) ?: return
+                        val sisaDetik = intent.getLongExtra(com.billingps.aptv.TimerService.EXTRA_SISA_DETIK, -1L)
+                        val paketAktif = intent.getStringExtra(com.billingps.aptv.TimerService.EXTRA_PAKET_AKTIF)
+                        val currentList = _state.value.tvList.toMutableList()
+                        val idx = currentList.indexOfFirst { it.id == tvId }
+                        if (idx >= 0) {
+                            var updated = currentList[idx]
+                            if (sisaDetik >= 0) updated = updated.copy(sisaDetik = sisaDetik)
+                            if (paketAktif != null) updated = updated.copy(paketAktif = paketAktif)
+                            currentList[idx] = updated
+                            _state.value = _state.value.copy(tvList = currentList)
+                        }
+                    }
+                    com.billingps.aptv.TimerService.ACTION_TIMER_EXPIRED -> {
+                        val tvId = intent.getStringExtra(com.billingps.aptv.TimerService.EXTRA_TV_ID) ?: return
+                        val currentList = _state.value.tvList.toMutableList()
+                        val idx = currentList.indexOfFirst { it.id == tvId }
+                        if (idx >= 0) {
+                            currentList[idx] = currentList[idx].copy(
+                                timerActive = false, sisaDetik = 0L,
+                                paketAktif = "WAKTU HABIS",
+                            )
+                            _state.value = _state.value.copy(tvList = currentList)
+                        }
+                    }
+                }
+            }
+        }
+        try {
+            val filter = IntentFilter().apply {
+                addAction(com.billingps.aptv.TimerService.ACTION_TICK)
+                addAction(com.billingps.aptv.TimerService.ACTION_TIMER_EXPIRED)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                getApplication<Application>().registerReceiver(timerReceiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                getApplication<Application>().registerReceiver(timerReceiver, filter)
+            }
+        } catch (e: Exception) {
+            Log.e("MainVM", "registerTimerReceiver failed: ${e.message}")
+        }
+    }
+
+    fun startTimerService() {
+        val tvList = _state.value.tvList.filter { it.timerActive || it.bebas }
+        if (tvList.isEmpty()) return
+        val intent = Intent(getApplication(), com.billingps.aptv.TimerService::class.java).apply {
+            action = com.billingps.aptv.TimerService.ACTION_START
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                getApplication<Application>().startForegroundService(intent)
+            } else {
+                getApplication<Application>().startService(intent)
+            }
+        } catch (e: Exception) {
+            Log.e("MainVM", "startTimerService failed: ${e.message}")
+        }
+    }
+
     private fun loadAll() {
         val users = StorageUtil.loadUsers()
         val cu = StorageUtil.loadCurrentUser()
@@ -130,6 +221,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         Log.i("MainVM", "loadAll: license status='${lic.status}' expires='${lic.expiresAt}' maxTv=${lic.maxTv} trial=$trial")
         val themeName = StorageUtil.loadThemeOption()
         val savedTheme = try { ThemeOption.valueOf(themeName) } catch (_: Exception) { ThemeOption.GAMING_DARK }
+        val loadedGroups = StorageUtil.loadJenisPsList()
+        val groups = if (loadedGroups.isNotEmpty()) loadedGroups else listOf("PS3", "PS4", "PS5")
         _state.value = _state.value.copy(
             isLoggedIn = cu.isNotEmpty(),
             currentUser = cu,
@@ -138,7 +231,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             users = users,
             tvList = StorageUtil.loadTvList(),
             transaksiList = StorageUtil.loadTransaksi(),
-            paketMain = StorageUtil.loadPaketMain().ifEmpty { defaultPaketMain() },
+            jenisPsList = groups,
+            paketMain = StorageUtil.loadPaketMain().ifEmpty { defaultPaketMain(groups) },
             paketDurasi = StorageUtil.loadPaketDurasi().ifEmpty { defaultPaketDurasi() },
             menuMakanan = StorageUtil.loadMenuMakanan(),
             menuMinuman = StorageUtil.loadMenuMinuman(),
@@ -151,7 +245,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             tvPasswordHash = StorageUtil.loadTvPassword(),
             promo = StorageUtil.loadPromo(),
         )
-        _state.value = _state.value.copy(pendingInvoiceCount = _state.value.invoices.count { it.status == "WAITING_CONFIRMATION" })
+        val savedNotifications = StorageUtil.loadNotifications()
+        _state.value = _state.value.copy(
+            pendingInvoiceCount = _state.value.invoices.count { it.status == "WAITING_CONFIRMATION" },
+            loginMethod = StorageUtil.loadLoginMethod(),
+            printerAddress = StorageUtil.getSecurePreference("printerAddress") ?: "",
+            printerName = StorageUtil.getSecurePreference("printerName") ?: "",
+            notifications = savedNotifications,
+            unreadNotifCount = savedNotifications.count { !it.read },
+        )
         // Check trial expiry
         val s = _state.value
         if (s.trialBatas > 0 && s.trialBatas < System.currentTimeMillis() && s.licenseStatus.status != "active") {
@@ -163,6 +265,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (cu.isNotEmpty()) {
             startLicenseListener(cu)
             startPromoListener()
+            startNotifListener(cu)
+            // Force fetch latest promo from Firestore
+            viewModelScope.launch {
+                val fetched = cloudRepo.fetchPromoSettings()
+                if (fetched != null) {
+                    _state.value = _state.value.copy(promo = fetched, promoFetched = true)
+                    StorageUtil.savePromo(fetched)
+                    // Show popup if promo just became active
+                    checkPromoPopup(fetched)
+                }
+            }
         }
     }
 
@@ -424,10 +537,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (existing != null) {
                     addActivityLog("Login via Google")
                     StorageUtil.saveCurrentSession(existing.username, existing.role)
+                    StorageUtil.saveLoginMethod("google")
                     _state.value = _state.value.copy(
                         isLoggedIn = true, currentUser = existing.username, currentRole = existing.role,
                         needsSmtpSetup = _state.value.smtp.user.isEmpty(),
-                        isBusy = false, statusMessage = "",
+                        isBusy = false, statusMessage = "", loginMethod = "google",
                     )
                     restoreLicenseAndTrial(existing.username)
                 } else {
@@ -441,38 +555,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val updatedUsers = users + (remoteUsername to restoredUser)
                         StorageUtil.saveUsers(updatedUsers)
                         StorageUtil.saveCurrentSession(remoteUsername, "admin")
+                        StorageUtil.saveLoginMethod("google")
                         _state.value = _state.value.copy(
                             users = updatedUsers, isLoggedIn = true, currentUser = remoteUsername, currentRole = "admin",
-                            isBusy = false, statusMessage = "",
+                            isBusy = false, statusMessage = "", loginMethod = "google",
                         )
                         restoreLicenseAndTrial(remoteUsername)
+                        // Restore transaksi & TV list from cloud so old data doesn't get overwritten with empty
+                        launch {
+                            val cloudTxs = withContext(Dispatchers.IO) { cloudRepo.fetchTransaksiForUser(remoteUsername) }
+                            val cloudTvs = withContext(Dispatchers.IO) { cloudRepo.fetchTvListForUser(remoteUsername) }
+                            if (cloudTxs.isNotEmpty()) {
+                                _state.value = _state.value.copy(transaksiList = cloudTxs)
+                                StorageUtil.saveTransaksi(cloudTxs)
+                            }
+                            if (cloudTvs.isNotEmpty()) {
+                                _state.value = _state.value.copy(tvList = cloudTvs)
+                                StorageUtil.saveTvList(cloudTvs)
+                            }
+                            // Sync restored data to cloud
+                            try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after remote Google restore: ${e.message}") }
+                        }
                     } else {
-                        val username = generateUniqueUsername(displayName)
-                        val newUser = UserData(
-                            username = username, passwordHash = "", role = "admin", email = verifiedEmail,
-                            dibuat = sdf.format(java.util.Date()), emailVerified = true,
-                        )
-                        val updatedUsers = users + (username to newUser)
-                        StorageUtil.saveUsers(updatedUsers)
-                        StorageUtil.saveCurrentSession(username, "admin")
+                        // User baru — minta isi data rental dulu
                         _state.value = _state.value.copy(
-                            users = updatedUsers, isLoggedIn = true, currentUser = username, currentRole = "admin",
+                            pendingGoogleRegistration = true,
+                            pendingGoogleEmail = verifiedEmail,
+                            pendingGoogleDisplayName = displayName,
+                            pendingGoogleIdToken = idToken,
                             isBusy = false, statusMessage = "",
                         )
-                        if (_state.value.trialBatas == 0L && _state.value.licenseStatus.status != "active") {
-                            val trialEnd = System.currentTimeMillis() + 3 * 24 * 60 * 60 * 1000L
-                            _state.value = _state.value.copy(trialBatas = trialEnd, maxTv = 2)
-                            StorageUtil.saveTrial(trialEnd)
-                            launch { try { cloudRepo.saveTrialToCloud(username, trialEnd) } catch (e: Exception) { Log.e("MainVM", "saveTrialToCloud on Google sign-in new user: ${e.message}") } }
-                        }
                     }
                 }
-                try {
-                    firebaseAuth.currentUser?.let { u ->
-                        launch { withContext(Dispatchers.IO) { cloudRepo.fetchTransaksiForUser(u.email ?: verifiedEmail) } }
-                    }
-                    launch { try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after Google sign-in: ${e.message}") } }
-                } catch (e: Exception) { Log.e("MainVM", "post-Google-sign-in sync block: ${e.message}") }
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     isBusy = false,
@@ -480,6 +594,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
+    }
+
+    fun completeGoogleRegistration(namaRental: String, alamatRental: String, whatsappRental: String) {
+        val s = _state.value
+        if (!s.pendingGoogleRegistration) return
+        val email = s.pendingGoogleEmail
+        val displayName = s.pendingGoogleDisplayName
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isBusy = true, statusMessage = "Mendaftarkan...")
+            val username = generateUniqueUsername(displayName)
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+            val newUser = UserData(
+                username = username, passwordHash = "", role = "admin", email = email,
+                dibuat = sdf.format(java.util.Date()), emailVerified = true,
+                namaRental = namaRental, alamatRental = alamatRental, whatsappRental = whatsappRental,
+                registeredAt = System.currentTimeMillis(),
+            )
+            val updatedUsers = s.users + (username to newUser)
+            StorageUtil.saveUsers(updatedUsers)
+            StorageUtil.saveCurrentSession(username, "admin")
+            StorageUtil.saveLoginMethod("google")
+            _state.value = _state.value.copy(
+                users = updatedUsers, isLoggedIn = true, currentUser = username, currentRole = "admin",
+                pendingGoogleRegistration = false, pendingGoogleEmail = "", pendingGoogleDisplayName = "", pendingGoogleIdToken = "",
+                isBusy = false, statusMessage = "", loginMethod = "google",
+            )
+            if (_state.value.trialBatas == 0L && _state.value.licenseStatus.status != "active") {
+                val trialEnd = System.currentTimeMillis() + 3 * 24 * 60 * 60 * 1000L
+                _state.value = _state.value.copy(trialBatas = trialEnd, maxTv = 2)
+                StorageUtil.saveTrial(trialEnd)
+                launch { try { cloudRepo.saveTrialToCloud(username, trialEnd) } catch (e: Exception) { Log.e("MainVM", "saveTrialToCloud on Google sign-in new user: ${e.message}") } }
+            }
+            try {
+                launch { try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after Google registration: ${e.message}") } }
+            } catch (e: Exception) { Log.e("MainVM", "post-Google-registration sync: ${e.message}") }
+        }
+    }
+
+    fun cancelGoogleRegistration() {
+        _state.value = _state.value.copy(
+            pendingGoogleRegistration = false,
+            pendingGoogleEmail = "",
+            pendingGoogleDisplayName = "",
+            pendingGoogleIdToken = "",
+            isBusy = false,
+        )
     }
 
     private fun generateUniqueUsername(base: String): String {
@@ -504,13 +664,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(themeOption = option)
     }
 
-    fun logout() {
+    fun logout(clearGoogleSignIn: Boolean = false) {
         addActivityLog("Logout")
         stopLicenseListener()
         stopPromoListener()
+        stopNotifListener()
         try { firebaseAuth.signOut() } catch (e: Exception) { Log.e("MainVM", "firebaseAuth.signOut on logout: ${e.message}") }
+        if (clearGoogleSignIn) {
+            try {
+                val gso = com.google.android.gms.auth.api.signin.GoogleSignInOptions.Builder(
+                    com.google.android.gms.auth.api.signin.GoogleSignInOptions.DEFAULT_SIGN_IN
+                )
+                    .requestIdToken(getApplication<android.app.Application>().getString(com.billingps.aptv.R.string.default_web_client_id))
+                    .requestEmail()
+                    .build()
+                val client = com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(getApplication(), gso)
+                client.signOut() // ← clears local Google Play cache so picker shows next time
+                    .addOnCompleteListener { Log.i("MainVM", "Google signOut complete") }
+                client.revokeAccess()
+                    .addOnCompleteListener { Log.i("MainVM", "Google revokeAccess complete") }
+                Log.i("MainVM", "Google signOut + revokeAccess initiated")
+            } catch (e: Exception) { Log.e("MainVM", "Google signOut: ${e.message}") }
+            StorageUtil.clearAllAppData()
+        }
         StorageUtil.clearSession()
-        _state.value = _state.value.copy(isLoggedIn = false, currentUser = "", currentRole = "")
+        StorageUtil.saveLoginMethod("password")
+        _state.value = _state.value.copy(
+            isLoggedIn = false, currentUser = "", currentRole = "", loginMethod = "password",
+            transaksiList = emptyList(), tvList = emptyList(), invoices = emptyList(),
+            notifications = emptyList(), unreadNotifCount = 0,
+            promo = PromoSettings(), licenseStatus = LicenseStatus(), trialBatas = 0L, maxTv = 0,
+        )
     }
 
     private suspend fun restoreLicenseAndTrial(username: String) {
@@ -539,6 +723,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         startLicenseListener(username)
         startPromoListener()
+        startNotifListener(username)
         initFcmToken(username)
     }
 
@@ -604,6 +789,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun newUserPromoRemainingHours(): Long {
+        val s = _state.value
+        if (!s.promo.newUserPromoActive) return -1
+        val user = s.users[s.currentUser] ?: return -1
+        if (user.registeredAt <= 0) return -1
+        val elapsed = System.currentTimeMillis() - user.registeredAt
+        val durasiMs = s.promo.newUserPromoDurationHours * 60 * 60 * 1000L
+        val remaining = durasiMs - elapsed
+        return if (remaining <= 0) -1 else remaining / (60 * 60 * 1000)
+    }
+
+    fun isNewUserPromoActive(): Boolean {
+        val s = _state.value
+        if (!s.promo.newUserPromoActive) return false
+        val user = s.users[s.currentUser] ?: return false
+        if (user.registeredAt <= 0) return false
+        val elapsed = System.currentTimeMillis() - user.registeredAt
+        return elapsed < s.promo.newUserPromoDurationHours * 60 * 60 * 1000L
+    }
+
     private fun stopPromoListener() {
         promoListener?.remove()
         promoListener = null
@@ -636,7 +841,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun hargaSetelahDiskon(namaPaket: String, hargaAsli: Int): Int {
         val s = _state.value
-        if (!s.promo.promoAktif) return hargaAsli
         val key = when (namaPaket) {
             "1 Bulan", "BULANAN" -> "1 Bulan"
             "3 Bulan", "3BULAN" -> "3 Bulan"
@@ -644,7 +848,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "LIFETIME" -> "LIFETIME"
             else -> null
         }
-        val diskon = key?.let { s.promo.diskonPerPaket[it] } ?: 0
+        val diskonReguler = if (s.promo.promoAktif) {
+            key?.let { s.promo.diskonPerPaket[it] } ?: 0
+        } else 0
+        val diskonNewUser = if (isNewUserPromoActive() && key != null) {
+            s.promo.newUserDiskonPerPaket[key] ?: 0
+        } else 0
+        val diskon = maxOf(diskonReguler, diskonNewUser)
         if (diskon <= 0) return hargaAsli
         return (hargaAsli * (100 - diskon.coerceIn(0, 100))) / 100
     }
@@ -669,6 +879,84 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         invoicesListener = null
     }
 
+    private var broadcastListener: ListenerRegistration? = null
+
+    private fun startNotifListener(username: String) {
+        stopNotifListener()
+        viewModelScope.launch {
+            cloudRepo.ensureSignedIn()
+            // Watch personal notifications
+            notifListener = cloudRepo.listenUserNotifications(username) { list ->
+                val merged = mergeNotifications(list, _state.value.notifications)
+                _state.value = _state.value.copy(
+                    notifications = merged,
+                    unreadNotifCount = merged.count { !it.read },
+                )
+                StorageUtil.saveNotifications(merged)
+            }
+            // Watch broadcast notifications
+            broadcastListener = cloudRepo.listenBroadcastNotifications { list ->
+                val merged = mergeNotifications(list, _state.value.notifications)
+                _state.value = _state.value.copy(
+                    notifications = merged,
+                    unreadNotifCount = merged.count { !it.read },
+                )
+                StorageUtil.saveNotifications(merged)
+            }
+        }
+        // FCM in-app popup via event bus
+        viewModelScope.launch {
+            com.billingps.aptv.utils.NotificationEventBus.events.collect { notif ->
+                _state.value = _state.value.copy(
+                    showNotifPopup = true,
+                    notifPopupTitle = notif.title,
+                    notifPopupBody = notif.body,
+                )
+            }
+        }
+    }
+
+    private fun mergeNotifications(newList: List<AppNotification>, existing: List<AppNotification>): List<AppNotification> {
+        val all = (newList + existing).groupBy { it.id }.mapValues { (_, list) -> list.first() }
+        return all.values.sortedByDescending { it.sentAt }
+    }
+
+    private fun stopNotifListener() {
+        notifListener?.remove()
+        notifListener = null
+        broadcastListener?.remove()
+        broadcastListener = null
+    }
+
+    fun markNotifRead() {
+        val updated = _state.value.notifications.map { it.copy(read = true) }
+        _state.value = _state.value.copy(notifications = updated, unreadNotifCount = 0)
+        StorageUtil.saveNotifications(updated)
+    }
+
+    fun dismissPromoPopup() {
+        _state.value = _state.value.copy(showPromoPopup = false, promoPopupTitle = "", promoPopupBody = "")
+    }
+
+    fun dismissNotifPopup() {
+        _state.value = _state.value.copy(showNotifPopup = false, notifPopupTitle = "", notifPopupBody = "")
+    }
+
+    private fun checkPromoPopup(fetched: PromoSettings) {
+        val prev = StorageUtil.loadPromo()
+        if (fetched.promoAktif && !prev.promoAktif) {
+            val aktifPackages = fetched.diskonPerPaket.filter { it.value > 0 }
+            if (aktifPackages.isNotEmpty()) {
+                val detail = aktifPackages.map { "${it.key}: diskon ${it.value}%" }.joinToString("\n")
+                _state.value = _state.value.copy(
+                    showPromoPopup = true,
+                    promoPopupTitle = "🔥 PROMO AKTIF!",
+                    promoPopupBody = detail,
+                )
+            }
+        }
+    }
+
     // ── Kasir ──────────────────────────────────────────────
     fun loginKasir(username: String, password: String): Boolean {
         val users = _state.value.users
@@ -684,6 +972,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         addActivityLog("Login kasir")
         startPromoListener()
+        startNotifListener(user.username)
         initFcmToken(user.username)
         return true
     }
@@ -870,6 +1159,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             dibuat = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).format(java.util.Date()),
             emailVerified = false,
             verificationCode = verificationCode,
+            registeredAt = System.currentTimeMillis(),
         )
 
         var firebaseCreated = true
@@ -1058,11 +1348,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── TV Management ──────────────────────────────────────
     fun tambahTV(tv: TvData): Boolean {
-        val maxTv = _state.value.maxTv
-        if (maxTv > 0 && _state.value.tvList.size >= maxTv) return false
-        val list = _state.value.tvList.toMutableList()
+        val s = _state.value
+        val hasLicense = s.licenseStatus.status == "active"
+        val hasTrial = s.trialBatas > System.currentTimeMillis()
+        if (!hasLicense && !hasTrial) return false
+        val maxTv = s.maxTv
+        if (maxTv > 0 && s.tvList.size >= maxTv) return false
+        val list = s.tvList.toMutableList()
         list.add(tv)
-        _state.value = _state.value.copy(tvList = list)
+        _state.value = s.copy(tvList = list)
         StorageUtil.saveTvList(list)
         return true
     }
@@ -1107,6 +1401,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         _state.value = _state.value.copy(tvList = list)
         StorageUtil.saveTvList(list)
+        refreshTimerService()
+    }
+
+    private fun refreshTimerService() {
+        val activeTvs = _state.value.tvList.filter { it.timerActive || it.bebas }
+        if (activeTvs.isEmpty()) {
+            getApplication<Application>().stopService(Intent(getApplication(), com.billingps.aptv.TimerService::class.java))
+        } else if (!com.billingps.aptv.TimerService.isRunning()) {
+            startTimerService()
+        }
     }
 
     fun hapusTV(id: String) {
@@ -1122,6 +1426,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(transaksiList = list)
         StorageUtil.saveTransaksi(list)
         addActivityLog("Transaksi ${tx.paket} Rp${tx.total} di ${tx.kota}")
+        refreshTimerService()
         // Auto-sync to cloud after new transaction
         try {
             Log.i("MainVM", "auto-sync triggered after tambahTransaksi id=${tx.id}")
@@ -1145,6 +1450,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             menuMakanan = menuMakanan, menuMinuman = menuMinuman,
         )
         StorageUtil.saveHarga(paketMain, paketDurasi, menuMakanan, menuMinuman)
+        StorageUtil.saveJenisPsList(_state.value.jenisPsList)
+    }
+
+    // ── Grup ────────────────────────────────────────────────
+    fun tambahGrup(nama: String) {
+        val groups = _state.value.jenisPsList.toMutableList()
+        if (groups.contains(nama)) return
+        groups.add(nama)
+        val newPaketMain = _state.value.paketMain.toMutableMap()
+        val defaultPS = mapOf(
+            "15 Menit" to 5000, "30 Menit" to 10000, "1 Jam" to 15000,
+            "2 Jam" to 25000, "3 Jam" to 35000,
+        )
+        newPaketMain[nama] = defaultPS
+        _state.value = _state.value.copy(jenisPsList = groups, paketMain = newPaketMain)
+        StorageUtil.saveJenisPsList(groups)
+        StorageUtil.saveHarga(_state.value.paketMain, _state.value.paketDurasi, _state.value.menuMakanan, _state.value.menuMinuman)
+    }
+
+    fun renameGrup(lama: String, baru: String) {
+        if (lama == baru || baru.isBlank()) return
+        val groups = _state.value.jenisPsList.toMutableList()
+        val idx = groups.indexOf(lama)
+        if (idx < 0) return
+        groups[idx] = baru
+        val newPaketMain = _state.value.paketMain.toMutableMap()
+        newPaketMain[baru] = newPaketMain.remove(lama) ?: emptyMap()
+        val newTvList = _state.value.tvList.map { if (it.jenisPs == lama) it.copy(jenisPs = baru) else it }
+        _state.value = _state.value.copy(jenisPsList = groups, paketMain = newPaketMain, tvList = newTvList)
+        StorageUtil.saveJenisPsList(groups)
+        StorageUtil.saveTvList(newTvList)
+        StorageUtil.saveHarga(_state.value.paketMain, _state.value.paketDurasi, _state.value.menuMakanan, _state.value.menuMinuman)
+    }
+
+    fun hapusGrup(nama: String) {
+        val groups = _state.value.jenisPsList.toMutableList()
+        if (!groups.remove(nama)) return
+        val newPaketMain = _state.value.paketMain.toMutableMap()
+        newPaketMain.remove(nama)
+        val fallback = groups.firstOrNull() ?: "PS3"
+        val newTvList = _state.value.tvList.map { if (it.jenisPs == nama) it.copy(jenisPs = fallback) else it }
+        _state.value = _state.value.copy(jenisPsList = groups, paketMain = newPaketMain, tvList = newTvList)
+        StorageUtil.saveJenisPsList(groups)
+        StorageUtil.saveTvList(newTvList)
+        StorageUtil.saveHarga(_state.value.paketMain, _state.value.paketDurasi, _state.value.menuMakanan, _state.value.menuMinuman)
     }
 
     // ── License ────────────────────────────────────────────
@@ -1461,6 +1811,78 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(needsSmtpSetup = false)
     }
 
+    fun savePrinter(address: String, name: String) {
+        StorageUtil.putSecurePreference("printerAddress", address)
+        StorageUtil.putSecurePreference("printerName", name)
+        _state.value = _state.value.copy(printerAddress = address, printerName = name)
+    }
+
+    fun loadPrinter() {
+        val addr = StorageUtil.getSecurePreference("printerAddress") ?: ""
+        val name = StorageUtil.getSecurePreference("printerName") ?: ""
+        _state.value = _state.value.copy(printerAddress = addr, printerName = name)
+    }
+
+    fun connectPrinter(address: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = com.billingps.aptv.utils.ThermalPrinter.connect(address)
+            _state.value = _state.value.copy(
+                printerConnected = result.success,
+                statusMessage = result.message,
+            )
+        }
+    }
+
+    fun disconnectPrinter() {
+        com.billingps.aptv.utils.ThermalPrinter.disconnect()
+        _state.value = _state.value.copy(printerConnected = false)
+    }
+
+    fun printReceipt(transaksi: com.billingps.aptv.models.Transaksi, tvData: com.billingps.aptv.models.TvData) {
+        if (!com.billingps.aptv.utils.ThermalPrinter.isConnected()) {
+            _state.value = _state.value.copy(statusMessage = "Printer belum terhubung")
+            return
+        }
+        val userData = _state.value.users[_state.value.currentUser]
+        val riwayat = _state.value.transaksiList.filter { it.kota == tvData.nama }
+        viewModelScope.launch(Dispatchers.IO) {
+            com.billingps.aptv.utils.ThermalPrinter.printStruk(
+                transaksi = transaksi,
+                tvNama = tvData.nama,
+                tvJenisPs = tvData.jenisPs,
+                kasir = _state.value.currentUser,
+                namaRental = userData?.namaRental ?: "",
+                alamatRental = userData?.alamatRental ?: "",
+                riwayatTransaksi = riwayat,
+                menuMakanan = _state.value.menuMakanan,
+                menuMinuman = _state.value.menuMinuman,
+                csWhatsapp = "082180208414",
+                bebas = tvData.bebas,
+                durasiBebasDetik = tvData.timerDurasi,
+            )
+            _state.value = _state.value.copy(statusMessage = "Struk dicetak")
+        }
+    }
+
+    fun updateDataRental(nama: String, alamat: String, wa: String) {
+        val users = _state.value.users.toMutableMap()
+        val userData = users[_state.value.currentUser] ?: return
+        users[_state.value.currentUser] = userData.copy(namaRental = nama, alamatRental = alamat, whatsappRental = wa)
+        _state.value = _state.value.copy(users = users)
+        StorageUtil.saveUsers(users)
+    }
+
+    fun printTestPage() {
+        if (!com.billingps.aptv.utils.ThermalPrinter.isConnected()) {
+            _state.value = _state.value.copy(statusMessage = "Printer belum terhubung")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            com.billingps.aptv.utils.ThermalPrinter.printTestPage()
+            _state.value = _state.value.copy(statusMessage = "Test print selesai")
+        }
+    }
+
     fun sendEmail(recipient: String, subject: String, body: String, onResult: (Boolean, String) -> Unit) {
         val cfg = _state.value.smtp
         if (cfg.user.isBlank() || cfg.pass.isBlank()) {
@@ -1544,6 +1966,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         connectivityObserver.stop()
         stopLicenseListener()
         stopPromoListener()
+        stopNotifListener()
         super.onCleared()
     }
 }

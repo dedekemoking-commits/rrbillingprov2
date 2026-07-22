@@ -1,9 +1,16 @@
 package com.billingps.aptv.ui.screens
 
+import android.app.Activity
+import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.provider.Settings
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -15,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,6 +39,7 @@ import com.billingps.aptv.models.*
 import com.billingps.aptv.ui.theme.*
 import com.billingps.aptv.ui.theme.ThemeOption
 import kotlinx.coroutines.launch
+import android.bluetooth.BluetoothDevice
 import android.util.Log
 
 @Composable
@@ -58,43 +67,12 @@ fun ProfileScreen(
 
 
     Column(modifier = Modifier.fillMaxSize().background(DarkBackground)) {
-        Row(
-            modifier = Modifier.fillMaxWidth().background(DarkSurface).padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text("PROFIL & AKTIVASI", style = MaterialTheme.typography.titleLarge, color = NeonGreen)
-            var showLogoutDialog by remember { mutableStateOf(false) }
-            OutlinedButton(
-                onClick = { showLogoutDialog = true },
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
-                border = BorderStroke(1.dp, NeonRed),
-            ) { Icon(Icons.Filled.Logout, contentDescription = null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Keluar") }
-            if (showLogoutDialog) {
-                AlertDialog(
-                    onDismissRequest = { showLogoutDialog = false },
-                    containerColor = DarkSurface,
-                    title = { Text("KONFIRMASI KELUAR", fontWeight = FontWeight.Bold, color = NeonRed) },
-                    text = { Text("Apakah Anda yakin ingin keluar? Data yang belum tersimpan akan hilang.", color = TextSecondary) },
-                    confirmButton = {
-                        Button(
-                            onClick = { showLogoutDialog = false; onLogout() },
-                            colors = ButtonDefaults.buttonColors(containerColor = NeonRed, contentColor = DarkBackground),
-                            shape = RoundedCornerShape(10.dp),
-                        ) { Text("Keluar") }
-                    },
-                    dismissButton = {
-                        OutlinedButton(
-                            onClick = { showLogoutDialog = false },
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
-                            border = BorderStroke(1.dp, TextSecondary.copy(alpha = 0.5f)),
-                        ) { Text("Batal") }
-                    },
-                )
+            Row(
+                modifier = Modifier.fillMaxWidth().background(DarkSurface).padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("PROFIL & AKTIVASI", style = MaterialTheme.typography.titleLarge, color = NeonGreen)
             }
-        }
 
         Column(
             modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
@@ -103,7 +81,50 @@ fun ProfileScreen(
             // Profile Card
             ProfileHeader(state.currentUser, state.currentRole, state.appVersionName)
 
-
+            // Notifications Inbox
+            if (state.currentRole == "admin") {
+                var showNotif by remember { mutableStateOf(false) }
+                val notifCount = state.unreadNotifCount
+                val notifList = state.notifications
+                Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, if (notifCount > 0) NeonCyan.copy(alpha = 0.5f) else DarkSurfaceV3)) {
+                    Column(Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { showNotif = !showNotif; if (!showNotif) viewModel.markNotifRead() }) {
+                            Icon(Icons.Filled.Notifications, contentDescription = null, tint = if (notifCount > 0) NeonCyan else TextSecondary, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("NOTIFIKASI", style = MaterialTheme.typography.labelLarge, color = NeonCyan, modifier = Modifier.weight(1f))
+                            if (notifCount > 0) {
+                                Surface(shape = RoundedCornerShape(50), color = NeonRed) {
+                                    Text("$notifCount", modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp), style = MaterialTheme.typography.bodySmall, color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Spacer(Modifier.width(4.dp))
+                            Icon(if (showNotif) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = null, tint = TextSecondary)
+                        }
+                        if (showNotif) {
+                            Spacer(Modifier.height(8.dp))
+                            if (notifList.isEmpty()) {
+                                Text("Belum ada notifikasi", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                            } else {
+                                notifList.take(20).forEach { n ->
+                                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                        Icon(
+                                            when (n.type) { "promo" -> Icons.Filled.LocalOffer; "license_confirmed" -> Icons.Filled.CheckCircle; else -> Icons.Filled.Info },
+                                            contentDescription = null, tint = when (n.type) { "promo" -> NeonOrange; "license_confirmed" -> NeonGreen; else -> NeonCyan },
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(n.title, style = MaterialTheme.typography.bodySmall, color = if (n.read) TextSecondary else TextPrimary, fontWeight = if (n.read) FontWeight.Normal else FontWeight.Bold)
+                                            Text(n.body, style = MaterialTheme.typography.bodySmall, color = TextDim)
+                                        }
+                                    }
+                                    HorizontalDivider(color = DarkSurfaceV3.copy(alpha = 0.5f), thickness = 0.5.dp)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             // Change Password
             if (state.currentRole == "admin") {
@@ -238,6 +259,345 @@ fun ProfileScreen(
                 }
             }
 
+            // Printer Struk
+            if (state.currentRole == "admin") {
+                var printerDevices by remember { mutableStateOf<List<BluetoothDevice>>(emptyList()) }
+                var scanMsg by remember { mutableStateOf("") }
+                var connectingAddress by remember { mutableStateOf("") }
+                var isScanning by remember { mutableStateOf(false) }
+                var pairTargetAddress by remember { mutableStateOf("") }
+                var pairTargetName by remember { mutableStateOf("") }
+
+                val bluetoothPerms = if (android.os.Build.VERSION.SDK_INT >= 31)
+                    arrayOf(android.Manifest.permission.BLUETOOTH_CONNECT, android.Manifest.permission.BLUETOOTH_SCAN)
+                else emptyArray()
+
+                val doBluetoothScan = fun(context: Context, onResult: (List<BluetoothDevice>) -> Unit) {
+                    com.billingps.aptv.utils.ThermalPrinter.cancelDiscovery(context)
+                    val bonded = com.billingps.aptv.utils.ThermalPrinter.getAllBondedDevices()
+                    val allDevices = bonded.toMutableList()
+                    val seen = bonded.map { it.address }.toMutableSet()
+                    com.billingps.aptv.utils.ThermalPrinter.discoverDevices(
+                        context,
+                        onFound = { device ->
+                            if (device.address !in seen && !allDevices.any { it.address == device.address }) {
+                                allDevices.add(device)
+                                seen.add(device.address)
+                                onResult(allDevices.toList())
+                            }
+                        },
+                        onFinished = { onResult(allDevices.toList()) }
+                    )
+                    // Also show bonded immediately
+                    onResult(allDevices.toList())
+                }
+                val permLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestMultiplePermissions()
+                ) { granted ->
+                    if (granted.values.all { it } || bluetoothPerms.isEmpty()) {
+                        doBluetoothScan(ctx) { list -> printerDevices = list; scanMsg = if (list.isEmpty()) "Tidak ada perangkat Bluetooth" else ""; isScanning = false }
+                    } else {
+                        scanMsg = "Izin Bluetooth ditolak"
+                        isScanning = false
+                    }
+                }
+
+                val bluetoothSettingsLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.StartActivityForResult()
+                ) { _ ->
+                    if (pairTargetAddress.isNotEmpty()) {
+                        val device = com.billingps.aptv.utils.ThermalPrinter.getDevice(pairTargetAddress)
+                        if (device?.bondState == android.bluetooth.BluetoothDevice.BOND_BONDED) {
+                            val name = pairTargetName
+                            scanMsg = "Pairing berhasil, menghubungkan ke $name..."
+                            viewModel.savePrinter(pairTargetAddress, name)
+                            connectingAddress = pairTargetAddress
+                            viewModel.connectPrinter(pairTargetAddress)
+                            pairTargetAddress = ""
+                            pairTargetName = ""
+                        } else {
+                            scanMsg = "Printer belum dipairing. Buka Pengaturan → Bluetooth untuk pairing manual"
+                        }
+                    }
+                }
+
+                // Auto-connect when pairing completes in Bluetooth Settings
+                DisposableEffect(pairTargetAddress) {
+                    if (pairTargetAddress.isEmpty()) return@DisposableEffect onDispose {}
+
+                    val receiver = object : BroadcastReceiver() {
+                        override fun onReceive(context: Context, intent: Intent) {
+                            val device = if (android.os.Build.VERSION.SDK_INT >= 33) {
+                                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                            }
+                            val bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
+                            val addr = pairTargetAddress
+                            if (device != null && device.address == addr && bondState == BluetoothDevice.BOND_BONDED) {
+                                val name = pairTargetName
+                                scanMsg = "Pairing berhasil, menghubungkan ke $name..."
+                                viewModel.savePrinter(addr, name)
+                                connectingAddress = addr
+                                viewModel.connectPrinter(addr)
+                                pairTargetAddress = ""
+                                pairTargetName = ""
+                            }
+                        }
+                    }
+
+                    val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+                    if (android.os.Build.VERSION.SDK_INT >= 33) {
+                        ctx.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        ctx.registerReceiver(receiver, filter)
+                    }
+
+                    onDispose {
+                        ctx.unregisterReceiver(receiver)
+                    }
+                }
+
+                Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("PRINTER STRUK", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
+                        Spacer(Modifier.height(4.dp))
+                        Text("Hubungkan ke printer thermal Bluetooth.", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                        Spacer(Modifier.height(8.dp))
+
+                        // Update connectingAddress when printerConnected changes
+                        LaunchedEffect(state.printerConnected, state.statusMessage) {
+                            if (connectingAddress.isNotEmpty() && (state.printerConnected || state.statusMessage.startsWith("Gagal") || state.statusMessage.startsWith("Error"))) {
+                                connectingAddress = ""
+                            }
+                        }
+
+                        // Status printer + error message
+                        if (state.printerConnected) {
+                            Card(shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = NeonGreen.copy(alpha = 0.1f))) {
+                                Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Filled.BluetoothConnected, contentDescription = null, tint = NeonGreen, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Column {
+                                        Text(state.printerName.ifEmpty { "Printer" }, style = MaterialTheme.typography.bodySmall, color = NeonGreen, fontWeight = FontWeight.Bold)
+                                        Text(state.printerAddress, style = MaterialTheme.typography.bodySmall, color = TextDim)
+                                    }
+                                }
+                            }
+                        } else if (state.printerAddress.isNotEmpty() && connectingAddress.isEmpty()) {
+                            Card(shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = NeonRed.copy(alpha = 0.1f))) {
+                                Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Filled.BluetoothDisabled, contentDescription = null, tint = NeonRed, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Column {
+                                        Text(state.printerName.ifEmpty { "Printer" }, style = MaterialTheme.typography.bodySmall, color = NeonRed)
+                                        Text("Terputus", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                                    }
+                                }
+                            }
+                        }
+                        if (state.statusMessage.startsWith("Terhubung") || state.statusMessage.startsWith("Gagal") || state.statusMessage.startsWith("Error") || state.statusMessage.contains(":")) {
+                            Spacer(Modifier.height(4.dp))
+                            val isError = !state.statusMessage.startsWith("Terhubung")
+                            Text(state.statusMessage, style = MaterialTheme.typography.bodySmall, color = if (isError) NeonRed else NeonGreen)
+                        }
+                        Spacer(Modifier.height(8.dp))
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    connectingAddress = ""
+                                    if (bluetoothPerms.isNotEmpty()) {
+                                        isScanning = true
+                                        scanMsg = "Meminta izin Bluetooth..."
+                                        permLauncher.launch(bluetoothPerms)
+                                    } else {
+                                        isScanning = true
+                                        scanMsg = "Mencari printer..."
+                                        doBluetoothScan(ctx) { list -> printerDevices = list; scanMsg = if (list.isEmpty()) "Tidak ada perangkat Bluetooth" else ""; isScanning = false }
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan),
+                                border = BorderStroke(1.dp, NeonCyan),
+                            ) { if (isScanning) CircularProgressIndicator(modifier = Modifier.size(14.dp), color = NeonCyan, strokeWidth = 2.dp) else Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(14.dp)); Spacer(Modifier.width(4.dp)); Text("Cari") }
+
+                            if (state.printerConnected) {
+                                OutlinedButton(
+                                    onClick = { viewModel.disconnectPrinter() },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
+                                    border = BorderStroke(1.dp, NeonRed),
+                                ) { Icon(Icons.Filled.BluetoothDisabled, contentDescription = null, modifier = Modifier.size(14.dp)); Spacer(Modifier.width(4.dp)); Text("Putus") }
+
+                                OutlinedButton(
+                                    onClick = { viewModel.printTestPage() },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
+                                    border = BorderStroke(1.dp, NeonGreen),
+                                ) { Icon(Icons.Filled.Print, contentDescription = null, modifier = Modifier.size(14.dp)); Spacer(Modifier.width(4.dp)); Text("Test") }
+                            }
+                        }
+
+                        if (scanMsg.isNotEmpty()) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(scanMsg, style = MaterialTheme.typography.bodySmall, color = TextDim)
+                        }
+
+                        if (printerDevices.isNotEmpty()) {
+                            Spacer(Modifier.height(8.dp))
+                            Text("Pilih printer:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            Spacer(Modifier.height(4.dp))
+                            printerDevices.forEach { device ->
+                                val isSelected = state.printerAddress == device.address
+                                val isConnecting = connectingAddress == device.address
+                                val connFailed = isSelected && !state.printerConnected && connectingAddress.isEmpty()
+                                val isBonded = device.bondState == android.bluetooth.BluetoothDevice.BOND_BONDED
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).background(
+                                        if (connFailed) NeonRed.copy(0.08f) else if (isSelected) NeonCyan.copy(0.08f) else Color.Transparent,
+                                        RoundedCornerShape(8.dp),
+                                    ),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    RadioButton(
+                                        selected = isSelected,
+                                        onClick = {
+                                            viewModel.savePrinter(device.address, device.name)
+                                            if (isBonded) {
+                                                connectingAddress = device.address
+                                                scanMsg = "Menghubungkan ke ${device.name}..."
+                                                viewModel.connectPrinter(device.address)
+                                            } else {
+                                                pairTargetAddress = device.address
+                                                pairTargetName = device.name ?: "Printer"
+                                                scanMsg = "Buka Pengaturan Bluetooth untuk pairing ${device.name}..."
+                                                bluetoothSettingsLauncher.launch(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                                            }
+                                        },
+                                        colors = RadioButtonDefaults.colors(selectedColor = if (connFailed) NeonRed else NeonCyan),
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Icon(
+                                        Icons.Filled.Bluetooth,
+                                        contentDescription = null,
+                                        tint = if (connFailed) NeonRed else if (isSelected) NeonCyan else TextDim,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(device.name, style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                                        Text(device.address, style = MaterialTheme.typography.bodySmall, color = TextDim)
+                                    }
+                                    if (!isBonded) {
+                                        Text("Baru", style = MaterialTheme.typography.bodySmall, color = NeonYellow, fontWeight = FontWeight.Bold)
+                                    } else if (isConnecting) {
+                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = NeonCyan, strokeWidth = 2.dp)
+                                    } else if (isSelected && state.printerConnected) {
+                                        Text("Siap", style = MaterialTheme.typography.bodySmall, color = NeonGreen, fontWeight = FontWeight.Bold)
+                                    } else if (connFailed) {
+                                        Text("Gagal", style = MaterialTheme.typography.bodySmall, color = NeonRed)
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+                        var showRentalDialog by remember { mutableStateOf(false) }
+                        val currentUser = state.users[state.currentUser]
+                        var rentalNama by remember { mutableStateOf(currentUser?.namaRental ?: "") }
+                        var rentalAlamat by remember { mutableStateOf(currentUser?.alamatRental ?: "") }
+                        var rentalWa by remember { mutableStateOf(currentUser?.whatsappRental ?: "") }
+                        OutlinedButton(
+                            onClick = { rentalNama = currentUser?.namaRental ?: ""; rentalAlamat = currentUser?.alamatRental ?: ""; rentalWa = currentUser?.whatsappRental ?: ""; showRentalDialog = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonOrange),
+                            border = BorderStroke(1.dp, NeonOrange),
+                        ) { Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(14.dp)); Spacer(Modifier.width(4.dp)); Text("Data Rental") }
+                        if (showRentalDialog) {
+                            AlertDialog(
+                                onDismissRequest = { showRentalDialog = false },
+                                containerColor = DarkSurface,
+                                titleContentColor = NeonOrange,
+                                textContentColor = TextPrimary,
+                                title = { Text("DATA RENTAL") },
+                                text = {
+                                    Column {
+                                        Text("Data ini akan muncul di struk print.", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                                        Spacer(Modifier.height(12.dp))
+                                        OutlinedTextField(
+                                            value = rentalNama,
+                                            onValueChange = { rentalNama = it },
+                                            label = { Text("Nama Rental") },
+                                            singleLine = true,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedBorderColor = NeonOrange, unfocusedBorderColor = DarkSurfaceV3,
+                                                cursorColor = NeonOrange, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                                                focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+                                            ),
+                                        )
+                                        Spacer(Modifier.height(8.dp))
+                                        OutlinedTextField(
+                                            value = rentalAlamat,
+                                            onValueChange = { rentalAlamat = it },
+                                            label = { Text("Alamat") },
+                                            maxLines = 3,
+                                            modifier = Modifier.fillMaxWidth().heightIn(min = 80.dp),
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedBorderColor = NeonOrange, unfocusedBorderColor = DarkSurfaceV3,
+                                                cursorColor = NeonOrange, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                                                focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+                                            ),
+                                        )
+                                        Spacer(Modifier.height(8.dp))
+                                        OutlinedTextField(
+                                            value = rentalWa,
+                                            onValueChange = { rentalWa = it },
+                                            label = { Text("No. WhatsApp") },
+                                            singleLine = true,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedBorderColor = NeonOrange, unfocusedBorderColor = DarkSurfaceV3,
+                                                cursorColor = NeonOrange, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                                                focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+                                            ),
+                                        )
+                                    }
+                                },
+                                confirmButton = {
+                                    Button(
+                                        onClick = {
+                                            viewModel.updateDataRental(rentalNama, rentalAlamat, rentalWa)
+                                            showRentalDialog = false
+                                        },
+                                        shape = RoundedCornerShape(10.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = NeonOrange, contentColor = DarkBackground),
+                                    ) { Text("SIMPAN") }
+                                },
+                                dismissButton = {
+                                    OutlinedButton(
+                                        onClick = { showRentalDialog = false },
+                                        shape = RoundedCornerShape(10.dp),
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
+                                    ) { Text("BATAL") }
+                                },
+                            )
+                        }
+
+                    }
+                }
+            }
+
             // Check Update
             Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
                 Column(Modifier.padding(16.dp)) {
@@ -272,6 +632,89 @@ fun ProfileScreen(
                         colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
                     ) { Text("Cek Update") }
                 }
+            }
+
+            // Logout section
+            var showLogoutDialog by remember { mutableStateOf(false) }
+            var showGoogleLogoutDialog by remember { mutableStateOf(false) }
+
+            Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface.copy(alpha = 0.5f)), border = BorderStroke(1.dp, NeonRed.copy(alpha = 0.3f))) {
+                Column(Modifier.padding(16.dp)) {
+                    if (state.loginMethod == "google") {
+                        OutlinedButton(
+                            onClick = { showGoogleLogoutDialog = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF4285F4)),
+                            border = BorderStroke(1.dp, Color(0xFF4285F4)),
+                            contentPadding = PaddingValues(vertical = 12.dp),
+                        ) {
+                            Icon(Icons.Filled.Person, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Logout dari Google", fontWeight = FontWeight.Medium)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    Button(
+                        onClick = { showLogoutDialog = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonRed, contentColor = androidx.compose.ui.graphics.Color.White),
+                        contentPadding = PaddingValues(vertical = 12.dp),
+                    ) {
+                        Icon(Icons.Filled.Logout, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Keluar Aplikasi", fontWeight = FontWeight.Medium)
+                    }
+                }
+            }
+
+            if (showLogoutDialog) {
+                AlertDialog(
+                    onDismissRequest = { showLogoutDialog = false },
+                    containerColor = DarkSurface,
+                    title = { Text("KONFIRMASI KELUAR", fontWeight = FontWeight.Bold, color = NeonRed) },
+                    text = { Text("Apakah Anda yakin ingin keluar? Data yang belum tersimpan akan hilang.", color = TextSecondary) },
+                    confirmButton = {
+                        Button(
+                            onClick = { showLogoutDialog = false; onLogout() },
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonRed, contentColor = DarkBackground),
+                            shape = RoundedCornerShape(10.dp),
+                        ) { Text("Keluar") }
+                    },
+                    dismissButton = {
+                        OutlinedButton(
+                            onClick = { showLogoutDialog = false },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
+                            border = BorderStroke(1.dp, TextSecondary.copy(alpha = 0.5f)),
+                        ) { Text("Batal") }
+                    },
+                )
+            }
+
+            if (showGoogleLogoutDialog) {
+                AlertDialog(
+                    onDismissRequest = { showGoogleLogoutDialog = false },
+                    containerColor = DarkSurface,
+                    title = { Text("LOGOUT DARI GOOGLE", fontWeight = FontWeight.Bold, color = Color(0xFF4285F4)) },
+                    text = { Text("Anda akan logout dari akun Google. Perlu login ulang dengan password atau Google Sign-In nantinya.", color = TextSecondary) },
+                    confirmButton = {
+                        Button(
+                            onClick = { showGoogleLogoutDialog = false; viewModel.logout(true) },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4285F4), contentColor = androidx.compose.ui.graphics.Color.White),
+                            shape = RoundedCornerShape(10.dp),
+                        ) { Text("Logout dari Google") }
+                    },
+                    dismissButton = {
+                        OutlinedButton(
+                            onClick = { showGoogleLogoutDialog = false },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
+                            border = BorderStroke(1.dp, TextSecondary.copy(alpha = 0.5f)),
+                        ) { Text("Batal") }
+                    },
+                )
             }
 
             Spacer(Modifier.height(30.dp))

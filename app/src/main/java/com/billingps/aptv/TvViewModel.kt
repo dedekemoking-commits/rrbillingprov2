@@ -53,6 +53,7 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
             status = "Requesting PIN on TV...",
             isPairing = true,
             isBusy = true,
+            isPaired = false,
         )
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {

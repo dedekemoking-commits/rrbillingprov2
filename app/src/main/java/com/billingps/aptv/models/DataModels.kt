@@ -1,5 +1,7 @@
 package com.billingps.aptv.models
 
+import java.io.Serializable
+
 data class TvData(
     val id: String = "",
     val nama: String = "",
@@ -22,7 +24,7 @@ data class TvData(
     val keyPem: String = "",
     val cancelBatas: Long = 0,
     val sudahBayar: Boolean = false,
-)
+) : Serializable
 
 data class Transaksi(
     val id: String = "",
@@ -32,6 +34,9 @@ data class Transaksi(
     val paket: String = "",
     val pesanan: Map<String, Int> = emptyMap(),
     val total: Int = 0,
+    val paketHarga: Int = 0,
+    val pesananHarga: Map<String, Int> = emptyMap(),
+    val tvJenisPs: String = "",
 )
 
 data class UserData(
@@ -44,6 +49,10 @@ data class UserData(
     val verificationCode: String = "",
     val resetCode: String = "",
     val resetCodeExpiry: Long = 0,
+    val namaRental: String = "",
+    val alamatRental: String = "",
+    val whatsappRental: String = "",
+    val registeredAt: Long = 0L,
 )
 
 data class AuthResult(
@@ -111,7 +120,6 @@ data class AppConfig(
     val kodeGenerasiList: List<KodeGenerasi> = emptyList(),
 )
 
-val JENIS_PS = listOf("PS3", "PS4", "PS5")
 
 data class UpdateInfo(
     val versionName: String,
@@ -125,6 +133,19 @@ data class PromoSettings(
     val addTvOverride: Map<String, Int> = emptyMap(),
     val updatedBy: String = "",
     val updatedAt: Long = 0L,
+    val newUserPromoActive: Boolean = false,
+    val newUserDiscountPercent: Int = 30,
+    val newUserPromoDurationHours: Int = 96,
+    val newUserDiskonPerPaket: Map<String, Int> = emptyMap(),
+)
+
+data class AppNotification(
+    val id: String = "",
+    val title: String = "",
+    val body: String = "",
+    val type: String = "", // "promo", "license_confirmed", "info"
+    val sentAt: Long = 0L,
+    val read: Boolean = false,
 )
 
 data class Invoice(

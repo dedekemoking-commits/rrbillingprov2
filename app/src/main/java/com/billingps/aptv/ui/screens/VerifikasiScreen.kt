@@ -32,6 +32,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.billingps.aptv.models.Invoice
+import com.billingps.aptv.models.LicenseRecord
 import com.billingps.aptv.models.MainViewModel
 import com.billingps.aptv.models.PromoSettings
 import com.billingps.aptv.ui.theme.*
@@ -51,6 +52,10 @@ fun VerifikasiScreen(viewModel: MainViewModel) {
     var selectedInvoice by remember { mutableStateOf<Invoice?>(null) }
     var showDetailDialog by remember { mutableStateOf(false) }
 
+    var showLicenseDialog by remember { mutableStateOf(false) }
+    var activeLicenses by remember { mutableStateOf<List<LicenseRecord>>(emptyList()) }
+    var isLoadingLicenses by remember { mutableStateOf(false) }
+
     val myInvoices = remember(state.invoices) { viewModel.getMyInvoices() }
 
     Column(
@@ -68,6 +73,59 @@ fun VerifikasiScreen(viewModel: MainViewModel) {
             style = MaterialTheme.typography.bodySmall,
             color = TextSecondary,
         )
+
+        // Info Lisensi
+        val lic = state.licenseStatus
+        val trialAktif = state.trialBatas > System.currentTimeMillis()
+        val adaStatus = lic.status.isNotEmpty() || trialAktif
+        if (adaStatus) {
+            val isActive = lic.status == "active"
+            Card(
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                border = BorderStroke(
+                    1.dp,
+                    if (isActive) NeonGreen.copy(alpha = 0.5f)
+                    else if (trialAktif) NeonYellow.copy(alpha = 0.5f)
+                    else DarkSurfaceV3
+                ),
+                modifier = Modifier.clickable {
+                    isLoadingLicenses = true
+                    viewModel.getActiveLicenses { licenses ->
+                        activeLicenses = licenses
+                        isLoadingLicenses = false
+                        showLicenseDialog = true
+                    }
+                },
+            ) {
+                Row(Modifier.padding(12.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = if (isActive) Icons.Filled.VerifiedUser
+                        else if (trialAktif) Icons.Filled.AccessTime
+                        else Icons.Filled.Cancel,
+                        contentDescription = null,
+                        tint = if (isActive) NeonGreen
+                        else if (trialAktif) NeonYellow
+                        else TextDim,
+                        modifier = Modifier.size(24.dp),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Info Lisensi", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+                        Text(
+                            if (isActive) lic.pesan.ifEmpty { "Lisensi Aktif" }
+                            else if (trialAktif) "Masa Trial"
+                            else "Tidak Aktif",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (isActive) NeonGreen
+                            else if (trialAktif) NeonYellow
+                            else TextDim,
+                        )
+                    }
+                    Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = TextDim, modifier = Modifier.size(20.dp))
+                }
+            }
+        }
 
         // Hubungi Admin via WhatsApp
         Card(
@@ -134,6 +192,72 @@ fun VerifikasiScreen(viewModel: MainViewModel) {
                     Toast.makeText(ctx, "Bukti terkirim! Menunggu konfirmasi admin.", Toast.LENGTH_LONG).show()
                 },
                 onDismiss = { showUploadDialog = false },
+            )
+        }
+
+        // License Info Dialog
+        if (showLicenseDialog) {
+            AlertDialog(
+                onDismissRequest = { showLicenseDialog = false },
+                containerColor = DarkSurface,
+                title = { Text("INFO LISENSI", color = NeonCyan, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) },
+                text = {
+                    if (isLoadingLicenses) {
+                        Box(modifier = Modifier.fillMaxWidth().height(80.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = NeonCyan)
+                        }
+                    } else if (activeLicenses.isNotEmpty()) {
+                        val sdf = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", java.util.Locale.getDefault())
+                        Column {
+                            activeLicenses.forEach { rec ->
+                                Card(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                    colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2),
+                                    shape = RoundedCornerShape(8.dp),
+                                ) {
+                                    Column(Modifier.padding(12.dp)) {
+                                        Text("Kode Lisensi", style = MaterialTheme.typography.labelSmall, color = TextDim)
+                                        Text(rec.kode, style = MaterialTheme.typography.bodyMedium, color = NeonGreen, fontWeight = FontWeight.Bold)
+                                        Spacer(Modifier.height(6.dp))
+                                        Text("Paket", style = MaterialTheme.typography.labelSmall, color = TextDim)
+                                        Text(rec.paket, style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                                        Spacer(Modifier.height(4.dp))
+                                        Text("Aktivasi", style = MaterialTheme.typography.labelSmall, color = TextDim)
+                                        Text(
+                                            if (rec.activatedAt > 0) sdf.format(java.util.Date(rec.activatedAt)) else "-",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = TextPrimary,
+                                        )
+                                        Spacer(Modifier.height(4.dp))
+                                        Text("Masa Akhir", style = MaterialTheme.typography.labelSmall, color = TextDim)
+                                        Text(
+                                            rec.expiry.ifEmpty { "-" },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = if (rec.expiry.isNotEmpty()) NeonYellow else TextPrimary,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        val trialOn = state.trialBatas > System.currentTimeMillis()
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                            if (trialOn) {
+                                Text("Masa Trial", style = MaterialTheme.typography.bodyMedium, color = NeonYellow, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.height(8.dp))
+                                Text("Anda sedang dalam masa trial.", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                                Text("Beli lisensi untuk melanjutkan.", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                            } else {
+                                Text("Belum Ada Lisensi Aktif", style = MaterialTheme.typography.bodyMedium, color = TextDim)
+                                Spacer(Modifier.height(8.dp))
+                                Text("Aktivasi lisensi melalui menu Profil.", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showLicenseDialog = false }) { Text("Tutup", color = NeonCyan) }
+                },
             )
         }
 
@@ -252,6 +376,24 @@ private fun SubscriptionPackagesVerif(
                     val aktifPackages = promo.diskonPerPaket.filter { it.value > 0 }.keys
                     val label = if (aktifPackages.size == 4) "🔥 PROMO ALL PAKET" else "🔥 PROMO AKTIF"
                     Text(label, style = MaterialTheme.typography.labelSmall, color = NeonOrange, fontWeight = FontWeight.Bold)
+                }
+            }
+            // New user promo badge
+            val newUserPromoRemaining = viewModel.newUserPromoRemainingHours()
+            if (newUserPromoRemaining > 0) {
+                val nuPackages = promo.newUserDiskonPerPaket.filter { it.value > 0 }
+                if (nuPackages.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Card(shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = NeonCyan.copy(alpha = 0.1f)), border = BorderStroke(1.dp, NeonCyan.copy(alpha = 0.4f))) {
+                        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.Star, contentDescription = null, tint = NeonCyan, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Column {
+                                Text("PROMO USER BARU ${promo.newUserDiscountPercent}%", style = MaterialTheme.typography.bodySmall, color = NeonCyan, fontWeight = FontWeight.Bold)
+                                Text("Sisa ${newUserPromoRemaining} jam • ${nuPackages.keys.joinToString(", ")}", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            }
+                        }
+                    }
                 }
             }
             Spacer(Modifier.height(8.dp))

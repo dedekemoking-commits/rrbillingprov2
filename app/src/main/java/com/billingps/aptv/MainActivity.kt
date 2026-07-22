@@ -80,13 +80,22 @@ class MainActivity : AppCompatActivity() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
+            val billingChannel = NotificationChannel(
                 "billing_channel",
                 "Billing Notifikasi",
                 NotificationManager.IMPORTANCE_HIGH,
             )
+            val timerChannel = NotificationChannel(
+                com.billingps.aptv.TimerService.CHANNEL_ID,
+                "Timer Billing",
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = "Notifikasi timer billing berjalan di latar belakang"
+                setSound(null, null)
+            }
             val nm = getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(channel)
+            nm.createNotificationChannel(billingChannel)
+            nm.createNotificationChannel(timerChannel)
         }
     }
 }
@@ -113,6 +122,56 @@ fun AppRoot(
             showNotifDialog = false
             StorageUtil.saveNotifDialogShown(true)
         })
+    }
+
+    // Promo popup
+    if (mainState.showPromoPopup) {
+        AlertDialog(
+            onDismissRequest = { mainViewModel.dismissPromoPopup() },
+            containerColor = DarkSurface,
+            titleContentColor = NeonOrange,
+            textContentColor = TextPrimary,
+            title = { Text(mainState.promoPopupTitle, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(mainState.promoPopupBody, color = TextPrimary)
+                    Spacer(Modifier.height(12.dp))
+                    Text("Cek detail promo di menu Profil → Notifikasi.", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { mainViewModel.dismissPromoPopup() },
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonOrange, contentColor = DarkBackground),
+                ) { Text("OK") }
+            },
+        )
+    }
+
+    // Admin notification popup
+    if (mainState.showNotifPopup) {
+        AlertDialog(
+            onDismissRequest = { mainViewModel.dismissNotifPopup() },
+            containerColor = DarkSurface,
+            titleContentColor = NeonCyan,
+            textContentColor = TextPrimary,
+            title = { Text(mainState.notifPopupTitle, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(mainState.notifPopupBody, color = TextPrimary)
+                    Spacer(Modifier.height(12.dp))
+                    Text("Dari Admin RR Billing Pro", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { mainViewModel.dismissNotifPopup() },
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground),
+                ) { Text("OK") }
+            },
+        )
     }
 
     if (!mainState.isLoggedIn) {

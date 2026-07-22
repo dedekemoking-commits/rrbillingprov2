@@ -182,7 +182,8 @@ fun MainScreen(vm: LicenseGenViewModel) {
                 }
             })
             Tab(selected = tab == 5, onClick = { tab = 5 }, text = { Text("Notif") })
-            Tab(selected = tab == 6, onClick = { tab = 6 }, text = { Text("Settings") })
+            Tab(selected = tab == 6, onClick = { tab = 6 }, text = { Text("Popup") })
+            Tab(selected = tab == 7, onClick = { tab = 7 }, text = { Text("Settings") })
         }
 
         when (tab) {
@@ -192,7 +193,8 @@ fun MainScreen(vm: LicenseGenViewModel) {
             3 -> InvoiceTab(vm, ctx)
             4 -> PromoTab(vm, ctx)
             5 -> NotifikasiTab(vm, ctx)
-            6 -> SettingsTab(vm, ctx)
+            6 -> PopupTab(vm, ctx)
+            7 -> SettingsTab(vm, ctx)
         }
     }
 }
@@ -675,6 +677,118 @@ fun PromoTab(vm: LicenseGenViewModel, ctx: Context) {
             }
         }
 
+        Spacer(Modifier.height(16.dp))
+        HorizontalDivider(color = DarkSurfaceV3, thickness = 1.dp)
+        Spacer(Modifier.height(16.dp))
+
+        // ── New User Promo ──────────────────────────────────
+        Text("PROMO USER BARU", style = MaterialTheme.typography.titleMedium, color = NeonCyan)
+        Spacer(Modifier.height(4.dp))
+        Text("Atur diskon khusus untuk user yang baru mendaftar.", style = MaterialTheme.typography.bodySmall, color = TextDim)
+        Spacer(Modifier.height(12.dp))
+
+        var nuActive by remember { mutableStateOf(vm.promo.newUserPromoActive) }
+        var nuDiskon by remember { mutableStateOf(vm.promo.newUserDiscountPercent) }
+        var nuDurasi by remember { mutableStateOf(vm.promo.newUserPromoDurationHours.toString()) }
+        var nuCek1 by remember { mutableStateOf((vm.promo.newUserDiskonPerPaket["1 Bulan"] ?: 0) > 0) }
+        var nuCek3 by remember { mutableStateOf((vm.promo.newUserDiskonPerPaket["3 Bulan"] ?: 0) > 0) }
+        var nuCek12 by remember { mutableStateOf((vm.promo.newUserDiskonPerPaket["1 Tahun"] ?: 0) > 0) }
+        var nuCekLt by remember { mutableStateOf((vm.promo.newUserDiskonPerPaket["LIFETIME"] ?: 0) > 0) }
+        var nuMsg by remember { mutableStateOf("") }
+        var nuMsgOk by remember { mutableStateOf(false) }
+
+        LaunchedEffect(vm.promo) {
+            nuActive = vm.promo.newUserPromoActive
+            nuDiskon = vm.promo.newUserDiscountPercent
+            nuDurasi = vm.promo.newUserPromoDurationHours.toString()
+            nuCek1 = (vm.promo.newUserDiskonPerPaket["1 Bulan"] ?: 0) > 0
+            nuCek3 = (vm.promo.newUserDiskonPerPaket["3 Bulan"] ?: 0) > 0
+            nuCek12 = (vm.promo.newUserDiskonPerPaket["1 Tahun"] ?: 0) > 0
+            nuCekLt = (vm.promo.newUserDiskonPerPaket["LIFETIME"] ?: 0) > 0
+        }
+
+        Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text("Aktifkan Promo User Baru", style = MaterialTheme.typography.bodyMedium, color = TextPrimary, modifier = Modifier.weight(1f))
+                    Switch(checked = nuActive, onCheckedChange = { nuActive = it }, colors = SwitchDefaults.colors(checkedTrackColor = NeonCyan, checkedThumbColor = DarkBackground))
+                }
+                if (nuActive) {
+                    Spacer(Modifier.height(12.dp))
+                    // Diskon slider
+                    Text("Diskon: $nuDiskon%", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                    Slider(value = nuDiskon.toFloat(), onValueChange = { nuDiskon = it.toInt() }, valueRange = 0f..100f, steps = 19,
+                        colors = SliderDefaults.colors(thumbColor = NeonCyan, activeTrackColor = NeonCyan, inactiveTrackColor = DarkSurfaceV3))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("0%", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                        Text("50%", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                        Text("100%", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    // Durasi
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Durasi (jam):", style = MaterialTheme.typography.bodySmall, color = TextSecondary, modifier = Modifier.weight(1f))
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedTextField(value = nuDurasi, onValueChange = { nuDurasi = it.filter { c -> c.isDigit() }.take(5) },
+                            modifier = Modifier.width(100.dp), singleLine = true, shape = RoundedCornerShape(8.dp),
+                            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonCyan, unfocusedBorderColor = DarkSurfaceV3,
+                                cursorColor = NeonCyan, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                                focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(textAlign = TextAlign.Center))
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text("Pilih paket yang didiskon:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(selected = nuCek1, onClick = { nuCek1 = !nuCek1 }, label = { Text("1 Bulan", fontSize = 11.sp) },
+                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = NeonGreen, selectedLabelColor = DarkBackground))
+                        FilterChip(selected = nuCek3, onClick = { nuCek3 = !nuCek3 }, label = { Text("3 Bulan", fontSize = 11.sp) },
+                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = NeonCyan, selectedLabelColor = DarkBackground))
+                        FilterChip(selected = nuCek12, onClick = { nuCek12 = !nuCek12 }, label = { Text("1 Tahun", fontSize = 11.sp) },
+                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = NeonYellow, selectedLabelColor = DarkBackground))
+                        FilterChip(selected = nuCekLt, onClick = { nuCekLt = !nuCekLt }, label = { Text("LIFETIME", fontSize = 11.sp) },
+                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = NeonOrange, selectedLabelColor = DarkBackground))
+                    }
+                }
+            }
+        }
+
+        if (nuMsg.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(nuMsg, style = MaterialTheme.typography.bodySmall, color = if (nuMsgOk) NeonGreen else NeonRed)
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = {
+                val diskonMap = mutableMapOf<String, Int>()
+                if (nuCek1) diskonMap["1 Bulan"] = nuDiskon.coerceIn(0, 100)
+                if (nuCek3) diskonMap["3 Bulan"] = nuDiskon.coerceIn(0, 100)
+                if (nuCek12) diskonMap["1 Tahun"] = nuDiskon.coerceIn(0, 100)
+                if (nuCekLt) diskonMap["LIFETIME"] = nuDiskon.coerceIn(0, 100)
+                val durasi = nuDurasi.toIntOrNull() ?: 96
+                vm.setNewUserPromo(nuActive, nuDiskon, durasi, diskonMap) { ok, message ->
+                    nuMsg = message; nuMsgOk = ok
+                    if (ok) Toast.makeText(ctx, message, Toast.LENGTH_SHORT).show()
+                }
+            },
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground),
+        ) { Text("SIMPAN PROMO USER BARU", fontWeight = FontWeight.Bold, fontSize = 16.sp) }
+
+        if (vm.promo.newUserPromoActive) {
+            Spacer(Modifier.height(8.dp))
+            val nuPkg = vm.promo.newUserDiskonPerPaket.filter { it.value > 0 }
+            Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2), border = BorderStroke(1.dp, NeonCyan.copy(alpha = 0.3f))) {
+                Column(Modifier.padding(12.dp)) {
+                    Text("⭐ PROMO USER BARU AKTIF", style = MaterialTheme.typography.labelLarge, color = NeonCyan, fontWeight = FontWeight.Bold)
+                    Text("Diskon ${vm.promo.newUserDiscountPercent}% selama ${vm.promo.newUserPromoDurationHours} jam", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                    Text("Paket: ${nuPkg.keys.joinToString(", ")}", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                }
+            }
+        }
+
         Spacer(Modifier.height(30.dp))
     }
 }
@@ -830,6 +944,102 @@ fun NotifikasiTab(vm: LicenseGenViewModel, ctx: Context) {
             enabled = !isSending,
             colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
         ) { if (isSending) CircularProgressIndicator(color = DarkBackground, modifier = Modifier.size(20.dp)) else Text("KIRIM NOTIFIKASI", fontWeight = FontWeight.Bold) }
+    }
+}
+
+@Composable
+fun PopupTab(vm: LicenseGenViewModel, ctx: Context) {
+    var targetSemua by remember { mutableStateOf(true) }
+    var targetUsername by remember { mutableStateOf("") }
+    var judul by remember { mutableStateOf("") }
+    var pesan by remember { mutableStateOf("") }
+    var msg by remember { mutableStateOf("") }
+    var msgOk by remember { mutableStateOf(false) }
+    var isSending by remember { mutableStateOf(false) }
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+        Text("KIRIM POPUP INAP", style = MaterialTheme.typography.titleMedium, color = NeonOrange)
+        Spacer(Modifier.height(4.dp))
+        Text("Notifikasi akan muncul sebagai popup di dalam aplikasi user", style = MaterialTheme.typography.bodySmall, color = TextDim)
+        Spacer(Modifier.height(16.dp))
+
+        Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Target", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(selected = targetSemua, onClick = { targetSemua = true; targetUsername = "" }, colors = RadioButtonDefaults.colors(selectedColor = NeonOrange))
+                    Text("Semua User", style = MaterialTheme.typography.bodySmall, color = TextPrimary, modifier = Modifier.weight(1f))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(selected = !targetSemua, onClick = { targetSemua = false }, colors = RadioButtonDefaults.colors(selectedColor = NeonOrange))
+                    Text("User Tertentu", style = MaterialTheme.typography.bodySmall, color = TextPrimary, modifier = Modifier.weight(1f))
+                }
+                if (!targetSemua) {
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedTextField(value = targetUsername, onValueChange = { targetUsername = it },
+                        placeholder = { Text("Username") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonOrange, unfocusedBorderColor = DarkSurfaceV3,
+                            cursorColor = NeonOrange, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+            Column(Modifier.padding(16.dp)) {
+                OutlinedTextField(value = judul, onValueChange = { judul = it },
+                    label = { Text("Judul Popup") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonOrange, unfocusedBorderColor = DarkSurfaceV3,
+                        cursorColor = NeonOrange, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                        focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(value = pesan, onValueChange = { pesan = it },
+                    label = { Text("Pesan Popup") }, minLines = 3, maxLines = 5,
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonOrange, unfocusedBorderColor = DarkSurfaceV3,
+                        cursorColor = NeonOrange, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                        focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
+                )
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        if (msg.isNotEmpty()) {
+            Text(msg, style = MaterialTheme.typography.bodySmall, color = if (msgOk) NeonGreen else NeonRed)
+            Spacer(Modifier.height(8.dp))
+        }
+
+        Button(
+            onClick = {
+                if (judul.isBlank() || pesan.isBlank()) { msg = "Isi judul dan pesan"; msgOk = false; return@Button }
+                isSending = true; msg = ""
+                if (targetSemua) {
+                    vm.sendPopupToAllUsers(judul, pesan) { sent ->
+                        isSending = false
+                        msg = "Popup terkirim ke $sent user"; msgOk = true
+                        judul = ""; pesan = ""
+                    }
+                } else {
+                    if (targetUsername.isBlank()) { msg = "Masukkan username target"; msgOk = false; isSending = false; return@Button }
+                    vm.sendPopupToUser(targetUsername, judul, pesan)
+                    isSending = false
+                    msg = "Popup terkirim ke $targetUsername"; msgOk = true
+                    judul = ""; pesan = ""; targetUsername = ""
+                }
+            },
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            shape = RoundedCornerShape(12.dp),
+            enabled = !isSending,
+            colors = ButtonDefaults.buttonColors(containerColor = NeonOrange, contentColor = DarkBackground),
+        ) { if (isSending) CircularProgressIndicator(color = DarkBackground, modifier = Modifier.size(20.dp)) else Text("KIRIM POPUP", fontWeight = FontWeight.Bold) }
     }
 }
 

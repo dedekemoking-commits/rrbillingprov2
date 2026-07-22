@@ -352,6 +352,56 @@ fun LoginScreen(
             }
         }
 
+        // Google Sign-Up Data Rental Dialog
+        if (state.pendingGoogleRegistration) {
+            var googleNamaRental by remember { mutableStateOf("") }
+            var googleAlamatRental by remember { mutableStateOf("") }
+            var googleWaRental by remember { mutableStateOf("") }
+            var googleRegMsg by remember { mutableStateOf("") }
+            Box(
+                modifier = Modifier.fillMaxSize().background(Color(0xCC000000)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(20.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, NeonGreen.copy(alpha = 0.3f)),
+                ) {
+                    Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("LENGKAPI DATA RENTAL", style = MaterialTheme.typography.titleLarge, color = NeonGreen, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(16.dp))
+                        OutlinedTextField(value = state.pendingGoogleEmail, onValueChange = {}, label = { Text("Email") }, enabled = false, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(value = state.pendingGoogleDisplayName, onValueChange = {}, label = { Text("Nama Pemilik") }, enabled = false, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(value = googleNamaRental, onValueChange = { googleNamaRental = it; googleRegMsg = "" }, label = { Text("Nama Rental") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(value = googleAlamatRental, onValueChange = { googleAlamatRental = it; googleRegMsg = "" }, label = { Text("Alamat") }, singleLine = false, maxLines = 3, modifier = Modifier.fillMaxWidth().heightIn(min = 80.dp), shape = RoundedCornerShape(10.dp), colors = fieldColors())
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(value = googleWaRental, onValueChange = { googleWaRental = it; googleRegMsg = "" }, label = { Text("No. WhatsApp") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
+                        if (googleRegMsg.isNotEmpty()) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(googleRegMsg, style = MaterialTheme.typography.bodySmall, color = NeonRed, textAlign = TextAlign.Center)
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Button(onClick = {
+                            if (googleNamaRental.isBlank()) { googleRegMsg = "Nama rental harus diisi"; return@Button }
+                            if (googleAlamatRental.isBlank()) { googleRegMsg = "Alamat harus diisi"; return@Button }
+                            if (googleWaRental.isBlank()) { googleRegMsg = "No. WhatsApp harus diisi"; return@Button }
+                            viewModel.completeGoogleRegistration(googleNamaRental, googleAlamatRental, googleWaRental)
+                        }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) {
+                            Text("Daftar", fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick = { viewModel.cancelGoogleRegistration() }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed)) {
+                            Text("Batal", color = NeonRed)
+                        }
+                    }
+                }
+            }
+        }
+
         if (showForgot) {
             Box(
                 modifier = Modifier.fillMaxSize().background(Color(0xCC000000)),

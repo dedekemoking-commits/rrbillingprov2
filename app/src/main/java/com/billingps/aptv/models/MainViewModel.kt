@@ -18,6 +18,7 @@ import com.billingps.aptv.utils.FcmSender
 import com.billingps.aptv.utils.StorageUtil
 import com.billingps.aptv.cloud.CloudRepository
 import com.billingps.aptv.ui.theme.ThemeOption
+import com.billingps.aptv.utils.VersionUtil
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthException
@@ -79,7 +80,7 @@ data class AppUiState(
     val updateInfo: UpdateInfo? = null,
     val updateChecked: Boolean = false,
     val downloadProgress: Int = -1, // -1 = idle, 0-100 = downloading
-    val appVersionName: String = APP_VERSION,
+    val appVersionName: String = "",
     val invoices: List<Invoice> = emptyList(),
     val pendingInvoiceCount: Int = 0,
     val tvPasswordHash: String = "",
@@ -114,8 +115,6 @@ fun defaultPaketDurasi(): Map<String, Int> = mapOf(
     "2 Jam" to 120, "3 Jam" to 180, "Main Bebas" to 0,
 )
 
-    const val APP_VERSION = "2.2.4"
-
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val cloudRepo = CloudRepository(application)
@@ -124,6 +123,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var invoicesListener: ListenerRegistration? = null
     private var notifListener: ListenerRegistration? = null
     private val connectivityObserver = ConnectivityObserver(application)
+    private val currentVersion: String by lazy {
+        try {
+            getApplication<Application>().packageManager.getPackageInfo(getApplication<Application>().packageName, 0).versionName ?: "0.0.0"
+        } catch (e: Exception) {
+            "0.0.0"
+        }
+    }
 
     private val _state = MutableStateFlow(AppUiState())
     val state: StateFlow<AppUiState> = _state.asStateFlow()
@@ -133,6 +139,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         StorageUtil.init(application)
         ECDSAUtils.init(application)
         FcmSender.init(application)
+        _state.value = _state.value.copy(appVersionName = currentVersion)
         loadAll()
         registerTimerReceiver()
         // Offline-first: auto-sync when connectivity restored
@@ -1101,7 +1108,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun exportBackupJson(): String {
         val s = _state.value
         val obj = org.json.JSONObject()
-        obj.put("exportVersion", APP_VERSION)
+        obj.put("exportVersion", currentVersion)
         obj.put("exportedAt", System.currentTimeMillis())
         obj.put("users", org.json.JSONObject(StorageUtil.loadUsers().mapValues { (_, u) ->
             org.json.JSONObject().apply {
@@ -1344,7 +1351,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val remote = withContext(Dispatchers.IO) { cloudRepo.fetchLatestVersion() }
                 if (remote != null) {
                     val (versionName, apkUrl, changelog) = remote
-                    if (versionName > APP_VERSION && apkUrl.isNotBlank()) {
+                    if (VersionUtil.isNewerVersion(versionName, currentVersion) && apkUrl.isNotBlank()) {
                         _state.value = _state.value.copy(
                             updateInfo = UpdateInfo(versionName, apkUrl, changelog),
                             updateChecked = true,

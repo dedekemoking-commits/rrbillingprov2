@@ -39,6 +39,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 import java.util.*
@@ -1338,7 +1339,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return newCode
     }
 
-    // ── Auto Update (via Firestore Cloud) ─────────────────
+    // ── Auto Update (via GitHub Releases) ─────────────────
     fun refreshTv() {
         val list = StorageUtil.loadTvList()
         _state.value = _state.value.copy(tvList = list)
@@ -1348,7 +1349,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _state.value = _state.value.copy(updateChecked = false, updateInfo = null)
             try {
-                val remote = withContext(Dispatchers.IO) { cloudRepo.fetchLatestVersion() }
+                val remote = withContext(Dispatchers.IO) { fetchLatestGitHubRelease() }
                 if (remote != null) {
                     val (versionName, apkUrl, changelog) = remote
                     if (VersionUtil.isNewerVersion(versionName, currentVersion) && apkUrl.isNotBlank()) {
@@ -1369,24 +1370,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun dismissUpdate() {
-        _state.value = _state.value.copy(updateInfo = null)
-    }
-
-    fun publishUpdate(versionName: String, apkUrl: String, changelog: String, onResult: (Boolean, String) -> Unit) {
-        viewModelScope.launch {
-            try {
-                val ok = withContext(Dispatchers.IO) { cloudRepo.publishUpdate(versionName, apkUrl, changelog) }
-                if (ok) {
-                    addActivityLog("Publish update v$versionName")
-                    onResult(true, "✅ Update v$versionName dipublikasikan!")
-                } else {
-                    onResult(false, "❌ Gagal publish (auth/network)")
+    private fun fetchLatestGitHubRelease(): Triple<String, String, String>? {
+        val url = URL("https://api.github.com/repos/dedekemoking-commits/rrbillingprov2/releases/latest")
+        val conn = url.openConnection() as HttpURLConnection
+        conn.requestMethod = "GET"
+        conn.setRequestProperty("User-Agent", "BillingPS-APTV2")
+        conn.connectTimeout = 10000
+        conn.readTimeout = 10000
+        val responseCode = conn.responseCode
+        if (responseCode != 200) {
+            Log.i("MainVM", "GitHub API responded $responseCode")
+            return null
+        }
+        val json = conn.inputStream.bufferedReader().use { it.readText() }
+        conn.disconnect()
+        val release = org.json.JSONObject(json)
+        val tagName = release.optString("tag_name", "")
+        val versionName = tagName.removePrefix("v")
+        val changelog = release.optString("body", "")
+        val assets = release.optJSONArray("assets")
+        var apkUrl = ""
+        if (assets != null) {
+            for (i in 0 until assets.length()) {
+                val asset = assets.getJSONObject(i)
+                if (asset.optString("name", "") == "app-release.apk") {
+                    apkUrl = asset.optString("browser_download_url", "")
+                    break
                 }
-            } catch (e: Exception) {
-                onResult(false, "❌ ${e.message}")
             }
         }
+        if (versionName.isBlank() || apkUrl.isBlank()) return null
+        return Triple(versionName, apkUrl, changelog)
+    }
+
+    fun dismissUpdate() {
+        _state.value = _state.value.copy(updateInfo = null)
     }
 
     fun downloadAndInstall(ctx: android.content.Context) {

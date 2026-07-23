@@ -219,39 +219,6 @@ class CloudRepository(private val app: Application) {
         }
     }
 
-    suspend fun publishUpdate(versionName: String, apkUrl: String, changelog: String): Boolean {
-        if (!ensureSignedIn()) return false
-        return suspendCancellableCoroutine { cont ->
-            val data = mapOf(
-                "versionName" to versionName,
-                "apkUrl" to apkUrl,
-                "changelog" to changelog,
-                "updatedAt" to System.currentTimeMillis(),
-            )
-            firestore.collection("settings").document("appVersion")
-                .set(data, com.google.firebase.firestore.SetOptions.merge())
-                .addOnSuccessListener { if (!cont.isCompleted) cont.resume(true) }
-                .addOnFailureListener { if (!cont.isCompleted) cont.resume(false) }
-        }
-    }
-
-    suspend fun fetchLatestVersion(): Triple<String, String, String>? {
-        if (!ensureSignedIn()) return null
-        return suspendCancellableCoroutine { cont ->
-            firestore.collection("settings").document("appVersion")
-                .get()
-                .addOnSuccessListener { snap ->
-                    if (!snap.exists()) { cont.resume(null); return@addOnSuccessListener }
-                    val version = snap.getString("versionName") ?: ""
-                    val url = snap.getString("apkUrl") ?: ""
-                    val changelog = snap.getString("changelog") ?: ""
-                    if (version.isBlank() || url.isBlank()) { cont.resume(null); return@addOnSuccessListener }
-                    cont.resume(Triple(version, url, changelog))
-                }
-                .addOnFailureListener { cont.resume(null) }
-        }
-    }
-
     private suspend fun queryLicenseByField(field: String, value: String): LicenseStatus? {
         return suspendCancellableCoroutine { cont ->
             firestore.collection("licenses")

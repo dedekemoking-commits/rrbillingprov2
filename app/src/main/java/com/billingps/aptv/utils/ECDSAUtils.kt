@@ -1,8 +1,10 @@
 package com.billingps.aptv.utils
 
 import android.content.Context
+import android.os.Build
 import android.util.Base64
 import android.util.Log
+import java.io.File
 import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
@@ -74,7 +76,81 @@ object ECDSAUtils {
         }
     }
 
+    // Root detection — prevents ECDSA bypass on compromised devices
+    private var rootDetected: Boolean? = null
+    private const val ROOT_CHECK_INTERVAL_MS = 60000L
+    private var lastRootCheck: Long = 0L
+
+    private fun checkRoot(): Boolean {
+        val now = System.currentTimeMillis()
+        if (rootDetected != null && now - lastRootCheck < ROOT_CHECK_INTERVAL_MS) {
+            return rootDetected!!
+        }
+        rootDetected = detectRoot()
+        lastRootCheck = now
+        return rootDetected!!
+    }
+
+    private fun detectRoot(): Boolean {
+        // 1. Check for test-keys build
+        val buildTags = Build.TAGS
+        if (buildTags != null && buildTags.contains("test-keys")) {
+            Log.w("ECDSAUtils", "Root detected: build tags contain test-keys")
+            return true
+        }
+
+        // 2. Check for common root binary paths
+        val rootPaths = arrayOf(
+            "/system/app/Superuser.apk",
+            "/sbin/su",
+            "/system/bin/su",
+            "/system/xbin/su",
+            "/data/local/xbin/su",
+            "/data/local/bin/su",
+            "/system/sd/xbin/su",
+            "/system/bin/failsafe/su",
+            "/data/local/su",
+            "/su/bin/su",
+        )
+        for (path in rootPaths) {
+            try {
+                if (File(path).exists()) {
+                    Log.w("ECDSAUtils", "Root detected: $path exists")
+                    return true
+                }
+            } catch (e: Exception) { /* ignore */ }
+        }
+
+        // 3. Check for busybox
+        try {
+            if (File("/system/xbin/busybox").exists()) {
+                Log.w("ECDSAUtils", "Root detected: busybox found")
+                return true
+            }
+        } catch (e: Exception) { /* ignore */ }
+
+        // 4. Check if we can run su
+        try {
+            val process = Runtime.getRuntime().exec(arrayOf("which", "su"))
+            val reader = java.io.BufferedReader(java.io.InputStreamReader(process.inputStream))
+            val line = reader.readLine()
+            if (line != null && line.isNotEmpty()) {
+                Log.w("ECDSAUtils", "Root detected: su binary found at $line")
+                process.destroy()
+                return true
+            }
+            process.destroy()
+        } catch (e: Exception) { /* ignore */ }
+
+        return false
+    }
+
     fun verify(data: String, signatureB64: String): Boolean {
+        // Integrity check: reject ECDSA verification on rooted devices
+        if (checkRoot()) {
+            Log.e("ECDSAUtils", "verify blocked: rooted device detected")
+            return false
+        }
         return try {
             val sig = Signature.getInstance("SHA256withECDSA")
             sig.initVerify(publicKey)

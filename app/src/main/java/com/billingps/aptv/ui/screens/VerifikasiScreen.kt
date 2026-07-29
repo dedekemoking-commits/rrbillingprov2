@@ -1,6 +1,8 @@
 package com.billingps.aptv.ui.screens
 
 import android.content.Intent
+import kotlinx.coroutines.delay
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
@@ -210,6 +212,7 @@ fun VerifikasiScreen(viewModel: MainViewModel) {
                         val sdf = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", java.util.Locale.getDefault())
                         Column {
                             activeLicenses.forEach { rec ->
+                                var revoking by remember { mutableStateOf(false) }
                                 Card(
                                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                                     colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2),
@@ -235,6 +238,27 @@ fun VerifikasiScreen(viewModel: MainViewModel) {
                                             style = MaterialTheme.typography.bodySmall,
                                             color = if (rec.expiry.isNotEmpty()) NeonYellow else TextPrimary,
                                         )
+                                        if (state.currentRole != "kasir") {
+                                            Spacer(Modifier.height(8.dp))
+                                            OutlinedButton(
+                                                onClick = {
+                                                    revoking = true
+                                                    viewModel.revokeLicense(rec.id, rec.username) { ok ->
+                                                        revoking = false
+                                                        if (ok) {
+                                                            activeLicenses = activeLicenses.filter { it.id != rec.id }
+                                                            android.widget.Toast.makeText(ctx, "Lisensi dicabut", android.widget.Toast.LENGTH_SHORT).show()
+                                                        } else {
+                                                            android.widget.Toast.makeText(ctx, "Gagal mencabut lisensi", android.widget.Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    }
+                                                },
+                                                enabled = !revoking,
+                                                shape = RoundedCornerShape(8.dp),
+                                                colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
+                                                border = BorderStroke(1.dp, NeonRed),
+                                            ) { Text(if (revoking) "Mencabut..." else "Cabut Lisensi", style = MaterialTheme.typography.labelSmall) }
+                                        }
                                     }
                                 }
                             }
@@ -357,6 +381,14 @@ private fun SubscriptionPackagesVerif(
     viewModel: MainViewModel,
     onBeliInvoice: (String, String) -> Unit,
 ) {
+    var tick by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000)
+            tick++
+        }
+    }
+
     val paketList = listOf(
         PaketInfo("1 Bulan", 99_000, 5, "ADD TV 5", NeonGreen),
         PaketInfo("3 Bulan", 299_000, 10, "ADD TV 10", NeonCyan),
@@ -392,6 +424,20 @@ private fun SubscriptionPackagesVerif(
                                 Text("PROMO USER BARU ${promo.newUserDiscountPercent}%", style = MaterialTheme.typography.bodySmall, color = NeonCyan, fontWeight = FontWeight.Bold)
                                 Text("Sisa ${newUserPromoRemaining} jam • ${nuPackages.keys.joinToString(", ")}", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                             }
+                        }
+                    }
+                }
+            }
+            val regularPromoRemaining = viewModel.regularPromoRemainingHours()
+            if (regularPromoRemaining > 0) {
+                Spacer(Modifier.height(6.dp))
+                Card(shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = NeonOrange.copy(alpha = 0.1f)), border = BorderStroke(1.dp, NeonOrange.copy(alpha = 0.4f))) {
+                    Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Timer, contentDescription = null, tint = NeonOrange, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Column {
+                            Text("PROMO BERWAKTU", style = MaterialTheme.typography.bodySmall, color = NeonOrange, fontWeight = FontWeight.Bold)
+                            Text("Sisa ${regularPromoRemaining} jam", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                         }
                     }
                 }
@@ -509,10 +555,17 @@ private fun UploadBuktiDialogVerif(invoice: Invoice, onConfirm: (String) -> Unit
         if (uri != null) {
             try {
                 val inputStream: java.io.InputStream = ctx.contentResolver.openInputStream(uri) ?: return@rememberLauncherForActivityResult
-                val bytes = inputStream.readBytes()
+                val bmp = BitmapFactory.decodeStream(inputStream)
                 inputStream.close()
+                val maxDim = 1024f
+                val scale = minOf(maxDim / bmp.width, maxDim / bmp.height, 1f)
+                val resized = if (scale < 1f) Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true) else bmp
+                val outStream = java.io.ByteArrayOutputStream()
+                resized.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, outStream)
+                val bytes = outStream.toByteArray()
                 selectedBase64 = Base64.encodeToString(bytes, Base64.DEFAULT)
-                previewBitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                previewBitmap = resized
+                if (resized != bmp) bmp.recycle()
             } catch (e: Exception) { Log.e("VerifikasiScreen", "upload image decode: ${e.message}") }
         }
     }
@@ -544,8 +597,12 @@ private fun UploadBuktiDialogVerif(invoice: Invoice, onConfirm: (String) -> Unit
                     Text(if (previewBitmap != null) "Ganti Gambar" else "Pilih Gambar")
                 }
                 if (selectedBase64.isNotEmpty() && previewBitmap != null) {
+                    val sizeKb = selectedBase64.length / 1024
                     Spacer(Modifier.height(8.dp))
-                    Text("Ukuran: ${selectedBase64.length / 1024} KB", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    Text("Ukuran: $sizeKb KB", style = MaterialTheme.typography.bodySmall, color = if (sizeKb > 800) NeonRed else TextSecondary)
+                    if (sizeKb > 800) {
+                        Text("Ukuran terlalu besar! Maksimal 800 KB. Pilih gambar yang lebih kecil.", style = MaterialTheme.typography.bodySmall, color = NeonRed)
+                    }
                 }
             }
         },
@@ -587,9 +644,15 @@ private fun InvoiceDetailDialog(invoice: Invoice, viewModel: MainViewModel, onDi
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) try {
             val inputStream = ctx.contentResolver.openInputStream(uri) ?: return@rememberLauncherForActivityResult
-            val bytes = inputStream.readBytes(); inputStream.close()
-            selectedBase64 = Base64.encodeToString(bytes, Base64.DEFAULT)
-            previewBitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            val bmp = BitmapFactory.decodeStream(inputStream); inputStream.close()
+            val maxDim = 1024f
+            val scale = minOf(maxDim / bmp.width, maxDim / bmp.height, 1f)
+            val resized = if (scale < 1f) Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true) else bmp
+            val outStream = java.io.ByteArrayOutputStream()
+            resized.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, outStream)
+            selectedBase64 = Base64.encodeToString(outStream.toByteArray(), Base64.DEFAULT)
+            previewBitmap = resized
+            if (resized != bmp) bmp.recycle()
         } catch (e: Exception) { Log.e("VerifikasiScreen", "detail upload image: ${e.message}") }
     }
     val canUpload = invoice.status == "PENDING" || invoice.status == "WAITING_CONFIRMATION"
@@ -636,8 +699,12 @@ private fun InvoiceDetailDialog(invoice: Invoice, viewModel: MainViewModel, onDi
                         Text(if (previewBitmap != null) "Ganti Gambar" else "Pilih Gambar")
                     }
                     if (selectedBase64.isNotEmpty() && previewBitmap != null) {
+                        val sizeKb = selectedBase64.length / 1024
                         Spacer(Modifier.height(4.dp))
-                        Text("${selectedBase64.length / 1024} KB", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                        Text("$sizeKb KB", style = MaterialTheme.typography.bodySmall, color = if (sizeKb > 800) NeonRed else TextSecondary)
+                        if (sizeKb > 800) {
+                            Text("Ukuran terlalu besar! Maksimal 800 KB.", style = MaterialTheme.typography.bodySmall, color = NeonRed)
+                        }
                     }
                 }
             }

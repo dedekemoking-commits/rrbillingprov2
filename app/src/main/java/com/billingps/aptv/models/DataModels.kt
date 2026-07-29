@@ -37,16 +37,20 @@ data class Transaksi(
     val paketHarga: Int = 0,
     val pesananHarga: Map<String, Int> = emptyMap(),
     val tvJenisPs: String = "",
+    val sudahBayar: Boolean = false,
 )
 
 data class UserData(
     val username: String = "",
     val passwordHash: String = "",
+    val salt: String = "",
     val role: String = "kasir",
     val email: String = "",
+    val noHp: String = "",
     val dibuat: String = "",
     val emailVerified: Boolean = false,
     val verificationCode: String = "",
+    val verificationCodeExpiry: Long = 0,
     val resetCode: String = "",
     val resetCodeExpiry: Long = 0,
     val namaRental: String = "",
@@ -139,6 +143,8 @@ data class PromoSettings(
     val newUserDiscountPercent: Int = 30,
     val newUserPromoDurationHours: Int = 96,
     val newUserDiskonPerPaket: Map<String, Int> = emptyMap(),
+    val promoStartedAt: Long = 0L,
+    val promoDurationHours: Int = 0,
 )
 
 data class AppNotification(
@@ -162,4 +168,10 @@ data class Invoice(
     val confirmedBy: String = "",
     val kodeLisensi: String = "",
     val buktiBase64: String = "",
+)
+
+data class ClientStatus(
+    val online: Boolean = false,
+    val version: String = "",
+    val lastSeen: Long = 0L,
 )

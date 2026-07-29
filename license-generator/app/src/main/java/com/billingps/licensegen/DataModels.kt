@@ -10,6 +10,8 @@ data class PromoSettings(
     val newUserDiscountPercent: Int = 30,
     val newUserPromoDurationHours: Int = 96,
     val newUserDiskonPerPaket: Map<String, Int> = emptyMap(),
+    val promoStartedAt: Long = 0L,
+    val promoDurationHours: Int = 0,
 )
 
 data class LicenseRecord(
@@ -24,6 +26,7 @@ data class LicenseRecord(
     val generatedBy: String = "",
     val generatedAt: Long = 0,
     val activatedAt: Long = 0,
+    val revoked: Boolean = false,
 )
 
 data class FirestoreUser(
@@ -31,6 +34,9 @@ data class FirestoreUser(
     val role: String = "",
     val email: String = "",
     val dibuat: String = "",
+    val appVersion: String = "",
+    val whatsapp: String = "",
+    val lastActive: Long = 0L,
 )
 
 data class NotifikasiHistory(

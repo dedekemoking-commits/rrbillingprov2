@@ -9,8 +9,12 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.billingps.aptv.models.TvData
 import com.billingps.aptv.utils.StorageUtil
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 class TimerService : Service() {
@@ -20,36 +24,43 @@ class TimerService : Service() {
         const val NOTIFICATION_ID = 1001
         const val ACTION_START = "com.billingps.aptv.action.START_TIMER"
         const val ACTION_STOP = "com.billingps.aptv.action.STOP_TIMER"
-        const val ACTION_TICK = "com.billingps.aptv.action.TICK"
-        const val ACTION_TIMER_EXPIRED = "com.billingps.aptv.action.TIMER_EXPIRED"
-        const val EXTRA_TV_ID = "tv_id"
-        const val EXTRA_SISA_DETIK = "sisa_detik"
-        const val EXTRA_PAKET_AKTIF = "paket_aktif"
+        const val ACTION_TICK_BATCH = "com.billingps.aptv.action.TICK_BATCH"
+        const val EXTRA_TICK_DATA = "tick_data"
+        const val EXTRA_EXPIRED_IDS = "expired_ids"
 
         private var running = false
         fun isRunning() = running
     }
 
     private val scheduler = Executors.newSingleThreadScheduledExecutor()
+    private var tickFuture: ScheduledFuture<*>? = null
     private var lastTickTime = 0L
+    private var cachedTvList: List<TvData> = emptyList()
+    private var persistCounter = 0
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        running = true
         Log.i("TimerService", "Service created")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
+                if (tickFuture != null) {
+                    Log.i("TimerService", "Already running, ignoring duplicate start")
+                    return START_STICKY
+                }
                 StorageUtil.init(this)
+                cachedTvList = StorageUtil.loadTvList()
                 lastTickTime = System.currentTimeMillis()
-                startForeground(NOTIFICATION_ID, buildNotification())
+                startForeground(NOTIFICATION_ID, buildNotification(cachedTvList))
+                running = true
                 scheduleTick()
-                Log.i("TimerService", "Timer started")
+                Log.i("TimerService", "Timer started, cached ${cachedTvList.size} TVs")
             }
             ACTION_STOP -> {
+                persistIfDirty()
                 stopSelf()
             }
         }
@@ -60,6 +71,8 @@ class TimerService : Service() {
 
     override fun onDestroy() {
         running = false
+        tickFuture?.cancel(false)
+        persistIfDirty()
         scheduler.shutdownNow()
         stopForeground(STOP_FOREGROUND_REMOVE)
         Log.i("TimerService", "Service destroyed")
@@ -67,8 +80,9 @@ class TimerService : Service() {
     }
 
     private fun scheduleTick() {
-        scheduler.scheduleAtFixedRate({
-            if (!running) return@scheduleAtFixedRate
+        tickFuture?.cancel(false)
+        tickFuture = scheduler.scheduleWithFixedDelay({
+            if (!running) return@scheduleWithFixedDelay
             try {
                 tick()
             } catch (e: Exception) {
@@ -83,17 +97,19 @@ class TimerService : Service() {
         if (elapsed < 1) return
         lastTickTime = now
 
-        val tvList = StorageUtil.loadTvList().toMutableList()
         var anyActive = false
         val expiredIds = mutableListOf<String>()
+        var hasChanges = false
 
-        tvList.forEachIndexed { index, tv ->
+        val updatedList = cachedTvList.toMutableList()
+        updatedList.forEachIndexed { index, tv ->
             if (tv.timerActive && !tv.bebas && tv.sisaDetik > 0) {
+                hasChanges = true
                 val newSisa = (tv.sisaDetik - elapsed).coerceAtLeast(0)
-                tvList[index] = tv.copy(sisaDetik = newSisa)
+                updatedList[index] = tv.copy(sisaDetik = newSisa)
 
                 if (newSisa <= 0) {
-                    tvList[index] = tv.copy(
+                    updatedList[index] = tv.copy(
                         timerActive = false, sisaDetik = 0L,
                         paketAktif = "WAKTU HABIS",
                     )
@@ -104,40 +120,52 @@ class TimerService : Service() {
             }
             if (tv.timerActive || tv.bebas) anyActive = true
         }
+        cachedTvList = updatedList
 
-        // Save updated list to storage
-        StorageUtil.saveTvList(tvList.toList())
-
-        // Send broadcast for UI updates
-        tvList.forEach { tv ->
-            val tickIntent = Intent(ACTION_TICK).apply {
-                putExtra(EXTRA_TV_ID, tv.id)
-                putExtra(EXTRA_SISA_DETIK, tv.sisaDetik)
-                putExtra(EXTRA_PAKET_AKTIF, tv.paketAktif)
+        // Persist only when changes occurred, max every 30 ticks
+        if (hasChanges) {
+            persistCounter++
+            if (persistCounter % 30 == 0) {
+                StorageUtil.saveTvList(cachedTvList)
             }
-            sendBroadcast(tickIntent)
+        } else {
+            persistCounter = 0
         }
 
-        // Send expired broadcasts
-        expiredIds.forEach { id ->
-            val expiredIntent = Intent(ACTION_TIMER_EXPIRED).apply {
-                putExtra(EXTRA_TV_ID, id)
-            }
-            sendBroadcast(expiredIntent)
+        // Single batch broadcast
+        val tickData = JSONObject()
+        cachedTvList.forEach { tv ->
+            tickData.put(tv.id, JSONObject().apply {
+                put("sisaDetik", tv.sisaDetik)
+                put("paketAktif", tv.paketAktif)
+            })
         }
+        val expiredArr = JSONArray(expiredIds.toList())
+        val batchIntent = Intent(ACTION_TICK_BATCH).apply {
+            putExtra(EXTRA_TICK_DATA, tickData.toString())
+            putExtra(EXTRA_EXPIRED_IDS, expiredArr.toString())
+        }
+        sendBroadcast(batchIntent)
 
         // Update notification
-        updateNotification()
+        updateNotification(cachedTvList)
 
         // Stop if no active timers
         if (!anyActive) {
+            persistIfDirty()
             Log.i("TimerService", "No active timers, stopping service")
             stopSelf()
         }
     }
 
-    private fun buildNotification(): Notification {
-        val tvList = StorageUtil.loadTvList()
+    private fun persistIfDirty() {
+        if (cachedTvList.isNotEmpty()) {
+            StorageUtil.saveTvList(cachedTvList)
+            cachedTvList = emptyList()
+        }
+    }
+
+    private fun buildNotification(tvList: List<TvData>): Notification {
         val activeCount = tvList.count { it.timerActive || it.bebas }
         val contentText = if (activeCount > 0) "$activeCount timer aktif" else "Tidak ada timer aktif"
 
@@ -151,9 +179,9 @@ class TimerService : Service() {
             .build()
     }
 
-    private fun updateNotification() {
+    private fun updateNotification(tvList: List<TvData>) {
         val nm = getSystemService(NotificationManager::class.java)
-        nm?.notify(NOTIFICATION_ID, buildNotification())
+        nm?.notify(NOTIFICATION_ID, buildNotification(tvList))
     }
 
     private fun createNotificationChannel() {

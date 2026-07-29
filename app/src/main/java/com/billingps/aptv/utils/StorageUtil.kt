@@ -38,17 +38,20 @@ object StorageUtil {
         try { securePrefs.edit().apply() } catch (e: Exception) { Log.e("StorageUtil", "init securePrefs edit: ${e.message}") }
     }
 
-    // ── Users ──────────────────────────────────────────────
+    // ── Users (encrypted) ──────────────────────────────────────
 fun saveUsers(users: Map<String, UserData>) {
     val obj = JSONObject()
     users.forEach { (k, v) ->
         obj.put(k, JSONObject().apply {
             put("passwordHash", v.passwordHash)
+            put("salt", v.salt)
             put("role", v.role)
             put("email", v.email)
+            put("noHp", v.noHp)
             put("dibuat", v.dibuat)
             put("emailVerified", v.emailVerified)
             put("verificationCode", v.verificationCode)
+            put("verificationCodeExpiry", v.verificationCodeExpiry)
             put("resetCode", v.resetCode)
             put("resetCodeExpiry", v.resetCodeExpiry)
             put("namaRental", v.namaRental)
@@ -57,11 +60,20 @@ fun saveUsers(users: Map<String, UserData>) {
             put("registeredAt", v.registeredAt)
         })
     }
-    prefs.edit().putString("users", obj.toString()).apply()
+    val json = obj.toString()
+    securePrefs.edit().putString("users", json).apply()
+    // Also keep in regular prefs for backward compatibility
+    prefs.edit().putString("users", json).apply()
 }
 
 fun loadUsers(): Map<String, UserData> {
-    val raw = prefs.getString("users", "{}") ?: "{}"
+    // Try encrypted first
+    var raw = securePrefs.getString("users", null)
+    if (raw == null) {
+        // Fallback to old prefs
+        raw = prefs.getString("users", "{}") ?: "{}"
+        if (raw != "{}") securePrefs.edit().putString("users", raw).apply()
+    }
     val obj = JSONObject(raw)
     val map = mutableMapOf<String, UserData>()
     obj.keys().forEach { key ->
@@ -69,11 +81,14 @@ fun loadUsers(): Map<String, UserData> {
         map[key] = UserData(
             username = key,
             passwordHash = u.optString("passwordHash", ""),
+            salt = u.optString("salt", ""),
             role = u.optString("role", "kasir"),
             email = u.optString("email", ""),
+            noHp = u.optString("noHp", ""),
             dibuat = u.optString("dibuat", ""),
             emailVerified = u.optBoolean("emailVerified", false),
             verificationCode = u.optString("verificationCode", ""),
+            verificationCodeExpiry = u.optLong("verificationCodeExpiry", 0),
             resetCode = u.optString("resetCode", ""),
             resetCodeExpiry = u.optLong("resetCodeExpiry", 0),
             namaRental = u.optString("namaRental", ""),
@@ -86,16 +101,43 @@ fun loadUsers(): Map<String, UserData> {
 }
 
     fun saveCurrentSession(username: String, role: String) {
+        securePrefs.edit()
+            .putString("currentUser", username)
+            .putString("currentRole", role)
+            .apply()
+        // Also write to regular prefs for backward compatibility during upgrade
         prefs.edit()
             .putString("currentUser", username)
             .putString("currentRole", role)
             .apply()
     }
 
-    fun loadCurrentUser(): String = prefs.getString("currentUser", "") ?: ""
-    fun loadCurrentRole(): String = prefs.getString("currentRole", "") ?: ""
+    fun loadCurrentUser(): String {
+        val fromSecure = securePrefs.getString("currentUser", null)
+        if (fromSecure != null) return fromSecure
+        // Fallback to old prefs for migration
+        val old = prefs.getString("currentUser", "")
+        if (!old.isNullOrBlank()) {
+            securePrefs.edit().putString("currentUser", old).apply()
+        }
+        return old ?: ""
+    }
+
+    fun loadCurrentRole(): String {
+        val fromSecure = securePrefs.getString("currentRole", null)
+        if (fromSecure != null) return fromSecure
+        val old = prefs.getString("currentRole", "")
+        if (!old.isNullOrBlank()) {
+            securePrefs.edit().putString("currentRole", old).apply()
+        }
+        return old ?: ""
+    }
 
     fun clearSession() {
+        securePrefs.edit()
+            .remove("currentUser")
+            .remove("currentRole")
+            .apply()
         prefs.edit()
             .remove("currentUser")
             .remove("currentRole")
@@ -243,8 +285,16 @@ fun loadUsers(): Map<String, UserData> {
         return list
     }
 
-    // ── License ────────────────────────────────────────────
+    // ── License (encrypted) ────────────────────────────────────
     fun saveLicense(status: LicenseStatus) {
+        securePrefs.edit()
+            .putString("licenseStatus", status.status)
+            .putString("licensePesan", status.pesan)
+            .putString("licenseExpires", status.expiresAt)
+            .putInt("licenseMaxTv", status.maxTv)
+            .putInt("licensePromoAddTv", status.promoAddTv)
+            .apply()
+        // Also keep in regular prefs for backward compatibility
         prefs.edit()
             .putString("licenseStatus", status.status)
             .putString("licensePesan", status.pesan)
@@ -254,19 +304,42 @@ fun loadUsers(): Map<String, UserData> {
             .apply()
     }
 
-    fun loadLicense(): LicenseStatus = LicenseStatus(
-        status = prefs.getString("licenseStatus", "") ?: "",
-        pesan = prefs.getString("licensePesan", "") ?: "",
-        expiresAt = prefs.getString("licenseExpires", "") ?: "",
-        maxTv = prefs.getInt("licenseMaxTv", 0),
-        promoAddTv = prefs.getInt("licensePromoAddTv", 0),
-    )
+    fun loadLicense(): LicenseStatus {
+        // Try encrypted first
+        val status = securePrefs.getString("licenseStatus", null)
+        if (status != null) {
+            return LicenseStatus(
+                status = status,
+                pesan = securePrefs.getString("licensePesan", "") ?: "",
+                expiresAt = securePrefs.getString("licenseExpires", "") ?: "",
+                maxTv = securePrefs.getInt("licenseMaxTv", 0),
+                promoAddTv = securePrefs.getInt("licensePromoAddTv", 0),
+            )
+        }
+        // Fallback + migrate from old prefs
+        val old = LicenseStatus(
+            status = prefs.getString("licenseStatus", "") ?: "",
+            pesan = prefs.getString("licensePesan", "") ?: "",
+            expiresAt = prefs.getString("licenseExpires", "") ?: "",
+            maxTv = prefs.getInt("licenseMaxTv", 0),
+            promoAddTv = prefs.getInt("licensePromoAddTv", 0),
+        )
+        if (old.status.isNotEmpty()) saveLicense(old)
+        return old
+    }
 
     fun saveTrial(trialBatas: Long) {
+        securePrefs.edit().putLong("trialBatas", trialBatas).apply()
         prefs.edit().putLong("trialBatas", trialBatas).apply()
     }
 
-    fun loadTrialBatas(): Long = prefs.getLong("trialBatas", 0L)
+    fun loadTrialBatas(): Long {
+        val fromSecure = securePrefs.getLong("trialBatas", -1L)
+        if (fromSecure >= 0) return fromSecure
+        val old = prefs.getLong("trialBatas", 0L)
+        if (old > 0) securePrefs.edit().putLong("trialBatas", old).apply()
+        return old
+    }
 
     // ── Invoices ────────────────────────────────────────────
     fun saveInvoices(list: List<Invoice>) {
@@ -295,17 +368,23 @@ fun loadUsers(): Map<String, UserData> {
         val list = mutableListOf<Invoice>()
         for (i in 0 until arr.length()) {
             val o = arr.getJSONObject(i)
+            val status = o.optString("status", "PENDING")
+            val kodeLisensi = o.optString("kodeLisensi", "")
+            // Security: CONFIRMED invoices without a valid license code are suspicious
+            val safeStatus = if (status == "CONFIRMED" && kodeLisensi.isEmpty()) {
+                "PENDING" // Revert manipulated local confirmations
+            } else status
             list.add(Invoice(
                 id = o.optString("id"),
                 username = o.optString("username"),
                 email = o.optString("email"),
                 paket = o.optString("paket"),
                 harga = o.optInt("harga"),
-                status = o.optString("status", "PENDING"),
+                status = safeStatus,
                 dibuat = o.optLong("dibuat"),
                 dibayar = o.optLong("dibayar"),
                 confirmedBy = o.optString("confirmedBy"),
-                kodeLisensi = o.optString("kodeLisensi"),
+                kodeLisensi = kodeLisensi,
                 buktiBase64 = o.optString("buktiBase64"),
             ))
         }
@@ -348,6 +427,8 @@ fun loadUsers(): Map<String, UserData> {
             .putInt("newUserDiscountPercent", promo.newUserDiscountPercent)
             .putInt("newUserPromoDurationHours", promo.newUserPromoDurationHours)
             .putString("newUserDiskonPerPaket", mapToJson(promo.newUserDiskonPerPaket.mapValues { it.value }))
+            .putLong("promoStartedAt", promo.promoStartedAt)
+            .putInt("promoDurationHours", promo.promoDurationHours)
             .apply()
     }
 
@@ -366,6 +447,8 @@ fun loadUsers(): Map<String, UserData> {
             newUserDiscountPercent = prefs.getInt("newUserDiscountPercent", 30),
             newUserPromoDurationHours = prefs.getInt("newUserPromoDurationHours", 96),
             newUserDiskonPerPaket = rawNewDiskon?.let { jsonToMap(it) } ?: emptyMap(),
+            promoStartedAt = prefs.getLong("promoStartedAt", 0L),
+            promoDurationHours = prefs.getInt("promoDurationHours", 0),
         )
     }
 
@@ -409,6 +492,12 @@ fun loadUsers(): Map<String, UserData> {
     }
 
     fun loadThemeOption(): String = prefs.getString("themeOption", "GAMING_DARK") ?: "GAMING_DARK"
+
+    fun saveBackgroundOption(name: String) {
+        prefs.edit().putString("backgroundOption", name).apply()
+    }
+
+    fun loadBackgroundOption(): String = prefs.getString("backgroundOption", "AMOLED_BLACK") ?: "AMOLED_BLACK"
 
     // ── TV Password ─────────────────────────────────────────
     fun saveTvPassword(hash: String) {
@@ -469,6 +558,52 @@ fun loadUsers(): Map<String, UserData> {
 
     fun loadLoginMethod(): String = prefs.getString("loginMethod", "password") ?: "password"
 
+    // ── FCM Service Account (encrypted, not bundled in APK) ──
+    fun saveFcmServiceAccount(json: String) {
+        securePrefs.edit().putString("fcmServiceAccount", json).apply()
+    }
+
+    fun loadFcmServiceAccount(): String? = securePrefs.getString("fcmServiceAccount", null)
+
+    // ── NTP Trusted Time ─────────────────────────────────────
+    fun saveNtpTime(ntpMillis: Long) {
+        securePrefs.edit().putLong("ntpTime", ntpMillis).apply()
+    }
+
+    fun loadNtpTime(): Long = securePrefs.getLong("ntpTime", 0L)
+
+    // ── Timer Expired Dismissed ─────────────────────────────
+    fun saveTimerExpiredDismissed(tvId: String) {
+        val set = loadTimerExpiredDismissed().toMutableSet()
+        set.add(tvId)
+        securePrefs.edit().putString("timerExpiredDismissed", set.joinToString(",")).apply()
+    }
+
+    fun loadTimerExpiredDismissed(): Set<String> {
+        val raw = securePrefs.getString("timerExpiredDismissed", "") ?: ""
+        return if (raw.isBlank()) emptySet() else raw.split(",").filter { it.isNotBlank() }.toSet()
+    }
+
+    fun clearTimerExpiredDismissed(tvId: String) {
+        val set = loadTimerExpiredDismissed().toMutableSet()
+        set.remove(tvId)
+        securePrefs.edit().putString("timerExpiredDismissed", set.joinToString(",")).apply()
+    }
+
+    // ── Daily Promo Shown ────────────────────────────────────
+    fun saveDailyPromoDate(dateStr: String) {
+        securePrefs.edit().putString("dailyPromoLastShown", dateStr).apply()
+    }
+
+    fun loadDailyPromoDate(): String = securePrefs.getString("dailyPromoLastShown", "") ?: ""
+
+    // ── Play Integrity Token ─────────────────────────────────
+    fun saveIntegrityToken(token: String) {
+        securePrefs.edit().putString("integrityToken", token).apply()
+    }
+
+    fun loadIntegrityToken(): String = securePrefs.getString("integrityToken", "") ?: ""
+
     // ── FCM Token ───────────────────────────────────────────
     fun saveFcmToken(token: String) {
         prefs.edit().putString("fcmToken", token).apply()
@@ -493,11 +628,12 @@ fun loadUsers(): Map<String, UserData> {
     // ── Clear all app data (for Google account switch) ────
     fun clearAllAppData() {
         val editor = prefs.edit()
-        // Keep: themeOption, loginMethod, fcmToken, notifDialogShown, smtpSkipPermanently
+        // Keep: themeOption, backgroundOption, loginMethod, fcmToken, notifDialogShown, smtpSkipPermanently
         // Keep: printerAddress, printerName (device-level)
         // Keep: ECDSA keys, TV password (secure prefs, cleared separately if needed)
         // Keep: business data — TV list, transactions, users, prices, invoices
         val keepTheme = prefs.getString("themeOption", "GAMING_DARK")
+        val keepBg = prefs.getString("backgroundOption", null)
         val keepLoginMethod = prefs.getString("loginMethod", "password")
         val keepFcm = prefs.getString("fcmToken", "")
         val keepNotifDialog = prefs.getBoolean("notifDialogShown", false)
@@ -523,6 +659,7 @@ fun loadUsers(): Map<String, UserData> {
         editor.clear()
         // Restore kept values
         keepTheme?.let { editor.putString("themeOption", it) }
+        if (keepBg != null) editor.putString("backgroundOption", keepBg)
         editor.putString("loginMethod", keepLoginMethod)
         editor.putString("fcmToken", keepFcm)
         editor.putBoolean("notifDialogShown", keepNotifDialog)
@@ -562,6 +699,23 @@ fun loadUsers(): Map<String, UserData> {
         for (i in 0 until arr.length()) list.add(arr.optString(i))
         return list
     }
+
+    // ── Habis Dismissed ────────────────────────────────────
+    fun saveHabisDismissedIds(ids: Set<String>) {
+        prefs.edit().putString("habisDismissedIds", ids.joinToString(",")).apply()
+    }
+
+    fun loadHabisDismissedIds(): Set<String> {
+        val raw = prefs.getString("habisDismissedIds", "") ?: ""
+        return if (raw.isBlank()) emptySet() else raw.split(",").filter { it.isNotBlank() }.toSet()
+    }
+
+    // ── Welcome Promo Shown ─────────────────────────────────
+    fun saveWelcomePromoShown(shown: Boolean) {
+        prefs.edit().putBoolean("welcomePromoShown", shown).apply()
+    }
+
+    fun loadWelcomePromoShown(): Boolean = prefs.getBoolean("welcomePromoShown", false)
 
     private fun map2dToJson(map: Map<String, Map<String, Int>>?): String {
         val outer = JSONObject()

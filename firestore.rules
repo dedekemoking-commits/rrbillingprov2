@@ -4,58 +4,86 @@ service cloud.firestore {
     // All requests must be authenticated
     function isAuth() { return request.auth != null; }
     
-    // Check if the requesting user is a super admin (by username in _user_ doc)
+    // Check if the requesting user is a super admin
+    // The admin's Firebase Auth UID must exist as a document in /admins/{uid}
+    // with field isAdmin == true
     function isSuperAdmin() {
       return isAuth() && (
-        request.auth.uid in get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.isAdmin == true
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.isAdmin == true
       );
     }
 
+    // Licenses collection
     match /licenses/{docId} {
+      // Anyone authenticated can read licenses (for activation lookup)
       allow read: if isAuth();
-      // Only super admin or license generator can create
-      allow create: if isAuth();
-      // Only super admin can update (activate, revoke)
-      allow update: if isAuth();
+      // Only super admin can create/update/delete licenses
+      allow create: if isSuperAdmin();
+      allow update: if isSuperAdmin();
       allow delete: if false;
     }
 
+    // Invoices collection
     match /invoices/{docId} {
-      // Users can read their own invoices, admin can read all
+      // Users can read their own invoices; admin can read all
       allow read: if isAuth() && (
-        resource.data.username == request.auth.uid || isSuperAdmin()
+        request.resource.data.username == request.auth.uid
+        || isSuperAdmin()
       );
-      // Users can create their own invoices
+      // Users can create invoices — but the invoice username must match auth UID
       allow create: if isAuth() && request.resource.data.username == request.auth.uid;
-      // Only admin can update (confirm payments)
-      allow update: if isAuth();
+      // Only super admin can update/confirm invoices
+      allow update: if isSuperAdmin();
       allow delete: if false;
     }
 
+    // Notifications collection
     match /notifications/{docId} {
-      allow read, create: if isAuth();
+      // Anyone authenticated can read and create notifications
+      allow read: if isAuth();
+      allow create: if isAuth();
+      // Optional: only allow create if notification targets the current user
+      // allow create: if isAuth() && request.resource.data.username == request.auth.uid;
       allow update, delete: if false;
     }
 
+    // BillingPS Users collection — one document per username
     match /billingps_users/{username} {
-      // Users can read/write their own doc; admin can read/write all
+      // Anyone authenticated can read user docs (for license lookup etc.)
+      allow read: if isAuth();
+      // Users can only write to their own document
+      // For now: require auth. In future: require request.auth.uid == username mapping
+      allow write: if isAuth();
+
+      // tvCommands subcollection — TV client heartbeat + billing commands
+      match /tvCommands/{tvId} {
+        allow read, write: if isAuth();
+      }
+    }
+
+    // BillingPS Devices collection — one document per device
+    match /billingps_devices/{deviceId} {
+      // Devices read/write by authenticated users
+      // Restrict to device owner when UID is known
       allow read: if isAuth();
       allow write: if isAuth();
     }
 
-    match /billingps_devices/{deviceId} {
-      allow read, write: if isAuth();
-    }
-
+    // Global settings
     match /settings/{docId} {
+      // Anyone authenticated can read settings
       allow read: if isAuth();
       // Only super admin can modify settings
-      allow write: if isAuth();
+      allow write: if isSuperAdmin();
     }
 
+    // Admins collection — stores admin UIDs
     match /admins/{userId} {
+      // Anyone authenticated can read (to check if someone is admin)
       allow read: if isAuth();
-      allow write: if request.auth.uid == userId;
+      // Only the admin themselves or another super admin can write
+      allow write: if isSuperAdmin() || request.auth.uid == userId;
     }
   }
 }

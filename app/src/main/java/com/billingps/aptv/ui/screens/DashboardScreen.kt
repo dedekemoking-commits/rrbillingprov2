@@ -44,7 +44,15 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
+import com.billingps.aptv.ui.screens.ClientApkInstallerDialog
+import com.billingps.aptv.utils.ApkServer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -87,7 +95,99 @@ fun DashboardScreen(
     var buatPasswordInput by remember { mutableStateOf("") }
     var buatPasswordConfirm by remember { mutableStateOf("") }
     var buatPasswordError by remember { mutableStateOf("") }
+    var showClientApkInstaller by remember { mutableStateOf(false) }
+    var installerTvIp by remember { mutableStateOf("") }
+    var installerTvNama by remember { mutableStateOf("") }
+    var uploadTargetTv by remember { mutableStateOf<TvData?>(null) }
+    var showPilihTvUpload by remember { mutableStateOf(false) }
+    var uploadPilihMode by remember { mutableStateOf("media") }
+    var showPindahTvDialog by remember { mutableStateOf(false) }
+    var pindahTvSource by remember { mutableStateOf<TvData?>(null) }
+    var showMediaUploader by remember { mutableStateOf(false) }
+    var showNotifUploader by remember { mutableStateOf(false) }
+    var uploadMode by remember { mutableStateOf("media") }
+    var uploadStatus by remember { mutableStateOf("") }
     val ctx = LocalContext.current
+
+    val uploadScope = rememberCoroutineScope()
+    val autoPowerSentSessions = remember { mutableStateMapOf<String, Long>() }
+
+    fun startUpload(uri: Uri, tv: TvData, username: String, mode: String) {
+        uploadStatus = "Mengupload..."
+        uploadScope.launch {
+            try {
+                val inputStream = withContext(Dispatchers.IO) { ctx.contentResolver.openInputStream(uri) }
+                if (inputStream == null) { uploadStatus = "Gagal: tidak bisa baca file"; return@launch }
+                val name = uri.lastPathSegment?.substringAfterLast("/") ?: "video.mp4"
+                val cacheFile = File(ctx.cacheDir, "uploads/$name")
+                withContext(Dispatchers.IO) {
+                    cacheFile.parentFile?.mkdirs()
+                    cacheFile.outputStream().use { out -> inputStream.copyTo(out) }
+                    inputStream.close()
+                }
+
+                val ip = withContext(Dispatchers.IO) { ApkServer.getLocalIpAddress(ctx) }
+                if (ip == null) { uploadStatus = "Gagal: tidak bisa dapat IP lokal"; return@launch }
+                withContext(Dispatchers.IO) {
+                    val apkFile = File(ctx.cacheDir, "tv-client.apk")
+                    if (!apkFile.exists()) {
+                        ctx.assets.open("tv-client.apk").use { input ->
+                            apkFile.outputStream().use { output -> input.copyTo(output) }
+                        }
+                    }
+                    ApkServer.start(ctx, apkFile)
+                }
+                val url = "http://$ip:${ApkServer.port}/uploads/$name"
+                withContext(Dispatchers.IO) {
+                    if (mode == "media") {
+                        viewModel.cacheMediaOnTv(username, tv.id, url)
+                    } else {
+                        viewModel.sendWarningVideoToTv(username, tv.id, url)
+                    }
+                }
+                uploadStatus = "Upload berhasil!"
+            } catch (e: Exception) {
+                uploadStatus = "Gagal upload: ${e.message}"
+            }
+        }
+    }
+
+    val mediaPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null && uploadTargetTv != null) {
+            startUpload(uri, uploadTargetTv!!, state.currentUser, uploadMode)
+        }
+    }
+
+    LaunchedEffect(showMediaUploader) {
+        if (showMediaUploader) {
+            uploadMode = "media"
+            mediaPickerLauncher.launch(arrayOf("video/*", "image/*"))
+            showMediaUploader = false
+        }
+    }
+
+    LaunchedEffect(showNotifUploader) {
+        if (showNotifUploader) {
+            uploadMode = "notifikasi"
+            mediaPickerLauncher.launch(arrayOf("video/*", "image/*"))
+            showNotifUploader = false
+        }
+    }
+
+    if (uploadStatus.isNotEmpty()) {
+        val title = if (uploadMode == "media") "Upload Media" else "Upload Notifikasi"
+        AlertDialog(
+            onDismissRequest = { uploadStatus = ""; uploadTargetTv = null },
+            containerColor = DarkSurface,
+            title = { Text(title, color = NeonCyan, fontWeight = FontWeight.Bold) },
+            text = { Text(uploadStatus, color = TextSecondary) },
+            confirmButton = {
+                TextButton(onClick = { uploadStatus = ""; uploadTargetTv = null }) { Text("OK", color = NeonGreen) }
+            },
+        )
+    }
 
     // Check for update on first render
     LaunchedEffect(Unit) {
@@ -181,7 +281,7 @@ fun DashboardScreen(
                     val forceDisabled = state.licenseStatus.status != "active" && idx >= 2
                     TVCard(
                         tv = tv,
-                        showPindah = tvList.size > 1,
+                        clientStatus = state.clientStatus[tv.id],
                         forceDisabled = forceDisabled,
                         onPilihPaket = { selectedTV = tv; showPaket = true },
                         onHapus = {
@@ -216,6 +316,9 @@ fun DashboardScreen(
                             }
                         },
                         onSelesai = {
+                            if (tv.certPem.isNotEmpty() && tv.keyPem.isNotEmpty()) {
+                                tvViewModel.sendPower(tv.ip, tv.certPem, tv.keyPem)
+                            }
                             selesaiSummaryTV = tv
                             showSelesaiSummary = true
                         },
@@ -234,12 +337,21 @@ fun DashboardScreen(
                             showTambahWaktu = true
                         },
                         onPindahTV = {
-                            val next = (idx + 1) % tvList.size
-                            scope.launch { listState.animateScrollToItem(next) }
+                            pindahTvSource = tv
+                            showPindahTvDialog = true
+                        },
+                        onSudahBayar = {
+                            tvBayar = tv
+                            showKonfirmasiBayar = true
                         },
                         onBatal = {
                             selectedTV = tv
                             showBatalDialog = true
+                        },
+                        onInstallClient = {
+                            installerTvIp = tv.ip
+                            installerTvNama = tv.nama
+                            showClientApkInstaller = true
                         },
                     )
                 }
@@ -249,7 +361,7 @@ fun DashboardScreen(
         // Start background timer service when any timer is active
         LaunchedEffect(state.tvList) {
             val hasActiveTimer = state.tvList.any { it.timerActive && !it.bebas && it.sisaDetik > 0 } || state.tvList.any { it.bebas }
-            if (hasActiveTimer) {
+            if (hasActiveTimer && !com.billingps.aptv.TimerService.isRunning()) {
                 viewModel.startTimerService()
             }
         }
@@ -267,17 +379,22 @@ fun DashboardScreen(
             }
         }
 
-        // Monitor expired timers — show dialog once per session, never again after dismissed
         LaunchedEffect(state.tvList) {
+            state.tvList.forEach { tv ->
+                if (tv.paketAktif == "WAKTU HABIS" && tv.sisaDetik == 0L && !tv.sudahBayar) {
+                    if (autoPowerSentSessions[tv.id] != tv.timerStart) {
+                        if (tv.certPem.isNotEmpty() && tv.keyPem.isNotEmpty()) {
+                            tvViewModel.sendPower(tv.ip, tv.certPem, tv.keyPem)
+                            autoPowerSentSessions[tv.id] = tv.timerStart
+                        }
+                    }
+                }
+            }
             val expiredTv = state.tvList.firstOrNull {
-                it.paketAktif == "WAKTU HABIS" && it.sisaDetik == 0L && it.id !in habisDismissedIds
+                it.paketAktif == "WAKTU HABIS" && it.sisaDetik == 0L && it.id !in habisDismissedIds && !it.sudahBayar
             }
             if (expiredTv != null && tvHabis == null) {
-                tvHabis = expiredTv
-                showHabisDialog = true
-                if (expiredTv.certPem.isNotEmpty() && expiredTv.keyPem.isNotEmpty()) {
-                    tvViewModel.sendPower(expiredTv.ip, expiredTv.certPem, expiredTv.keyPem)
-                }
+                tvHabis = expiredTv; showHabisDialog = true
             }
         }
     }
@@ -318,13 +435,13 @@ fun DashboardScreen(
             onSelesai = {
                 viewModel.updateTV(selesaiSummaryTv.id, mapOf(
                     "timerActive" to false, "sisaDetik" to 0L,
-                    "bebas" to false, "paketAktif" to "SELESAI",
+                    "bebas" to false, "paketAktif" to "",
                 ))
+                if (selesaiSummaryTv.bebas) {
+                    viewModel.setTransaksiSudahBayar(selesaiSummaryTv.nama, true)
+                }
                 showSelesaiSummary = false
                 selesaiSummaryTV = null
-                if (selesaiSummaryTv.certPem.isNotEmpty() && selesaiSummaryTv.keyPem.isNotEmpty()) {
-                    tvViewModel.sendPower(selesaiSummaryTv.ip, selesaiSummaryTv.certPem, selesaiSummaryTv.keyPem)
-                }
             },
             onPrint = {
                 val lastTx = state.transaksiList.filter { it.kota == selesaiSummaryTv.nama }.maxByOrNull { it.waktu }
@@ -341,10 +458,12 @@ fun DashboardScreen(
             tvNama = tvBayarValue.nama,
             onSudahBayar = {
                 viewModel.updateTV(tvBayarValue.id, mapOf("sudahBayar" to true))
+                viewModel.setTransaksiSudahBayar(tvBayarValue.nama, true)
                 showKonfirmasiBayar = false; tvBayar = null
             },
             onBelumBayar = {
                 viewModel.updateTV(tvBayarValue.id, mapOf("sudahBayar" to false))
+                viewModel.setTransaksiSudahBayar(tvBayarValue.nama, false)
                 showKonfirmasiBayar = false; tvBayar = null
             },
         )
@@ -352,13 +471,27 @@ fun DashboardScreen(
 
     val tvHabisValue = tvHabis
     if (showHabisDialog && tvHabisValue != null) {
+        val alreadyPoweredOff = autoPowerSentSessions[tvHabisValue.id] == tvHabisValue.timerStart
         HabisDialog(
             tv = tvHabisValue,
+            tvViewModel = tvViewModel,
+            autoPowerSent = alreadyPoweredOff,
             onDismiss = {
                 viewModel.dismissWaktuHabis(tvHabisValue.id)
                 showHabisDialog = false; tvHabis = null
             },
-            onSudahBayar = { viewModel.updateTV(tvHabisValue.id, mapOf("sudahBayar" to true)) },
+                onSudahBayar = {
+                    viewModel.updateTV(tvHabisValue.id, mapOf(
+                        "sudahBayar" to true,
+                        "paketAktif" to "",
+                        "timerActive" to false,
+                        "bebas" to false,
+                        "sisaDetik" to 0L,
+                    ))
+                    viewModel.setTransaksiSudahBayar(tvHabisValue.nama, true)
+                    viewModel.dismissWaktuHabis(tvHabisValue.id)
+                    showHabisDialog = false; tvHabis = null
+                },
         )
     }
 
@@ -433,6 +566,7 @@ fun DashboardScreen(
                         total = tambahHarga,
                         paketHarga = tambahHarga,
                         tvJenisPs = tvData.jenisPs,
+                        sudahBayar = tvData.sudahBayar,
                     ))
                     showTambahWaktu = false; tambahWaktuTV = null
                 }, colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("Tambah Rp$tambahHarga") }
@@ -476,6 +610,7 @@ fun DashboardScreen(
                             total = -lastTx.total,
                             paketHarga = -lastTx.paketHarga,
                             tvJenisPs = tvData.jenisPs,
+                            sudahBayar = false,
                         ))
                         val isPaket = lastTx.paket != "Pesanan Tambahan"
                         if (isPaket) {
@@ -530,8 +665,9 @@ fun DashboardScreen(
                     paketHarga = if (paketNm != null) paketHarga else 0,
                     pesananHarga = pesananHarga,
                     tvJenisPs = selectedTvPaket.jenisPs,
+                    sudahBayar = if (paketNm == "Main Bebas") true else selectedTvPaket.sudahBayar,
                 ))
-                if (paketNm != null) {
+if (paketNm != null && paketNm != "Main Bebas") {
                     tvBayar = selectedTV
                     bayarUpdates = updates
                     showKonfirmasiBayar = true
@@ -584,6 +720,19 @@ fun DashboardScreen(
         )
     }
 
+    // ── Install Client APK Dialog ────────────────────────
+    if (showClientApkInstaller && installerTvIp.isNotEmpty()) {
+        ClientApkInstallerDialog(
+            tvIp = installerTvIp,
+            tvNama = installerTvNama,
+            onDismiss = {
+                showClientApkInstaller = false
+                installerTvIp = ""
+                installerTvNama = ""
+            },
+        )
+    }
+
     // ── Buat Password TV Dialog ──────────────────────────
     val tvHapusTargetBuat = tvHapusTarget
     if (showBuatPasswordDialog && tvHapusTargetBuat != null) {
@@ -625,12 +774,16 @@ fun DashboardScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        if (buatPasswordInput.length < 4) { buatPasswordError = "Minimal 4 karakter"; return@Button }
-                        if (buatPasswordInput != buatPasswordConfirm) { buatPasswordError = "Konfirmasi tidak cocok"; return@Button }
-                        viewModel.setTvPassword(buatPasswordInput)
-                        viewModel.hapusTV(tvHapusTargetBuat.id)
-                        showBuatPasswordDialog = false
-                        tvHapusTarget = null
+                        try {
+                            if (buatPasswordInput.length < 4) { buatPasswordError = "Minimal 4 karakter"; return@Button }
+                            if (buatPasswordInput != buatPasswordConfirm) { buatPasswordError = "Konfirmasi tidak cocok"; return@Button }
+                            viewModel.setTvPassword(buatPasswordInput)
+                            viewModel.hapusTV(tvHapusTargetBuat.id)
+                            showBuatPasswordDialog = false
+                            tvHapusTarget = null
+                        } catch (e: Exception) {
+                            buatPasswordError = "Error: ${e.message}"
+                        }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = NeonRed, contentColor = DarkBackground),
                     shape = RoundedCornerShape(8.dp),
@@ -672,13 +825,17 @@ fun DashboardScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        if (!viewModel.verifyTvPassword(hapusPasswordInput)) {
-                            hapusPasswordError = "Password salah"
-                            return@Button
+                        try {
+                            if (!viewModel.verifyTvPassword(hapusPasswordInput)) {
+                                hapusPasswordError = "Password salah"
+                                return@Button
+                            }
+                            viewModel.hapusTV(tvHapusTargetHapus.id)
+                            showHapusPasswordDialog = false
+                            tvHapusTarget = null
+                        } catch (e: Exception) {
+                            hapusPasswordError = "Error: ${e.message}"
                         }
-                        viewModel.hapusTV(tvHapusTargetHapus.id)
-                        showHapusPasswordDialog = false
-                        tvHapusTarget = null
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = NeonRed, contentColor = DarkBackground),
                     shape = RoundedCornerShape(8.dp),
@@ -689,11 +846,87 @@ fun DashboardScreen(
             },
         )
     }
+
+    // ── Pilih TV untuk Upload ─────────────────────────────
+    if (showPilihTvUpload) {
+        AlertDialog(
+            onDismissRequest = { showPilihTvUpload = false },
+            containerColor = DarkSurface,
+            title = { Text("Pilih TV", color = NeonCyan, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("Pilih TV untuk ${if (uploadPilihMode == "media") "Media Bangun Tidur" else "Video Notifikasi 5 Menit"}:",
+                        style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    Spacer(Modifier.height(8.dp))
+                    state.tvList.forEach { tv ->
+                        TextButton(
+                            onClick = {
+                                showPilihTvUpload = false
+                                uploadTargetTv = tv
+                                if (uploadPilihMode == "media") {
+                                    uploadMode = "media"
+                                    showMediaUploader = true
+                                } else {
+                                    uploadMode = "notifikasi"
+                                    showNotifUploader = true
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(tv.nama, color = TextPrimary)
+                            Spacer(Modifier.weight(1f))
+                            Text(tv.jenisPs, color = TextDim, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showPilihTvUpload = false }) { Text("Batal", color = TextSecondary) }
+            },
+        )
+    }
+
+    // ── Pindah TV Dialog ──────────────────────────────────
+    if (showPindahTvDialog && pindahTvSource != null) {
+        AlertDialog(
+            onDismissRequest = { showPindahTvDialog = false; pindahTvSource = null },
+            containerColor = DarkSurface,
+            title = { Text("PINDAH DATA", color = NeonCyan, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("Pilih TV tujuan untuk memindahkan data dari ${pindahTvSource!!.nama}:",
+                        style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    Spacer(Modifier.height(8.dp))
+                    state.tvList.filter { it.id != pindahTvSource!!.id && !it.timerActive && !it.bebas && it.paketAktif.isEmpty() }.forEach { target ->
+                        TextButton(
+                            onClick = {
+                                showPindahTvDialog = false
+                                viewModel.pindahTV(pindahTvSource!!.id, target.id)
+                                if (pindahTvSource!!.certPem.isNotEmpty() && pindahTvSource!!.keyPem.isNotEmpty()) {
+                                    tvViewModel.sendPower(pindahTvSource!!.ip, pindahTvSource!!.certPem, pindahTvSource!!.keyPem)
+                                }
+                                pindahTvSource = null
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(target.nama, color = TextPrimary)
+                            Spacer(Modifier.weight(1f))
+                            Text(target.jenisPs, color = TextDim, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showPindahTvDialog = false; pindahTvSource = null }) { Text("Batal", color = TextSecondary) }
+            },
+        )
+    }
 }
 
 @Composable
 fun TVCard(
     tv: TvData,
+    clientStatus: ClientStatus? = null,
     onPilihPaket: () -> Unit,
     onHapus: () -> Unit,
     onPair: () -> Unit,
@@ -707,7 +940,8 @@ fun TVCard(
     onTambahWaktu: () -> Unit = {},
     onPindahTV: () -> Unit = {},
     onBatal: () -> Unit = {},
-    showPindah: Boolean = false,
+    onInstallClient: () -> Unit = {},
+    onSudahBayar: () -> Unit = {},
     forceDisabled: Boolean = false,
 ) {
     val alpha = if (forceDisabled) 0.38f else 1f
@@ -735,21 +969,25 @@ fun TVCard(
     val isHabis = tv.paketAktif == "WAKTU HABIS" || tv.paketAktif == "SELESAI"
     val isAlmostHabis = tv.timerActive && !tv.bebas && tv.sisaDetik in 1..60
 
-    val infiniteTransition = rememberInfiniteTransition(label = "blink")
-    val blinkAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.3f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(500),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "blinkAlpha",
-    )
+    val blinkAlpha by if (isAlmostHabis) {
+        val infiniteTransition = rememberInfiniteTransition(label = "blink")
+        infiniteTransition.animateFloat(
+            initialValue = 0.3f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(500),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "blinkAlpha",
+        )
+    } else remember { mutableStateOf(1f) }
 
+    val isTersedia = !tv.timerActive && !tv.bebas && !isHabis && !isAlmostHabis
     val cardBg = when {
-        isAlmostHabis -> Color(0xFFD32F2F).copy(alpha = blinkAlpha)
-        tv.timerActive || tv.bebas -> Color(0xFF1565C0)
-        else -> DarkSurface
+        isHabis -> Color(0xFFEF4444)                                 // Merah
+        isAlmostHabis -> Color(0xFFF59E0B).copy(alpha = blinkAlpha)  // Oranye blink
+        tv.timerActive || tv.bebas -> Color(0xFF3498DB)              // Biru Electric
+        else -> Color.White                                           // Putih untuk Tersedia
     }
     val gradientShape = RoundedCornerShape(20.dp)
     Card(
@@ -791,6 +1029,18 @@ fun TVCard(
                         modifier = Modifier.size(36.dp).clip(RoundedCornerShape(6.dp)),
                     )
                 }
+                Spacer(Modifier.weight(1f))
+                Text(tv.nama, style = MaterialTheme.typography.titleLarge,
+                    color = if (isTersedia) Color(0xFF1A1A1A) else Color.White, fontWeight = FontWeight.Bold)
+                if (clientStatus != null) {
+                    Spacer(Modifier.width(8.dp))
+                    val (dotColor, tooltip) = if (clientStatus.online) Pair(NeonGreen, "Client Aktif") else Pair(NeonRed, "Client Offline")
+                    Box(
+                        modifier = Modifier.size(10.dp).clip(CircleShape).background(dotColor)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(tooltip, color = TextDim, fontSize = 10.sp)
+                }
             }
 
             if (tv.paketAktif.isNotEmpty()) {
@@ -802,6 +1052,10 @@ fun TVCard(
                 }
                 Text(tv.paketAktif, style = MaterialTheme.typography.bodySmall,
                     color = if (isHabis) NeonRed else NeonGreen, fontWeight = FontWeight.Bold)
+            } else if (isTersedia) {
+                Spacer(Modifier.height(8.dp))
+                Text("TERSEDIA", style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFF1A1A1A), fontWeight = FontWeight.Bold)
                 if (!isHabis && tv.bebas) {
                     val elapsedMs = bebasTick - tv.bebasMulai
                     val runningTotal = ((elapsedMs * tv.bebasHargaPerJam) / 3600000).toInt() + tv.bebasPesananTotal
@@ -884,6 +1138,14 @@ fun TVCard(
                 }
                 Spacer(Modifier.weight(1f))
                 OutlinedButton(
+                    onClick = { if (!forceDisabled) onPower() },
+                    enabled = !forceDisabled,
+                    shape = RoundedCornerShape(6.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
+                    border = BorderStroke(1.dp, NeonRed),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                ) { Icon(Icons.Filled.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                OutlinedButton(
                     onClick = { if (!forceDisabled) onHapus() },
                     enabled = !forceDisabled,
                     shape = RoundedCornerShape(6.dp),
@@ -896,14 +1158,6 @@ fun TVCard(
             if (tv.paired) {
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedButton(
-                        onClick = { if (!forceDisabled) onPower() },
-                        enabled = !forceDisabled,
-                        shape = RoundedCornerShape(6.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonOrange),
-                        border = BorderStroke(1.dp, NeonOrange),
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                    ) { Icon(Icons.Filled.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(12.dp)); Spacer(Modifier.width(2.dp)); Text("Power", style = MaterialTheme.typography.labelSmall) }
                     OutlinedButton(
                         onClick = { if (!forceDisabled) onHdmi() },
                         enabled = !forceDisabled,
@@ -918,8 +1172,18 @@ fun TVCard(
                         shape = RoundedCornerShape(6.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
                         border = BorderStroke(1.dp, NeonGreen),
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
                     ) { Text("OK", style = MaterialTheme.typography.labelSmall, color = NeonGreen) }
+                    if (clientStatus?.online != true) {
+                        OutlinedButton(
+                            onClick = { if (!forceDisabled) onInstallClient() },
+                            enabled = !forceDisabled,
+                            shape = RoundedCornerShape(6.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan),
+                            border = BorderStroke(1.dp, NeonCyan),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                        ) { Icon(Icons.Filled.Android, contentDescription = null, modifier = Modifier.size(12.dp)); Spacer(Modifier.width(2.dp)); Text("Install Client", style = MaterialTheme.typography.labelSmall) }
+                    }
                     if (tv.timerActive || tv.bebas) {
                         OutlinedButton(
                             onClick = { if (!forceDisabled) onSelesai() },
@@ -930,11 +1194,16 @@ fun TVCard(
                             contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
                         ) { Icon(Icons.Filled.Stop, contentDescription = null, modifier = Modifier.size(12.dp)); Spacer(Modifier.width(2.dp)); Text("Selesai", style = MaterialTheme.typography.labelSmall) }
                     }
-                    if (showPindah) {
-                        TextButton(onClick = { if (!forceDisabled) onPindahTV() }, enabled = !forceDisabled, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) {
-                            Icon(Icons.Filled.SwapHoriz, contentDescription = null, modifier = Modifier.size(12.dp), tint = if (forceDisabled) TextDim else NeonCyan)
+                    TextButton(onClick = { if (!forceDisabled) onPindahTV() }, enabled = !forceDisabled, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) {
+                        Icon(Icons.Filled.SwapHoriz, contentDescription = null, modifier = Modifier.size(12.dp), tint = if (forceDisabled) TextDim else NeonCyan)
+                        Spacer(Modifier.width(2.dp))
+                        Text("Pindah", style = MaterialTheme.typography.labelSmall, color = if (forceDisabled) TextDim else NeonCyan)
+                    }
+                    if (tv.timerActive) {
+                        TextButton(onClick = { if (!forceDisabled) onSudahBayar() }, enabled = !forceDisabled, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) {
+                            Icon(Icons.Filled.Payments, contentDescription = null, modifier = Modifier.size(12.dp), tint = if (forceDisabled) TextDim else NeonGreen)
                             Spacer(Modifier.width(2.dp))
-                            Text("Pindah", style = MaterialTheme.typography.labelSmall, color = if (forceDisabled) TextDim else NeonCyan)
+                            Text("Bayar", style = MaterialTheme.typography.labelSmall, color = if (forceDisabled) TextDim else NeonGreen)
                         }
                     }
                 }
@@ -1416,10 +1685,29 @@ fun KonfirmasiBayarDialog(
 @Composable
 fun HabisDialog(
     tv: TvData,
+    tvViewModel: com.billingps.aptv.TvViewModel,
+    autoPowerSent: Boolean = false,
     onDismiss: () -> Unit,
-    onSudahBayar: (() -> Unit)? = null,
+    onSudahBayar: () -> Unit,
 ) {
-    Dialog(onDismissRequest = onDismiss) {
+    var sudahDibayar by remember { mutableStateOf(false) }
+    var showWarning by remember { mutableStateOf(false) }
+
+    fun sendPowerOff() {
+        if (!autoPowerSent && tv.certPem.isNotEmpty() && tv.keyPem.isNotEmpty()) {
+            tvViewModel.sendPower(tv.ip, tv.certPem, tv.keyPem)
+        }
+    }
+
+    Dialog(onDismissRequest = {
+        if (!sudahDibayar) {
+            showWarning = true
+        } else {
+            sendPowerOff()
+            onSudahBayar()
+            onDismiss()
+        }
+    }) {
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
@@ -1431,24 +1719,51 @@ fun HabisDialog(
                 Text(tv.nama, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
                 Text("Sesi selesai", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                 Spacer(Modifier.height(12.dp))
-                Text(
-                    if (tv.sudahBayar) "✓ Sudah Bayar" else "✗ Belum Bayar",
-                    color = if (tv.sudahBayar) NeonGreen else NeonRed,
-                    fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Spacer(Modifier.height(16.dp))
-                if (tv.sudahBayar) {
-                    Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("OK") }
+
+                if (sudahDibayar) {
+                    Text("✓ Sudah Bayar", color = NeonGreen, fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium)
                 } else {
+                    Text("✗ Belum Bayar", color = NeonRed, fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium)
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                if (!sudahDibayar) {
                     Button(
                         onClick = {
-                            onSudahBayar?.invoke()
-                            onDismiss()
+                            sudahDibayar = true
+                            showWarning = false
                         },
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
                     ) { Text("Sudah Bayar") }
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                Button(
+                    onClick = {
+                        if (!sudahDibayar) {
+                            showWarning = true
+                        } else {
+                            sendPowerOff()
+                            onSudahBayar()
+                            onDismiss()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (sudahDibayar) NeonGreen else Color(0xFF555555),
+                        contentColor = if (sudahDibayar) DarkBackground else TextSecondary,
+                    ),
+                ) { Text(if (sudahDibayar) "OK" else "OK / Selesai") }
+
+                if (showWarning) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("Belum Bayar! Klik Sudah Bayar terlebih dahulu.",
+                        color = NeonRed, fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.bodyMedium)
                 }
             }
         }

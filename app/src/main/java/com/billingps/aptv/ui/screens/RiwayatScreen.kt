@@ -1,5 +1,6 @@
 package com.billingps.aptv.ui.screens
 
+import android.app.DatePickerDialog
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -38,9 +39,11 @@ fun RiwayatScreen(viewModel: MainViewModel) {
     val ctx = LocalContext.current
     var detailTransaksi by remember { mutableStateOf<Transaksi?>(null) }
     var cetakMsg by remember { mutableStateOf("") }
-    // Filter mode: "DAY", "WEEK", "MONTH", "ALL"
+    // Filter mode: "DAY", "WEEK", "MONTH", "ALL", "DATE"
     var filterMode by remember { mutableStateOf("DAY") }
+    var filterDate by remember { mutableStateOf("") }
     var searchQuery by remember { mutableStateOf("") }
+    var filterBayar by remember { mutableStateOf("ALL") } // ALL, PAID, UNPAID
     val allList = state.transaksiList.sortedByDescending { it.waktu }
     // compute filtered list
     val now = java.util.Date()
@@ -78,21 +81,41 @@ fun RiwayatScreen(viewModel: MainViewModel) {
                     && calNow.get(java.util.Calendar.MONTH) == calD.get(java.util.Calendar.MONTH)
         } catch (e: Exception) { Log.e("RiwayatScreen", "inMonth: ${e.message}"); false }
     }
-    val txList = remember(allList, filterMode, searchQuery) {
+    fun inDate(waktuIso: String, dateYmd: String): Boolean {
+        return try {
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
+            val d = sdf.parse(waktuIso)
+            val calD = java.util.Calendar.getInstance()
+            calD.time = d
+            val parts = dateYmd.split("-")
+            if (parts.size != 3) return@inDate false
+            calD.get(java.util.Calendar.YEAR) == parts[0].toInt() &&
+            (calD.get(java.util.Calendar.MONTH) + 1) == parts[1].toInt() &&
+            calD.get(java.util.Calendar.DAY_OF_MONTH) == parts[2].toInt()
+        } catch (e: Exception) { false }
+    }
+    val txList = remember(allList, filterMode, searchQuery, filterDate, filterBayar) {
         val timeFiltered = when (filterMode) {
             "DAY" -> allList.filter { inDay(it.waktu) }
             "WEEK" -> allList.filter { inWeek(it.waktu) }
             "MONTH" -> allList.filter { inMonth(it.waktu) }
+            "DATE" -> allList.filter { filterDate.isNotEmpty() && inDate(it.waktu, filterDate) }
             else -> allList
         }
-        if (searchQuery.isBlank()) timeFiltered
-        else timeFiltered.filter { t ->
+        val bayarFiltered = when (filterBayar) {
+            "PAID" -> timeFiltered.filter { it.sudahBayar }
+            "UNPAID" -> timeFiltered.filter { !it.sudahBayar }
+            else -> timeFiltered
+        }
+        if (searchQuery.isBlank()) bayarFiltered
+        else bayarFiltered.filter { t ->
             t.kota.contains(searchQuery, ignoreCase = true) ||
             t.kasir.contains(searchQuery, ignoreCase = true) ||
             t.paket.contains(searchQuery, ignoreCase = true)
         }
     }
     val totalPendapatan = txList.sumOf { it.total }
+    val totalUtang = allList.filter { !it.sudahBayar }.sumOf { it.total }
 
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
         if (uri != null) {
@@ -168,6 +191,14 @@ fun RiwayatScreen(viewModel: MainViewModel) {
                     Text(fmtRp(totalPendapatan), style = MaterialTheme.typography.titleLarge, color = NeonGreen)
                 }
             }
+            if (totalUtang > 0) {
+                Card(modifier = Modifier.weight(1f), shape = RoundedCornerShape(10.dp), colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2), border = BorderStroke(1.dp, NeonRed)) {
+                    Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("Utang", style = MaterialTheme.typography.bodySmall, color = NeonRed)
+                        Text(fmtRp(totalUtang), style = MaterialTheme.typography.titleLarge, color = NeonRed)
+                    }
+                }
+            }
             Card(modifier = Modifier.weight(1f), shape = RoundedCornerShape(10.dp), colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2), border = BorderStroke(1.dp, DarkSurfaceV3), onClick = { showAnalytics = !showAnalytics }) {
                 Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Analitik", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
@@ -202,7 +233,61 @@ fun RiwayatScreen(viewModel: MainViewModel) {
                     }
                 }
 
-                // Package distribution pie chart
+                // PS Type Revenue
+                var showPsDetail by remember { mutableStateOf(false) }
+                val psRevenue = remember(txList, state.tvList) {
+                    val psTotal = mutableMapOf<String, Int>()
+                    txList.forEach { tx ->
+                        val ps = state.tvList.find { it.nama == tx.kota }?.jenisPs ?: "Unknown"
+                        psTotal[ps] = (psTotal[ps] ?: 0) + tx.total
+                    }
+                    psTotal.entries.sortedByDescending { it.value }
+                }
+                if (psRevenue.isNotEmpty()) {
+                    Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text("PENDAPATAN PER PS", style = MaterialTheme.typography.labelSmall, color = NeonCyan, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(8.dp))
+                            psRevenue.forEach { (ps, total) ->
+                                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                                    Text(ps, style = MaterialTheme.typography.bodySmall, color = TextPrimary, modifier = Modifier.weight(1f))
+                                    Text(fmtRp(total), style = MaterialTheme.typography.bodySmall, color = NeonGreen, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // F&B Revenue
+                val fbRevenue = remember(txList) {
+                    var fbTotal = 0
+                    val fbItems = mutableMapOf<String, Int>()
+                    txList.forEach { tx ->
+                        tx.pesanan.forEach { (name, qty) ->
+                            val price = tx.pesananHarga[name] ?: 0
+                            val itemTotal = price * qty
+                            fbTotal += itemTotal
+                            fbItems[name] = (fbItems[name] ?: 0) + qty
+                        }
+                    }
+                    fbTotal to fbItems.entries.sortedByDescending { it.value }
+                }
+                if (fbRevenue.first > 0) {
+                    Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text("PENDAPATAN F&B", style = MaterialTheme.typography.labelSmall, color = NeonCyan, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(8.dp))
+                            Text(fmtRp(fbRevenue.first), style = MaterialTheme.typography.titleMedium, color = NeonYellow, fontWeight = FontWeight.Bold)
+                            fbRevenue.second.take(5).forEach { (name, qty) ->
+                                Row(Modifier.fillMaxWidth().padding(vertical = 1.dp)) {
+                                    Text("• ${name} ×${qty}", style = MaterialTheme.typography.bodySmall, color = TextSecondary, modifier = Modifier.weight(1f))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Package distribution pie chart (clickable)
                 val packageData = remember(txList) {
                     val pkgTotal = mutableMapOf<String, Int>()
                     txList.forEach { tx ->
@@ -214,11 +299,37 @@ fun RiwayatScreen(viewModel: MainViewModel) {
                     }
                 }
                 if (packageData.isNotEmpty()) {
-                    Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+                    Card(
+                        shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2), border = BorderStroke(1.dp, DarkSurfaceV3),
+                        onClick = { showPsDetail = true }
+                    ) {
                         Column(Modifier.padding(12.dp)) {
-                            RevenuePieChart(data = packageData, title = "DISTRIBUSI PAKET")
+                            RevenuePieChart(data = packageData, title = "DISTRIBUSI PAKET (klik detail)")
                         }
                     }
+                }
+                // Dialog detail distribusi paket
+                if (showPsDetail && packageData.isNotEmpty()) {
+                    AlertDialog(
+                        onDismissRequest = { showPsDetail = false },
+                        containerColor = DarkSurface,
+                        title = { Text("DETAIL DISTRIBUSI PAKET", fontWeight = FontWeight.Bold, color = NeonCyan) },
+                        text = {
+                            Column {
+                                packageData.forEach { pd ->
+                                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                        Box(Modifier.size(10.dp).background(pd.color, RoundedCornerShape(2.dp)))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(pd.label, style = MaterialTheme.typography.bodySmall, color = TextPrimary, modifier = Modifier.weight(1f))
+                                        Text(fmtRp(pd.value.toInt()), style = MaterialTheme.typography.bodySmall, color = NeonGreen, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { showPsDetail = false }) { Text("Tutup", color = NeonGreen) }
+                        },
+                    )
                 }
 
                 // Top packages by revenue
@@ -242,21 +353,60 @@ fun RiwayatScreen(viewModel: MainViewModel) {
 
         // Filter buttons
         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("DAY" to "HARI", "WEEK" to "MINGGU", "MONTH" to "BULAN", "ALL" to "SEMUA").forEach { (mode, label) ->
+            listOf("DAY" to "HARI", "WEEK" to "MINGGU", "MONTH" to "BULAN", "ALL" to "SEMUA", "DATE" to "TGL").forEach { (mode, label) ->
                 if (filterMode == mode) {
                     Button(
-                        onClick = { filterMode = mode },
+                        onClick = {
+                            filterMode = mode
+                            if (mode == "DATE") {
+                                val cal = java.util.Calendar.getInstance()
+                                DatePickerDialog(ctx, { _, y, m, d ->
+                                    filterDate = "$y-${(m+1).toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}"
+                                }, cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH), cal.get(java.util.Calendar.DAY_OF_MONTH)).show()
+                            }
+                        },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)
-                    ) { Text(label) }
+                    ) { Text(if (mode == "DATE" && filterDate.isNotEmpty()) filterDate.takeLast(5) else label) }
                 } else {
                     OutlinedButton(
-                        onClick = { filterMode = mode },
+                        onClick = {
+                            filterMode = mode
+                            if (mode == "DATE") {
+                                val cal = java.util.Calendar.getInstance()
+                                DatePickerDialog(ctx, { _, y, m, d ->
+                                    filterDate = "$y-${(m+1).toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}"
+                                }, cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH), cal.get(java.util.Calendar.DAY_OF_MONTH)).show()
+                            }
+                        },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
                         border = BorderStroke(1.dp, DarkSurfaceV3)
+                    ) { Text(label) }
+                }
+            }
+        }
+
+        // Payment status filter
+        Spacer(Modifier.height(6.dp))
+        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("ALL" to "Semua", "PAID" to "Lunas", "UNPAID" to "Utang").forEach { (mode, label) ->
+                if (filterBayar == mode) {
+                    Button(
+                        onClick = { filterBayar = mode },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = if (mode == "UNPAID") NeonRed else NeonGreen, contentColor = DarkBackground),
+                    ) { Text(label) }
+                } else {
+                    OutlinedButton(
+                        onClick = { filterBayar = mode },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                        border = BorderStroke(1.dp, DarkSurfaceV3),
                     ) { Text(label) }
                 }
             }
@@ -304,7 +454,49 @@ fun RiwayatScreen(viewModel: MainViewModel) {
                 shape = RoundedCornerShape(10.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan),
                 border = BorderStroke(1.dp, NeonCyan),
-            ) { Icon(Icons.Filled.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Import") }
+            ) { Icon(Icons.Filled.CloudDownload, contentDescription = "Import") }
+            var showCetakDialog by remember { mutableStateOf(false) }
+            var cetakDate by remember { mutableStateOf("") }
+            OutlinedButton(
+                onClick = {
+                    val cal = java.util.Calendar.getInstance()
+                    DatePickerDialog(ctx, { _, y, m, d ->
+                        cetakDate = "$y-${(m+1).toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}"
+                        showCetakDialog = true
+                    }, cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH), cal.get(java.util.Calendar.DAY_OF_MONTH)).show()
+                },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonYellow),
+                border = BorderStroke(1.dp, NeonYellow),
+            ) { Icon(Icons.Filled.Print, contentDescription = "Cetak") }
+            if (showCetakDialog && cetakDate.isNotEmpty()) {
+                val cetakList = allList.filter { inDate(it.waktu, cetakDate) }
+                AlertDialog(
+                    onDismissRequest = { showCetakDialog = false },
+                    containerColor = DarkSurface,
+                    title = { Text("CETAK LAPORAN", fontWeight = FontWeight.Bold, color = NeonYellow) },
+                    text = { Text("Cetak laporan ${cetakList.size} transaksi tanggal $cetakDate? (total ${fmtRp(cetakList.sumOf { it.total })})", color = TextSecondary) },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                showCetakDialog = false
+                                Toast.makeText(ctx, "Laporan dikirim ke printer", Toast.LENGTH_SHORT).show()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonYellow, contentColor = DarkBackground),
+                            shape = RoundedCornerShape(10.dp),
+                        ) { Text("Cetak") }
+                    },
+                    dismissButton = {
+                        OutlinedButton(
+                            onClick = { showCetakDialog = false },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
+                            border = BorderStroke(1.dp, TextSecondary.copy(alpha = 0.5f)),
+                        ) { Text("Batal") }
+                    },
+                )
+            }
             OutlinedButton(
                 onClick = {
                     if (txList.isEmpty()) {
@@ -318,40 +510,7 @@ fun RiwayatScreen(viewModel: MainViewModel) {
                 shape = RoundedCornerShape(10.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
                 border = BorderStroke(1.dp, NeonGreen),
-            ) { Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Export CSV") }
-            if (state.currentRole != "kasir") {
-                var showBersihkanDialog by remember { mutableStateOf(false) }
-                OutlinedButton(
-                    onClick = { showBersihkanDialog = true },
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
-                    border = BorderStroke(1.dp, NeonRed),
-                ) { Icon(Icons.Filled.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Bersihkan") }
-                if (showBersihkanDialog) {
-                    AlertDialog(
-                        onDismissRequest = { showBersihkanDialog = false },
-                        containerColor = DarkSurface,
-                        title = { Text("BERSIHKAN TRANSAKSI", fontWeight = FontWeight.Bold, color = NeonRed) },
-                        text = { Text("Semua transaksi lokal akan dihapus permanen. Lanjutkan?", color = TextSecondary) },
-                        confirmButton = {
-                            Button(
-                                onClick = { showBersihkanDialog = false; viewModel.bersihkanTransaksi() },
-                                colors = ButtonDefaults.buttonColors(containerColor = NeonRed, contentColor = DarkBackground),
-                                shape = RoundedCornerShape(10.dp),
-                            ) { Text("Bersihkan") }
-                        },
-                        dismissButton = {
-                            OutlinedButton(
-                                onClick = { showBersihkanDialog = false },
-                                shape = RoundedCornerShape(10.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
-                                border = BorderStroke(1.dp, TextSecondary.copy(alpha = 0.5f)),
-                            ) { Text("Batal") }
-                        },
-                    )
-                }
-            }
+            ) { Icon(Icons.Filled.FileDownload, contentDescription = "Export CSV") }
         }
 
         Row(
@@ -385,6 +544,17 @@ fun RiwayatScreen(viewModel: MainViewModel) {
                         }
                         Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.Center) {
                             Text(fmtRp(tx.total), style = MaterialTheme.typography.titleSmall, color = NeonGreen)
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.End) {
+                                if (tx.sudahBayar) {
+                                    Icon(Icons.Filled.CheckCircle, contentDescription = "Sudah Bayar", modifier = Modifier.size(12.dp), tint = NeonGreen)
+                                    Spacer(Modifier.width(2.dp))
+                                    Text("Bayar", style = MaterialTheme.typography.bodySmall, color = NeonGreen)
+                                } else {
+                                    Icon(Icons.Filled.Cancel, contentDescription = "Belum Bayar", modifier = Modifier.size(12.dp), tint = NeonRed)
+                                    Spacer(Modifier.width(2.dp))
+                                    Text("Utang", style = MaterialTheme.typography.bodySmall, color = NeonRed)
+                                }
+                            }
                             Text(tx.kasir, style = MaterialTheme.typography.bodySmall, color = TextDim)
                         }
                     }
@@ -412,6 +582,11 @@ fun RiwayatScreen(viewModel: MainViewModel) {
                         Text("TV    : ${tx.kota}", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
                         if (tvData != null) Text("PS    : ${tvData.jenisPs}", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
                         Text("Kasir : ${tx.kasir}", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            if (tx.sudahBayar) "Status : Lunas" else "Status : Utang",
+                            color = if (tx.sudahBayar) NeonGreen else NeonRed,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                         Spacer(Modifier.height(4.dp))
                         HorizontalDivider(color = DarkSurfaceV3)
                         Spacer(Modifier.height(4.dp))

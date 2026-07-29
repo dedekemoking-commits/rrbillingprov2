@@ -200,7 +200,7 @@ fun ProfileScreen(
                     Column(Modifier.padding(16.dp)) {
                         Text("MANAJEMEN KASIR", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
                         Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(value = regUser, onValueChange = { regUser = it; regMsg = "" }, label = { Text("Username baru") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
+                        OutlinedTextField(value = regUser, onValueChange = { regUser = it; regMsg = "" }, label = { Text("Username kasir") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
                         var regPassVisible by remember { mutableStateOf(false) }
                         OutlinedTextField(value = regPass, onValueChange = { regPass = it }, label = { Text("Password (min 6, huruf besar & angka)") }, singleLine = true, visualTransformation = if (regPassVisible) VisualTransformation.None else PasswordVisualTransformation(), trailingIcon = { IconButton(onClick = { regPassVisible = !regPassVisible }) { Icon(if (regPassVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, null, tint = TextSecondary) } }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
                         Spacer(Modifier.height(4.dp))
@@ -227,11 +227,46 @@ fun ProfileScreen(
 
                 }
 
-            // Theme Picker
+            // Theme Display
             Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
                 Column(Modifier.padding(16.dp)) {
                     Text("TEMA TAMPILAN", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
                     Spacer(Modifier.height(8.dp))
+
+                    // Background picker
+                    Text("Background", style = MaterialTheme.typography.labelSmall, color = NeonPurple)
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        BackgroundOption.entries.forEach { opt ->
+                            val selected = state.backgroundOption == opt
+                            val bgColor = opt.colors.darkBackground
+                            val surfaceColor = opt.colors.darkSurface
+                            FilterChip(
+                                selected = selected,
+                                onClick = { viewModel.setBackgroundOption(opt) },
+                                label = { Text(opt.displayName, style = MaterialTheme.typography.labelSmall) },
+                                leadingIcon = {
+                                    Box(
+                                        modifier = Modifier.size(12.dp)
+                                            .border(0.5.dp, TextDim.copy(alpha = 0.3f), RoundedCornerShape(2.dp))
+                                            .background(bgColor, RoundedCornerShape(2.dp))
+                                    )
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = NeonCyan.copy(alpha = 0.15f),
+                                    selectedLabelColor = NeonCyan,
+                                ),
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    Divider(color = DarkSurfaceV3, thickness = 0.5.dp)
+
+                    // Font theme sub-section
+                    Spacer(Modifier.height(8.dp))
+                    Text("Tampilan Font", style = MaterialTheme.typography.labelSmall, color = NeonCyan)
+                    Spacer(Modifier.height(4.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         ThemeOption.entries.forEach { opt ->
                             val selected = state.themeOption == opt
@@ -241,6 +276,7 @@ fun ProfileScreen(
                                 ThemeOption.NEON_PURPLE -> Color(0xFFBB00FF)
                                 ThemeOption.CLASSIC_DARK -> Color(0xFF4CAF50)
                                 ThemeOption.LIGHT_MODE -> Color(0xFF388E3C)
+                                ThemeOption.TOSCA_GREEN -> Color(0xFF00C9A7)
                             }
                             FilterChip(
                                 selected = selected,
@@ -513,6 +549,7 @@ fun ProfileScreen(
                         var rentalNama by remember { mutableStateOf(currentUser?.namaRental ?: "") }
                         var rentalAlamat by remember { mutableStateOf(currentUser?.alamatRental ?: "") }
                         var rentalWa by remember { mutableStateOf(currentUser?.whatsappRental ?: "") }
+                        var rentalError by remember { mutableStateOf("") }
                         OutlinedButton(
                             onClick = { rentalNama = currentUser?.namaRental ?: ""; rentalAlamat = currentUser?.alamatRental ?: ""; rentalWa = currentUser?.whatsappRental ?: ""; showRentalDialog = true },
                             modifier = Modifier.fillMaxWidth(),
@@ -561,7 +598,7 @@ fun ProfileScreen(
                                         Spacer(Modifier.height(8.dp))
                                         OutlinedTextField(
                                             value = rentalWa,
-                                            onValueChange = { rentalWa = it },
+                                            onValueChange = { rentalWa = it; rentalError = "" },
                                             label = { Text("No. WhatsApp") },
                                             singleLine = true,
                                             modifier = Modifier.fillMaxWidth(),
@@ -572,11 +609,19 @@ fun ProfileScreen(
                                                 focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
                                             ),
                                         )
+                                        if (rentalError.isNotEmpty()) {
+                                            Spacer(Modifier.height(4.dp))
+                                            Text(rentalError, color = NeonRed, style = MaterialTheme.typography.bodySmall)
+                                        }
                                     }
                                 },
                                 confirmButton = {
                                     Button(
                                         onClick = {
+                                            if (rentalWa.isBlank()) {
+                                                rentalError = "No. WhatsApp wajib diisi"
+                                                return@Button
+                                            }
                                             viewModel.updateDataRental(rentalNama, rentalAlamat, rentalWa)
                                             showRentalDialog = false
                                         },

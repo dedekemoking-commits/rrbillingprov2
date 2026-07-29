@@ -18,19 +18,50 @@ object FcmSender {
     private var cachedAccessToken: String? = null
     private var tokenExpiresAt: Long = 0L
     private var serviceAccountJson: String? = null
+    // Track if FCM is authorized to prevent abuse
+    private var authorizedRole: String = ""
 
     fun init(context: Context) {
-        try {
-            val inputStream = context.resources.openRawResource(
-                context.resources.getIdentifier("fcm_key", "raw", context.packageName)
-            )
-            serviceAccountJson = inputStream.bufferedReader().use { it.readText() }
-        } catch (e: Exception) {
-            Log.e("FcmSender", "init failed: ${e.message}")
+        // Load FCM service account from encrypted storage (not bundled in APK)
+        StorageUtil.init(context)
+        val stored = StorageUtil.loadFcmServiceAccount()
+        if (stored != null) {
+            serviceAccountJson = stored
+            Log.i("FcmSender", "FCM service account loaded from secure storage")
+        } else {
+            // Fallback: try to load from raw resource (legacy)
+            try {
+                val inputStream = context.resources.openRawResource(
+                    context.resources.getIdentifier("fcm_key", "raw", context.packageName)
+                )
+                if (inputStream != null) {
+                    serviceAccountJson = inputStream.bufferedReader().use { it.readText() }
+                    // Migrate to secure storage
+                    if (serviceAccountJson != null) {
+                        StorageUtil.saveFcmServiceAccount(serviceAccountJson!!)
+                    }
+                    Log.i("FcmSender", "FCM service account migrated from raw resource to secure storage")
+                }
+            } catch (e: Exception) {
+                Log.w("FcmSender", "No FCM service account configured — notifications disabled until admin configures it")
+            }
         }
     }
 
+    /**
+     * Only admin users can send Firebase notifications.
+     * Call this from ViewModel to set the current user's role before sending.
+     */
+    fun setAuthorizedRole(role: String) {
+        authorizedRole = role
+    }
+
     suspend fun sendToUser(token: String, title: String, body: String) {
+        // Authorization check: only admin can send notifications
+        if (authorizedRole != "admin") {
+            Log.w("FcmSender", "sendToUser blocked: only admin can send notifications (current role: $authorizedRole)")
+            return
+        }
         if (serviceAccountJson == null) {
             Log.w("FcmSender", "Service account not configured")
             return

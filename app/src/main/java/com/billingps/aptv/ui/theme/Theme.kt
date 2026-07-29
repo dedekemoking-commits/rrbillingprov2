@@ -20,14 +20,11 @@ enum class ThemeOption(val displayName: String, val palette: ThemeColors) {
     NEON_PURPLE("Neon Purple", NeonPurplePalette),
     CLASSIC_DARK("Classic Dark", ClassicDarkPalette),
     LIGHT_MODE("Light Mode", LightModePalette),
+    TOSCA_GREEN("Tosca Green", ToscaGreenPalette),
 }
 
-fun applyTheme(option: ThemeOption) {
+fun applyFontTheme(option: ThemeOption) {
     val p = option.palette
-    DarkBackground = p.darkBackground
-    DarkSurface = p.darkSurface
-    DarkSurfaceV2 = p.darkSurfaceV2
-    DarkSurfaceV3 = p.darkSurfaceV3
     NeonGreen = p.neonGreen
     NeonGreenDim = p.neonGreenDim
     NeonGreenGlow = p.neonGreenGlow
@@ -44,10 +41,19 @@ fun applyTheme(option: ThemeOption) {
     TextOnGreen = p.textOnGreen
 }
 
+fun applyBackground(option: BackgroundOption) {
+    val b = option.colors
+    DarkBackground = b.darkBackground
+    DarkSurface = b.darkSurface
+    DarkSurfaceV2 = b.darkSurfaceV2
+    DarkSurfaceV3 = b.darkSurfaceV3
+}
+
 @Composable
-fun colorSchemeFor(option: ThemeOption): ColorScheme {
-    val p = option.palette
-    return if (option == ThemeOption.LIGHT_MODE) {
+fun colorSchemeFor(fontOption: ThemeOption, bgOption: BackgroundOption): ColorScheme {
+    val p = fontOption.palette
+    val b = bgOption.colors
+    return if (fontOption == ThemeOption.LIGHT_MODE || fontOption == ThemeOption.TOSCA_GREEN) {
         lightColorScheme(
             primary = p.neonGreen,
             onPrimary = p.textOnGreen,
@@ -59,18 +65,18 @@ fun colorSchemeFor(option: ThemeOption): ColorScheme {
             onSecondaryContainer = p.neonCyan,
             tertiary = p.neonPurple,
             onTertiary = p.textOnGreen,
-            background = p.darkBackground,
+            background = b.darkBackground,
             onBackground = p.textPrimary,
-            surface = p.darkSurface,
+            surface = b.darkSurface,
             onSurface = p.textPrimary,
-            surfaceVariant = p.darkSurfaceV2,
+            surfaceVariant = b.darkSurfaceV2,
             onSurfaceVariant = p.textSecondary,
             error = p.neonRed,
             onError = p.textPrimary,
             errorContainer = Color(0xFFFFCDD2),
             onErrorContainer = p.neonRed,
             outline = p.neonGreenDim,
-            outlineVariant = p.darkSurfaceV3,
+            outlineVariant = b.darkSurfaceV3,
         )
     } else {
         darkColorScheme(
@@ -84,18 +90,18 @@ fun colorSchemeFor(option: ThemeOption): ColorScheme {
             onSecondaryContainer = p.neonCyan,
             tertiary = p.neonPurple,
             onTertiary = p.textOnGreen,
-            background = p.darkBackground,
+            background = b.darkBackground,
             onBackground = p.textPrimary,
-            surface = p.darkSurface,
+            surface = b.darkSurface,
             onSurface = p.textPrimary,
-            surfaceVariant = p.darkSurfaceV2,
+            surfaceVariant = b.darkSurfaceV2,
             onSurfaceVariant = p.textSecondary,
             error = p.neonRed,
             onError = p.textPrimary,
             errorContainer = Color(0xFF33000A),
             onErrorContainer = p.neonRed,
             outline = p.neonGreenDim,
-            outlineVariant = p.darkSurfaceV3,
+            outlineVariant = b.darkSurfaceV3,
         )
     }
 }
@@ -106,14 +112,16 @@ private val OrbitronFamily = FontFamily(
 
 @Composable
 fun BillingPSTheme(
-    themeOption: ThemeOption = ThemeOption.GAMING_DARK,
+    fontTheme: ThemeOption = ThemeOption.GAMING_DARK,
+    bgTheme: BackgroundOption = BackgroundOption.AMOLED_BLACK,
     content: @Composable () -> Unit,
 ) {
-    LaunchedEffect(themeOption) {
-        applyTheme(themeOption)
+    LaunchedEffect(fontTheme, bgTheme) {
+        applyFontTheme(fontTheme)
+        applyBackground(bgTheme)
     }
     MaterialTheme(
-        colorScheme = colorSchemeFor(themeOption),
+        colorScheme = colorSchemeFor(fontTheme, bgTheme),
         typography = androidx.compose.material3.Typography(
             displayLarge = TextStyle(fontFamily = OrbitronFamily, fontWeight = FontWeight.Black, fontSize = 24.sp, letterSpacing = 1.sp),
             displayMedium = TextStyle(fontFamily = OrbitronFamily, fontWeight = FontWeight.Bold, fontSize = 20.sp, letterSpacing = 0.5.sp),

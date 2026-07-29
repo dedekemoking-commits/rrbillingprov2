@@ -26,7 +26,12 @@ import java.security.Signature
 import java.security.spec.PKCS8EncodedKeySpec
 
 private const val SUPER_ADMIN_USER = "rrbilling"
+private const val SUPER_ADMIN_USER_2 = "rrlisensi"
 private const val SUPER_ADMIN_PASS = "@rrcctv5555"
+private val ADMIN_USERS = mapOf(
+    SUPER_ADMIN_USER to SUPER_ADMIN_PASS,
+    SUPER_ADMIN_USER_2 to SUPER_ADMIN_PASS,
+)
 private var cachedAccessToken: String? = null
 private var tokenExpiresAt: Long = 0L
 
@@ -37,6 +42,8 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
     private var usersListener: ListenerRegistration? = null
     private var invoicesListener: ListenerRegistration? = null
     private var promoListener: ListenerRegistration? = null
+    private var licenseRequestListener: ListenerRegistration? = null
+    private var historyListener: ListenerRegistration? = null
 
     var isLoggedIn by mutableStateOf(false); private set
     var currentUser by mutableStateOf(""); private set
@@ -45,6 +52,21 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
     var invoiceList by mutableStateOf(listOf<Invoice>()); private set
     var firestoreReady by mutableStateOf(false); private set
     var promo by mutableStateOf(PromoSettings()); private set
+    var historyList by mutableStateOf(listOf<LicenseRecord>()); private set
+
+    data class LicenseRequest(
+        val id: String = "",
+        val user: String = "",
+        val paket: String = "",
+        val harga: Int = 0,
+        val invoiceId: String = "",
+        val title: String = "",
+        val body: String = "",
+        val sentAt: Long = 0L,
+        val read: Boolean = false,
+    )
+    var licenseRequests by mutableStateOf(listOf<LicenseRequest>()); private set
+    var pendingRequestCount by mutableStateOf(0); private set
 
     init {
         ECDSAUtils.init(application)
@@ -70,42 +92,53 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
             }
             firestoreReady = true
             Log.i("LicenseGen", "firestoreReady=true, isLoggedIn=$isLoggedIn")
+            startNotificationListener()
             if (isLoggedIn) startListening()
         }
     }
 
-    fun login(password: String, onResult: (Boolean, String) -> Unit) {
+    fun login(username: String, password: String, onResult: (Boolean, String) -> Unit) {
+        val expectedPass = ADMIN_USERS[username] ?: run { onResult(false, "Username tidak dikenal"); return }
         val hash = MessageDigest.getInstance("SHA-256").digest(password.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
-        val expected = MessageDigest.getInstance("SHA-256").digest(SUPER_ADMIN_PASS.toByteArray(Charsets.UTF_8))
+        val expected = MessageDigest.getInstance("SHA-256").digest(expectedPass.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
         if (hash != expected) {
             onResult(false, "Password salah")
             return
         }
         isLoggedIn = true
-        currentUser = SUPER_ADMIN_USER
-        Log.i("LicenseGen", "login success, firestoreReady=$firestoreReady, calling startListening")
+        currentUser = username
+        Log.i("LicenseGen", "login success as $username, firestoreReady=$firestoreReady, calling startListening")
         startListening()
         onResult(true, "")
     }
 
-    fun setPromo(promoAktif: Boolean, diskonPerPaket: Map<String, Int>, addTvOverride: Map<String, Int>, onResult: (Boolean, String) -> Unit) {
+    fun setPromo(promoAktif: Boolean, diskonPerPaket: Map<String, Int>, addTvOverride: Map<String, Int>, promoDurationHours: Int = 0, onResult: (Boolean, String) -> Unit) {
         viewModelScope.launch {
             try {
+                val now = System.currentTimeMillis()
                 val data = HashMap<String, Any>()
                 data["promoAktif"] = promoAktif
                 data["diskonPerPaket"] = diskonPerPaket.mapValues { it.value.coerceIn(0, 100) }
                 data["addTvOverride"] = addTvOverride
                 data["updatedBy"] = currentUser
-                data["updatedAt"] = System.currentTimeMillis()
+                data["updatedAt"] = now
+                data["promoDurationHours"] = promoDurationHours.coerceAtLeast(0)
+                if (promoAktif && !promo.promoAktif) {
+                    data["promoStartedAt"] = now
+                } else if (!promoAktif) {
+                    data["promoStartedAt"] = 0
+                }
                 firestore.document("settings/global").set(data, SetOptions.merge()).await()
                 promo = PromoSettings(
                     promoAktif = promoAktif,
                     diskonPerPaket = diskonPerPaket.mapValues { it.value.coerceIn(0, 100) },
                     addTvOverride = addTvOverride,
                     updatedBy = currentUser,
-                    updatedAt = System.currentTimeMillis(),
+                    updatedAt = now,
+                    promoDurationHours = promoDurationHours.coerceAtLeast(0),
+                    promoStartedAt = if (promoAktif && !promo.promoAktif) now else promo.promoStartedAt,
                 )
                 onResult(true, "Promo tersimpan!")
             } catch (e: Exception) {
@@ -164,6 +197,26 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun markLicenseRequestsRead() {
+        pendingRequestCount = 0
+        licenseRequests = licenseRequests.map { it.copy(read = true) }
+        viewModelScope.launch {
+            try {
+                firestore.collection("notifications")
+                    .whereEqualTo("type", "license_request")
+                    .whereEqualTo("read", false)
+                    .get()
+                    .addOnSuccessListener { snap ->
+                        for (doc in snap.documents) {
+                            doc.reference.update("read", true)
+                        }
+                    }
+            } catch (e: Exception) {
+                Log.e("LicenseGen", "markLicenseRequestsRead error: ${e.message}")
+            }
+        }
+    }
+
     fun signOut() {
         isLoggedIn = false
         currentUser = ""
@@ -173,9 +226,49 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
         invoicesListener = null
         promoListener?.remove()
         promoListener = null
+        historyListener?.remove()
+        historyListener = null
         userList = emptyList()
         invoiceList = emptyList()
         promo = PromoSettings()
+        historyList = emptyList()
+    }
+
+    private fun startNotificationListener() {
+        licenseRequestListener?.remove()
+        licenseRequestListener = firestore.collection("notifications")
+            .whereEqualTo("type", "license_request")
+            .addSnapshotListener { snap, error ->
+                if (error != null) { Log.e("LicenseGen", "licenseRequest listen error: ${error.message}"); return@addSnapshotListener }
+                if (snap == null) return@addSnapshotListener
+                val all = snap.documents.mapNotNull { doc ->
+                    val d = doc.data ?: return@mapNotNull null
+                    LicenseRequest(
+                        id = doc.id,
+                        user = d["user"] as? String ?: "",
+                        paket = d["paket"] as? String ?: "",
+                        harga = (d["harga"] as? Number)?.toInt() ?: 0,
+                        invoiceId = d["invoiceId"] as? String ?: "",
+                        title = d["title"] as? String ?: "",
+                        body = d["body"] as? String ?: "",
+                        sentAt = d["sentAt"] as? Long ?: 0L,
+                        read = d["read"] as? Boolean ?: false,
+                    )
+                }.sortedByDescending { it.sentAt }.take(50)
+                val previousCount = pendingRequestCount
+                licenseRequests = all
+                pendingRequestCount = all.count { !it.read }
+                if (pendingRequestCount > previousCount && previousCount >= 0) {
+                    Log.i("LicenseGen", "New license request detected! count=$pendingRequestCount")
+                    val latest = all.firstOrNull { !it.read }
+                    if (latest != null) {
+                        val title = "Request Lisensi Baru"
+                        val body = "${latest.user} — ${latest.paket} (Rp${String.format("%,d", latest.harga)})"
+                        NotificationHelper.show(title, body)
+                    }
+                }
+                Log.i("LicenseGen", "licenseRequest snapshot: ${all.size} docs")
+            }
     }
 
     private fun startListening() {
@@ -192,29 +285,52 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                         // Individual user doc created by main app sync
                         val username = data["username"] as? String ?: continue
                         val existing = allUsers[username]
+                        val existingWa = existing?.whatsapp ?: data["whatsappRental"] as? String ?: ""
                         val u = FirestoreUser(
                             username = username,
                             role = data["role"] as? String ?: "",
                             email = data["email"] as? String ?: "",
                             dibuat = data["dibuat"] as? String ?: "",
+                            whatsapp = existingWa.ifEmpty { data["whatsappRental"] as? String ?: "" },
                         )
                         if (existing == null || u.email.isNotBlank() || existing.email.isBlank()) {
                             allUsers[username] = u
                         }
                     } else {
-                        // Backward compat: read nested "users" map from device sync docs
-                        val usersRaw = data["users"] as? Map<*, *> ?: continue
-                        for ((key, value) in usersRaw) {
-                            if (key !is String || value !is Map<*, *>) continue
-                            val existing = allUsers[key]
+                        // Main user doc (sync payload) or backward compat device sync doc
+                        val username = doc.id
+                        if (username.startsWith("_")) {
+                            // Skip docs starting with underscore that aren't _user_
+                            val usersRaw = data["users"] as? Map<*, *> ?: continue
+                            for ((key, value) in usersRaw) {
+                                if (key !is String || value !is Map<*, *>) continue
+                                val existing = allUsers[key]
+                                val u = FirestoreUser(
+                                    username = key,
+                                    role = value["role"] as? String ?: "",
+                                    email = value["email"] as? String ?: "",
+                                    dibuat = value["dibuat"] as? String ?: "",
+                                )
+                                if (existing == null || u.email.isNotBlank() || existing.email.isBlank()) {
+                                    allUsers[key] = u
+                                }
+                            }
+                        } else {
+                            // Main user doc with appVersion
+                            val existing = allUsers[username]
+                            val currentUser = data["currentUser"] as? String ?: username
+                            val wa = existing?.whatsapp ?: data["whatsappRental"] as? String ?: ""
                             val u = FirestoreUser(
-                                username = key,
-                                role = value["role"] as? String ?: "",
-                                email = value["email"] as? String ?: "",
-                                dibuat = value["dibuat"] as? String ?: "",
+                                username = currentUser,
+                                role = existing?.role ?: "",
+                                email = existing?.email ?: (data["email"] as? String ?: ""),
+                                dibuat = existing?.dibuat ?: "",
+                                appVersion = data["appVersion"] as? String ?: "",
+                                whatsapp = wa,
+                                lastActive = (data["lastActive"] as? Number)?.toLong() ?: 0L,
                             )
                             if (existing == null || u.email.isNotBlank() || existing.email.isBlank()) {
-                                allUsers[key] = u
+                                allUsers[currentUser] = u
                             }
                         }
                     }
@@ -257,6 +373,8 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                     newUserDiscountPercent = newUserDiscountPercent,
                     newUserPromoDurationHours = newUserPromoDurationHours,
                     newUserDiskonPerPaket = newUserDiskonPerPaket,
+                    promoStartedAt = snap.getLong("promoStartedAt") ?: 0L,
+                    promoDurationHours = (snap.get("promoDurationHours") as? Number)?.toInt() ?: 0,
                 )
             }
 
@@ -282,6 +400,32 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                     )
                 }.sortedByDescending { it.dibuat }
                 Log.i("LicenseGen", "invoices snapshot: ${invoiceList.size} invoices")
+            }
+
+        historyListener?.remove()
+        historyListener = firestore.collection("licenses")
+            .whereEqualTo("generatedBy", currentUser)
+            .limit(100)
+            .addSnapshotListener { snap, error ->
+                if (error != null) { Log.e("LicenseGen", "history listen error: ${error.message}"); return@addSnapshotListener }
+                if (snap == null) return@addSnapshotListener
+                historyList = snap.documents.mapNotNull { doc ->
+                    val d = doc.data ?: return@mapNotNull null
+                    LicenseRecord(
+                        id = doc.id, kode = d["kode"] as? String ?: "",
+                        payload = d["payload"] as? String ?: "",
+                        signature = d["signature"] as? String ?: "",
+                        paket = d["paket"] as? String ?: "",
+                        username = d["username"] as? String ?: "",
+                        email = d["email"] as? String ?: "",
+                        expiry = d["expiry"] as? String ?: "",
+                        generatedBy = d["generatedBy"] as? String ?: "",
+                        generatedAt = d["generatedAt"] as? Long ?: 0,
+                        activatedAt = d["activatedAt"] as? Long ?: 0,
+                        revoked = d["revoked"] as? Boolean ?: false,
+                    )
+                }.sortedByDescending { it.generatedAt }
+                Log.i("LicenseGen", "history snapshot: ${historyList.size} records")
             }
     }
 
@@ -467,6 +611,7 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                         generatedBy = d["generatedBy"] as? String ?: "",
                         generatedAt = d["generatedAt"] as? Long ?: 0,
                         activatedAt = d["activatedAt"] as? Long ?: 0,
+                        revoked = d["revoked"] as? Boolean ?: false,
                     )
                 }
                 val sorted = list.sortedByDescending { it.generatedAt }
@@ -477,6 +622,33 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                 Log.e("LicenseGen", "getHistory failed: ${ex.message}")
                 cont.resume(emptyList())
             }
+    }
+
+    fun deleteUser(username: String, onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                firestore.collection("billingps_users").document(username).delete().await()
+                // Also delete _user_ doc if exists
+                try {
+                    firestore.collection("billingps_users").document("_user_$username").delete().await()
+                } catch (_: Exception) {}
+                onResult(true, "User $username berhasil dihapus")
+            } catch (e: Exception) {
+                onResult(false, "Gagal hapus user: ${e.message}")
+            }
+        }
+    }
+
+    fun revokeLicense(licenseId: String, onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                firestore.collection("licenses").document(licenseId)
+                    .update("revoked", true, "revokedAt", System.currentTimeMillis(), "revokedBy", currentUser).await()
+                onResult(true, "Lisensi dinonaktifkan")
+            } catch (e: Exception) {
+                onResult(false, "Gagal: ${e.message}")
+            }
+        }
     }
 
     fun sendPopupToUser(username: String, title: String, body: String) {
@@ -697,6 +869,8 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
         usersListener?.remove()
         invoicesListener?.remove()
         promoListener?.remove()
+        licenseRequestListener?.remove()
+        historyListener?.remove()
         super.onCleared()
     }
 }

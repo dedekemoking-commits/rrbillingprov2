@@ -28,6 +28,46 @@ var TextSecondary by mutableStateOf(Color(0xFFAAAAAA))
 var TextDim by mutableStateOf(Color(0xFF666666))
 var TextOnGreen by mutableStateOf(Color(0xFF0A0A0A))
 
+data class BackgroundColors(
+    val darkBackground: Color,
+    val darkSurface: Color,
+    val darkSurfaceV2: Color,
+    val darkSurfaceV3: Color,
+)
+
+enum class BackgroundOption(val displayName: String, val colors: BackgroundColors) {
+    AMOLED_BLACK("AMOLED Black", BackgroundColors(
+        darkBackground = Color(0xFF000000),
+        darkSurface = Color(0xFF161616),
+        darkSurfaceV2 = Color(0xFF1E1E1E),
+        darkSurfaceV3 = Color(0xFF262626),
+    )),
+    GITHUB_DARK("GitHub Dark", BackgroundColors(
+        darkBackground = Color(0xFF0D1117),
+        darkSurface = Color(0xFF161B22),
+        darkSurfaceV2 = Color(0xFF1C2128),
+        darkSurfaceV3 = Color(0xFF21262D),
+    )),
+    ELEGANT_DARK("Elegant Dark", BackgroundColors(
+        darkBackground = Color(0xFF0F0F0F),
+        darkSurface = Color(0xFF1C1C1C),
+        darkSurfaceV2 = Color(0xFF242424),
+        darkSurfaceV3 = Color(0xFF2C2C2C),
+    )),
+    SLATE_DARK("Slate Dark", BackgroundColors(
+        darkBackground = Color(0xFF111318),
+        darkSurface = Color(0xFF1C1E24),
+        darkSurfaceV2 = Color(0xFF252830),
+        darkSurfaceV3 = Color(0xFF2D3038),
+    )),
+    DEEP_MIDNIGHT("Deep Midnight", BackgroundColors(
+        darkBackground = Color(0xFF0A0E17),
+        darkSurface = Color(0xFF141A26),
+        darkSurfaceV2 = Color(0xFF1C2333),
+        darkSurfaceV3 = Color(0xFF242B3D),
+    )),
+}
+
 data class ThemeColors(
     val darkBackground: Color,
     val darkSurface: Color,
@@ -148,6 +188,27 @@ val LightModePalette = ThemeColors(
     neonOrange = Color(0xFFE65100),
     gamersGreenDark = Color(0xFFC8E6C9),
     gamersGreenMedium = Color(0xFFA5D6A7),
+    textPrimary = Color(0xFF1A1A1A),
+    textSecondary = Color(0xFF555555),
+    textDim = Color(0xFF999999),
+    textOnGreen = Color(0xFFFFFFFF),
+)
+
+val ToscaGreenPalette = ThemeColors(
+    darkBackground = Color(0xFFF0FDF4),
+    darkSurface = Color(0xFFFFFFFF),
+    darkSurfaceV2 = Color(0xFFE8F5E9),
+    darkSurfaceV3 = Color(0xFFC8E6C9),
+    neonGreen = Color(0xFF00C9A7),
+    neonGreenDim = Color(0xFF00A88E),
+    neonGreenGlow = Color(0x8800C9A7),
+    neonCyan = Color(0xFF26C6DA),
+    neonPurple = Color(0xFFAB47BC),
+    neonRed = Color(0xFFEF5350),
+    neonYellow = Color(0xFFFFCA28),
+    neonOrange = Color(0xFFFF7043),
+    gamersGreenDark = Color(0xFFB2DFDB),
+    gamersGreenMedium = Color(0xFF80CBC4),
     textPrimary = Color(0xFF1A1A1A),
     textSecondary = Color(0xFF555555),
     textDim = Color(0xFF999999),

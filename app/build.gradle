@@ -27,6 +27,7 @@ android {
                 install "androidtvremote2==0.0.13"
                 install "cryptography==3.3.2"
                 install "zeroconf==0.132.2"
+                install "adb-shell"
             }
         }
     }

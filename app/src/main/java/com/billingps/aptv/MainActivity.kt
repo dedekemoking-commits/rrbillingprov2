@@ -25,6 +25,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import java.text.SimpleDateFormat
+import java.util.*
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -68,7 +73,7 @@ class MainActivity : AppCompatActivity() {
             val mainViewModel: MainViewModel = viewModel()
             val tvViewModel: TvViewModel = viewModel()
             val mainState by mainViewModel.state.collectAsStateWithLifecycle()
-            BillingPSTheme(themeOption = mainState.themeOption) {
+            BillingPSTheme(fontTheme = mainState.themeOption, bgTheme = mainState.backgroundOption) {
                 AppRoot(mainViewModel, tvViewModel)
             }
         }
@@ -124,8 +129,24 @@ fun AppRoot(
         })
     }
 
-    // Promo popup
+    // Promo popup with countdown
     if (mainState.showPromoPopup) {
+        var remainingText by remember { mutableStateOf("") }
+        LaunchedEffect(mainState.promoEndTimeMs) {
+            while (isActive) {
+                val now = System.currentTimeMillis()
+                val diff = mainState.promoEndTimeMs - now
+                if (diff <= 0) {
+                    remainingText = "Promo telah berakhir!"
+                } else {
+                    val h = diff / 3600000L
+                    val m = (diff % 3600000L) / 60000L
+                    val s = (diff % 60000L) / 1000L
+                    remainingText = "⏱ Sisa: ${h}j ${m}m ${s}d"
+                }
+                delay(1000)
+            }
+        }
         AlertDialog(
             onDismissRequest = { mainViewModel.dismissPromoPopup() },
             containerColor = DarkSurface,
@@ -135,6 +156,10 @@ fun AppRoot(
             text = {
                 Column {
                     Text(mainState.promoPopupBody, color = TextPrimary)
+                    Spacer(Modifier.height(8.dp))
+                    if (remainingText.isNotEmpty()) {
+                        Text(remainingText, color = NeonCyan, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+                    }
                     Spacer(Modifier.height(12.dp))
                     Text("Cek detail promo di menu Profil → Notifikasi.", style = MaterialTheme.typography.bodySmall, color = TextDim)
                 }
@@ -332,10 +357,11 @@ fun NotificationPermissionDialog(onDismiss: () -> Unit) {
 }
 
 enum class BottomTab(val title: String, val icon: ImageVector) {
-    DASHBOARD("Dashboard", Icons.Filled.Home),
+    TV("TV", Icons.Filled.Tv),
     RIWAYAT("Riwayat", Icons.Filled.History),
-    KONTROL_HARGA("Harga", Icons.Filled.Star),
-    VERIFIKASI("Verifikasi", Icons.Filled.Verified),
+    HARGA("Harga", Icons.Filled.AttachMoney),
+    CLIENT("Client", Icons.Filled.Android),
+    LISENSI("Lisensi", Icons.Filled.Verified),
     PROFILE("Profile", Icons.Filled.Person),
 }
 
@@ -359,13 +385,15 @@ fun MainScreen(
     DisposableEffect(Unit) { onDispose { connectivityObserver.stop() } }
     val tabList = remember(role) {
         when (role) {
-            "kasir" -> listOf(BottomTab.DASHBOARD, BottomTab.RIWAYAT, BottomTab.VERIFIKASI)
+            "kasir" -> listOf(BottomTab.TV, BottomTab.RIWAYAT, BottomTab.LISENSI)
             else -> BottomTab.entries.toList()
         }
     }
-    var selectedTab by remember { mutableStateOf(BottomTab.DASHBOARD) }
+    var selectedTab by remember { mutableStateOf(BottomTab.TV) }
+    var showLockedDialog by remember { mutableStateOf(false) }
+    val unlockTabs = listOf(BottomTab.RIWAYAT, BottomTab.LISENSI, BottomTab.PROFILE)
 
-    LaunchedEffect(role) { selectedTab = BottomTab.DASHBOARD }
+    LaunchedEffect(role) { selectedTab = BottomTab.TV }
 
     Scaffold(
         bottomBar = {
@@ -373,9 +401,15 @@ fun MainScreen(
                 tabList.forEach { tab ->
                     NavigationBarItem(
                         selected = selectedTab == tab,
-                        onClick = { selectedTab = tab },
+                        onClick = {
+                            if (isLocked && tab !in unlockTabs) {
+                                showLockedDialog = true
+                            } else {
+                                selectedTab = tab
+                            }
+                        },
                         icon = {
-                            if (tab == BottomTab.VERIFIKASI && pendingCount > 0) {
+                            if (tab == BottomTab.LISENSI && pendingCount > 0) {
                                 BadgedBox(badge = { Badge { Text("$pendingCount") } }) {
                                     Icon(tab.icon, contentDescription = tab.title)
                                 }
@@ -424,11 +458,36 @@ fun MainScreen(
                     }
                 }
             }
+            if (showLockedDialog) {
+                AlertDialog(
+                    onDismissRequest = { showLockedDialog = false },
+                    containerColor = DarkSurface,
+                    title = { Text("LISENSI TIDAK AKTIF", color = NeonRed, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) },
+                    text = {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Filled.Lock, contentDescription = null, tint = NeonRed, modifier = Modifier.size(40.dp))
+                            Spacer(Modifier.height(12.dp))
+                            Text("Aktifkan lisensi terlebih dahulu melalui menu Profil > Aktivasi Lisensi", color = TextPrimary, textAlign = TextAlign.Center)
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = { showLockedDialog = false; selectedTab = BottomTab.PROFILE },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground),
+                        ) { Text("Buka Profil") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showLockedDialog = false }) { Text("Tutup", color = TextDim) }
+                    },
+                )
+            }
             when (selectedTab) {
-                BottomTab.DASHBOARD -> DashboardScreen(mainViewModel, tvViewModel)
+                BottomTab.TV -> DashboardScreen(mainViewModel, tvViewModel)
                 BottomTab.RIWAYAT -> RiwayatScreen(mainViewModel)
-                BottomTab.KONTROL_HARGA -> KontrolHargaScreen(mainViewModel)
-                BottomTab.VERIFIKASI -> VerifikasiScreen(mainViewModel)
+                BottomTab.HARGA -> KontrolHargaScreen(mainViewModel)
+                BottomTab.CLIENT -> ClientScreen(mainViewModel, tvViewModel)
+                BottomTab.LISENSI -> VerifikasiScreen(mainViewModel)
                 BottomTab.PROFILE -> ProfileScreen(mainViewModel, onLogout = { mainViewModel.logout() })
             }
         }

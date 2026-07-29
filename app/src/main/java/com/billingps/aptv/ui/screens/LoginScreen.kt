@@ -53,6 +53,7 @@ fun LoginScreen(
     var regUser by remember { mutableStateOf("") }
     var regPass by remember { mutableStateOf("") }
     var regEmail by remember { mutableStateOf("") }
+    var regNoHp by remember { mutableStateOf("") }
     var regMsg by remember { mutableStateOf("") }
     var regMsgOk by remember { mutableStateOf(false) }
     var regLoading by remember { mutableStateOf(false) }
@@ -307,6 +308,8 @@ fun LoginScreen(
                         OutlinedTextField(value = regPass, onValueChange = { regPass = it; regMsg = "" }, label = { Text("Password (min 6, huruf besar & angka)") }, singleLine = true, visualTransformation = if (regPassVisible) VisualTransformation.None else PasswordVisualTransformation(), trailingIcon = { IconButton(onClick = { regPassVisible = !regPassVisible }) { Icon(if (regPassVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, null, tint = TextSecondary) } }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
                         Spacer(Modifier.height(8.dp))
                         OutlinedTextField(value = regEmail, onValueChange = { regEmail = it }, label = { Text("Email (wajib untuk verifikasi)") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors())
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(value = regNoHp, onValueChange = { regNoHp = it; regMsg = "" }, label = { Text("No. HP Aktif (wajib)") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), colors = fieldColors(), keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Phone))
                         if (regMsg.isNotEmpty()) {
                             Spacer(Modifier.height(8.dp))
                             Text(regMsg, style = MaterialTheme.typography.bodySmall, color = if (regMsgOk) NeonGreen else NeonRed, textAlign = TextAlign.Center)
@@ -326,11 +329,11 @@ fun LoginScreen(
                                     regMsg = "Username sudah terdaftar"
                                     regMsgOk = false
                                 } else {
-                                    val result = viewModel.daftarUser(regUser, regPass, regEmail, "admin")
+                                    val result = viewModel.daftarUser(regUser, regPass, regEmail, "admin", regNoHp)
                                     regMsg = result.message
                                     regMsgOk = result.success
                                     if (result.success) {
-                                        regUser = ""; regPass = ""; regEmail = ""
+                                        regUser = ""; regPass = ""; regEmail = ""; regNoHp = ""
                                         showReg = false
                                     }
                                 }

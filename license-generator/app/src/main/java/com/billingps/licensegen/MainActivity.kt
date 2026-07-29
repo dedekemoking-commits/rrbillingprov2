@@ -3,6 +3,7 @@ package com.billingps.licensegen
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -39,6 +40,14 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.coroutines.launch
+import android.media.Ringtone
+import android.media.RingtoneManager
+import android.net.Uri
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 
 private val DarkBackground = Color(0xFF121212)
 private val DarkSurface = Color(0xFF1E1E1E)
@@ -54,8 +63,17 @@ private val TextSecondary = Color(0xFF9E9E9E)
 private val TextDim = Color(0xFF616161)
 
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        private const val PERMISSION_NOTIF = 9001
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        NotificationHelper.init(this)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            requestNotificationPermission()
+        }
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
@@ -64,6 +82,25 @@ class MainActivity : ComponentActivity() {
                 ),
                 content = { App() }
             )
+        }
+    }
+
+    private fun requestNotificationPermission() {
+        when {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED -> { /* already granted */ }
+            shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS) -> {
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), PERMISSION_NOTIF)
+            }
+            else -> {
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), PERMISSION_NOTIF)
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == PERMISSION_NOTIF && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            android.util.Log.i("MainActivity", "POST_NOTIFICATIONS granted")
         }
     }
 }
@@ -83,8 +120,10 @@ fun App(vm: LicenseGenViewModel = viewModel()) {
 
 @Composable
 fun LoginScreen(vm: LicenseGenViewModel) {
+    var username by remember { mutableStateOf("rrbilling") }
     var password by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf("") }
+    var showUserMenu by remember { mutableStateOf(false) }
 
     Box(Modifier.fillMaxSize().background(DarkBackground).padding(24.dp), contentAlignment = Alignment.Center) {
         Card(
@@ -105,7 +144,27 @@ fun LoginScreen(vm: LicenseGenViewModel) {
                 Text("Super Admin Only", style = MaterialTheme.typography.bodySmall, color = TextDim)
                 Spacer(Modifier.height(24.dp))
 
-                Text("rrbilling", style = MaterialTheme.typography.bodyMedium, color = TextSecondary, fontWeight = FontWeight.Bold)
+                Box {
+                    OutlinedTextField(value = username, onValueChange = { username = it; msg = "" },
+                        label = { Text("Username") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = NeonGreen, unfocusedBorderColor = DarkSurfaceV3,
+                            cursorColor = NeonGreen,
+                            unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                        ),
+                        trailingIcon = {
+                            IconButton(onClick = { showUserMenu = !showUserMenu }) {
+                                Icon(Icons.Filled.ArrowDropDown, contentDescription = "Pilih admin", tint = TextSecondary)
+                            }
+                        },
+                    )
+                    DropdownMenu(expanded = showUserMenu, onDismissRequest = { showUserMenu = false }) {
+                        DropdownMenuItem(text = { Text("rrbilling") }, onClick = { username = "rrbilling"; showUserMenu = false })
+                        DropdownMenuItem(text = { Text("rrlisensi") }, onClick = { username = "rrlisensi"; showUserMenu = false })
+                    }
+                }
+
                 Spacer(Modifier.height(8.dp))
 
                 OutlinedTextField(value = password, onValueChange = { password = it; msg = "" },
@@ -128,7 +187,7 @@ fun LoginScreen(vm: LicenseGenViewModel) {
 
                 Button(onClick = {
                     if (password.isBlank()) { msg = "Masukkan password"; return@Button }
-                    vm.login(password) { ok, err -> msg = if (ok) "" else err }
+                    vm.login(username, password) { ok, err -> msg = if (ok) "" else err }
                 }, modifier = Modifier.fillMaxWidth().height(48.dp),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) {
@@ -143,75 +202,123 @@ fun LoginScreen(vm: LicenseGenViewModel) {
 fun MainScreen(vm: LicenseGenViewModel) {
     var tab by remember { mutableIntStateOf(0) }
     val ctx = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    var prevRequestCount by remember { mutableIntStateOf(vm.pendingRequestCount) }
 
-    Column(Modifier.fillMaxSize().background(DarkBackground)) {
-        Surface(color = DarkSurface, modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("RR LICENSE GEN", style = MaterialTheme.typography.titleMedium, color = NeonGreen, modifier = Modifier.weight(1f))
-                Text("${vm.userList.size} user", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                Spacer(Modifier.width(8.dp))
-                IconButton(onClick = { vm.signOut() }) {
-                    Icon(Icons.Filled.ExitToApp, contentDescription = "Logout", tint = NeonRed)
-                }
+    LaunchedEffect(vm.pendingRequestCount) {
+        if (vm.pendingRequestCount > prevRequestCount && prevRequestCount > 0) {
+            val newRequests = vm.pendingRequestCount - prevRequestCount
+            scope.launch {
+                snackbarHostState.showSnackbar(
+                    "$newRequests request lisensi baru masuk!",
+                    duration = SnackbarDuration.Short,
+                )
             }
+            try {
+                val notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                val r = RingtoneManager.getRingtone(ctx, notification)
+                r?.play()
+            } catch (e: Exception) {}
         }
+        prevRequestCount = vm.pendingRequestCount
+    }
 
-        val pendingCount = vm.invoiceList.count { it.status == "WAITING_CONFIRMATION" }
+    val tabTitles = listOf("User", "Generate", "Riwayat", "Invoice", "Promo", "Broadcast", "Settings")
 
-        val promoAktif = vm.promo.promoAktif
-
-        TabRow(selectedTabIndex = tab, containerColor = DarkSurface, contentColor = NeonGreen) {
-            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("User") })
-            Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Generate") })
-            Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("Riwayat") })
-            Tab(selected = tab == 3, onClick = { tab = 3 }, text = {
-                if (pendingCount > 0) {
-                    BadgedBox(badge = { Badge { Text("$pendingCount") } }) { Text("Invoice") }
-                } else { Text("Invoice") }
-            })
-            Tab(selected = tab == 4, onClick = { tab = 4 }, text = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Promo")
-                    if (promoAktif) {
-                        Spacer(Modifier.width(4.dp))
-                        Text("🔥", fontSize = 12.sp)
+    Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        containerColor = DarkBackground,
+    ) { innerPadding ->
+        Column(Modifier.fillMaxSize().padding(innerPadding).background(DarkBackground)) {
+            Surface(color = DarkSurface, modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("RR LICENSE GEN", style = MaterialTheme.typography.titleMedium, color = NeonGreen, modifier = Modifier.weight(1f))
+                    Text("${vm.userList.size} user", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(onClick = { vm.signOut() }) {
+                        Icon(Icons.Filled.ExitToApp, contentDescription = "Logout", tint = NeonRed)
                     }
                 }
-            })
-            Tab(selected = tab == 5, onClick = { tab = 5 }, text = { Text("Notif") })
-            Tab(selected = tab == 6, onClick = { tab = 6 }, text = { Text("Popup") })
-            Tab(selected = tab == 7, onClick = { tab = 7 }, text = { Text("Settings") })
-        }
+            }
 
-        when (tab) {
-            0 -> UserListTab(vm)
-            1 -> GenerateTab(vm, ctx)
-            2 -> HistoryTab(vm, ctx)
-            3 -> InvoiceTab(vm, ctx)
-            4 -> PromoTab(vm, ctx)
-            5 -> NotifikasiTab(vm, ctx)
-            6 -> PopupTab(vm, ctx)
-            7 -> SettingsTab(vm, ctx)
+            val pendingCount = vm.invoiceList.count { it.status == "WAITING_CONFIRMATION" }
+            val reqCount = vm.pendingRequestCount
+            val promoAktif = vm.promo.promoAktif
+
+            ScrollableTabRow(
+                selectedTabIndex = tab,
+                containerColor = DarkSurface,
+                contentColor = NeonGreen,
+                edgePadding = 8.dp,
+            ) {
+                tabTitles.forEachIndexed { idx, title ->
+                    Tab(selected = tab == idx, onClick = {
+                        tab = idx
+                        if (idx == 3 && reqCount > 0) vm.markLicenseRequestsRead()
+                    }, text = {
+                        when (idx) {
+                            0 -> Text("User")
+                            1 -> Text("Generate")
+                            2 -> Text("Riwayat")
+                            3 -> {
+                                val badgeCount = pendingCount + reqCount
+                                if (badgeCount > 0) {
+                                    BadgedBox(badge = { Badge { Text("$badgeCount") } }) { Text("Invoice") }
+                                } else Text("Invoice")
+                            }
+                            4 -> {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("Promo")
+                                    if (promoAktif) {
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("🔥", fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                            5 -> Text("Broadcast")
+                            6 -> Text("Settings")
+                        }
+                    })
+                }
+            }
+
+            when (tab) {
+                0 -> UserListTab(vm, ctx)
+                1 -> GenerateTab(vm, ctx)
+                2 -> HistoryTab(vm, ctx)
+                3 -> InvoiceTab(vm, ctx)
+                4 -> PromoTab(vm, ctx)
+                5 -> BroadcastTab(vm, ctx)
+                6 -> SettingsTab(vm, ctx)
+            }
         }
     }
 }
 
 @Composable
-fun UserListTab(vm: LicenseGenViewModel) {
+fun UserListTab(vm: LicenseGenViewModel, ctx: Context) {
     var search by remember { mutableStateOf("") }
+    var deleteTarget by remember { mutableStateOf<FirestoreUser?>(null) }
+    var deleteMsg by remember { mutableStateOf("") }
     val filtered = remember(vm.userList, search) {
         if (search.isBlank()) vm.userList
-        else vm.userList.filter { it.username.contains(search, ignoreCase = true) || it.email.contains(search, ignoreCase = true) }
+        else vm.userList.filter {
+            it.username.contains(search, ignoreCase = true) ||
+            it.email.contains(search, ignoreCase = true) ||
+            it.whatsapp.contains(search) ||
+            it.appVersion.contains(search, ignoreCase = true)
+        }
     }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("DAFTAR USER TERDAFTAR", style = MaterialTheme.typography.titleMedium, color = NeonCyan)
+        Text("DAFTAR USER", style = MaterialTheme.typography.titleMedium, color = NeonCyan)
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(value = search, onValueChange = { search = it },
-            placeholder = { Text("Cari username atau email...") }, singleLine = true,
+            placeholder = { Text("Cari username, email, WA, atau versi...") }, singleLine = true,
             modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = NeonGreen, unfocusedBorderColor = DarkSurfaceV3,
@@ -221,7 +328,11 @@ fun UserListTab(vm: LicenseGenViewModel) {
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp)) },
         )
         Spacer(Modifier.height(8.dp))
+        val versionCounts = filtered.groupBy { it.appVersion.ifEmpty { "?" } }.mapValues { it.value.size }
         Text("${filtered.size} user", style = MaterialTheme.typography.bodySmall, color = TextDim)
+        if (versionCounts.isNotEmpty()) {
+            Text(versionCounts.entries.joinToString(" • ") { "${it.key}=${it.value}" }, style = MaterialTheme.typography.bodySmall, color = NeonCyan.copy(alpha = 0.7f), fontSize = 10.sp)
+        }
 
         if (filtered.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -234,16 +345,51 @@ fun UserListTab(vm: LicenseGenViewModel) {
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(10.dp),
                         colors = CardDefaults.cardColors(containerColor = DarkSurface),
-                        border = BorderStroke(1.dp, if (user.email.isNotBlank()) NeonGreen.copy(alpha = 0.2f) else DarkSurfaceV3),
+                        border = BorderStroke(1.dp, if (user.whatsapp.isNotBlank()) NeonGreen.copy(alpha = 0.2f) else DarkSurfaceV3),
                     ) {
-                        Row(Modifier.padding(12.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        val waNumber = user.whatsapp.filter { it.isDigit() }
+                        Row(Modifier.padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 4.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text(user.username, style = MaterialTheme.typography.bodyMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
-                                Text(if (user.email.isNotBlank()) user.email else "(tanpa email)", style = MaterialTheme.typography.bodySmall, color = if (user.email.isNotBlank()) TextSecondary else TextDim)
-                                Text("${user.role} • ${user.dibuat.take(10)}", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(user.username, style = MaterialTheme.typography.bodyMedium, color = if (waNumber.isNotEmpty()) NeonCyan else TextPrimary, fontWeight = FontWeight.Bold)
+                                    if (waNumber.isNotEmpty()) {
+                                        Spacer(Modifier.width(4.dp))
+                                        Icon(Icons.Filled.Phone, contentDescription = null, tint = NeonGreen, modifier = Modifier.size(14.dp))
+                                    }
+                                }
+                                if (user.email.isNotBlank()) {
+                                    Text(user.email, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                }
+                                if (user.whatsapp.isNotBlank()) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Filled.Phone, contentDescription = null, tint = NeonGreen, modifier = Modifier.size(12.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(user.whatsapp, style = MaterialTheme.typography.bodySmall, color = NeonGreen)
+                                    }
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("${user.role} • ${user.dibuat.take(10)}", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                                    if (user.appVersion.isNotBlank()) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("v${user.appVersion}", style = MaterialTheme.typography.bodySmall, color = NeonCyan)
+                                    }
+                                }
+                                if (user.lastActive > 0) {
+                                    val sdf = java.text.SimpleDateFormat("dd/MM/yy HH:mm", java.util.Locale.US)
+                                    val lastActiveStr = sdf.format(java.util.Date(user.lastActive))
+                                    Text("Terakhir: $lastActiveStr", style = MaterialTheme.typography.bodySmall, color = TextDim, fontSize = 10.sp)
+                                }
                             }
-                            if (user.email.isNotBlank()) {
-                                Icon(Icons.Filled.Email, contentDescription = null, tint = NeonGreen, modifier = Modifier.size(16.dp))
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                if (waNumber.isNotEmpty()) {
+                                    IconButton(onClick = {
+                                        val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://wa.me/$waNumber"))
+                                        ctx.startActivity(intent)
+                                    }) { Icon(Icons.Filled.Chat, contentDescription = "WA", tint = NeonGreen) }
+                                }
+                                IconButton(onClick = { deleteTarget = user; deleteMsg = "" }) {
+                                    Icon(Icons.Filled.Delete, contentDescription = "Hapus user", tint = NeonRed.copy(alpha = 0.7f))
+                                }
                             }
                         }
                     }
@@ -251,13 +397,41 @@ fun UserListTab(vm: LicenseGenViewModel) {
             }
         }
     }
+
+    if (deleteTarget != null) {
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            containerColor = DarkSurface,
+            title = { Text("⚠️ Hapus User?", color = NeonRed, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("Hapus user ${deleteTarget!!.username}?", color = TextPrimary)
+                    if (deleteMsg.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(deleteMsg, style = MaterialTheme.typography.bodySmall, color = if (deleteMsg.startsWith("User")) NeonGreen else NeonRed)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.deleteUser(deleteTarget!!.username) { ok, msg ->
+                        deleteMsg = msg
+                        if (ok) deleteTarget = null
+                    }
+                }) { Text("HAPUS", color = NeonRed) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text("BATAL", color = NeonGreen) }
+            },
+        )
+    }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GenerateTab(vm: LicenseGenViewModel, ctx: Context) {
     var selectedUser by remember { mutableStateOf<FirestoreUser?>(null) }
     var showUserPicker by remember { mutableStateOf(false) }
+    var pickerSearch by remember { mutableStateOf("") }
     var paket by remember { mutableStateOf("BULANAN") }
     var generatedCode by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf("") }
@@ -276,9 +450,21 @@ fun GenerateTab(vm: LicenseGenViewModel, ctx: Context) {
                         IconButton(onClick = { showUserPicker = false }) { Icon(Icons.Filled.Close, contentDescription = "Tutup", tint = NeonRed) }
                     }
                     Spacer(Modifier.height(8.dp))
-                    val pickerList = vm.userList.filter { it.email.isNotBlank() }
+                    OutlinedTextField(value = pickerSearch, onValueChange = { pickerSearch = it },
+                        placeholder = { Text("Cari username...") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonCyan, unfocusedBorderColor = DarkSurfaceV3,
+                            cursorColor = NeonCyan, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
+                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp)) },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    val pickerList = vm.userList.filter { u ->
+                        (u.email.isNotBlank() || u.whatsapp.isNotBlank()) &&
+                        (pickerSearch.isBlank() || u.username.contains(pickerSearch, ignoreCase = true))
+                    }
                     if (pickerList.isEmpty()) {
-                        Text("Tidak ada user dengan email", style = MaterialTheme.typography.bodyMedium, color = TextDim, modifier = Modifier.padding(16.dp))
+                        Text("Tidak ada user dengan kontak", style = MaterialTheme.typography.bodyMedium, color = TextDim, modifier = Modifier.padding(16.dp))
                     } else {
                         LazyColumn(modifier = Modifier.fillMaxWidth()) {
                             items(pickerList) { user ->
@@ -288,7 +474,8 @@ fun GenerateTab(vm: LicenseGenViewModel, ctx: Context) {
                                 ) {
                                     Column(Modifier.padding(12.dp)) {
                                         Text(user.username, style = MaterialTheme.typography.bodyMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
-                                        Text(user.email, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                        if (user.email.isNotBlank()) Text(user.email, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                        if (user.whatsapp.isNotBlank()) Text("📱 ${user.whatsapp}", style = MaterialTheme.typography.bodySmall, color = NeonGreen)
                                     }
                                 }
                                 HorizontalDivider(color = DarkSurfaceV3, thickness = 0.5.dp)
@@ -300,11 +487,10 @@ fun GenerateTab(vm: LicenseGenViewModel, ctx: Context) {
         }
     }
 
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
         Text("GENERATE KODE LISENSI", style = MaterialTheme.typography.titleMedium, color = NeonCyan)
         Spacer(Modifier.height(16.dp))
 
-        // Selected user
         Button(
             onClick = { showUserPicker = true },
             modifier = Modifier.fillMaxWidth().height(48.dp),
@@ -317,8 +503,11 @@ fun GenerateTab(vm: LicenseGenViewModel, ctx: Context) {
             } else {
                 Icon(Icons.Filled.Person, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("${selectedUser!!.username} (${selectedUser!!.email})", fontWeight = FontWeight.Bold)
+                Text("${selectedUser!!.username}", fontWeight = FontWeight.Bold)
             }
+        }
+        if (selectedUser != null) {
+            Text("${selectedUser!!.email} • ${selectedUser!!.whatsapp.ifEmpty { "no WA"} }", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
         }
 
         Spacer(Modifier.height(12.dp))
@@ -364,12 +553,7 @@ fun GenerateTab(vm: LicenseGenViewModel, ctx: Context) {
             Spacer(Modifier.height(16.dp))
             Card(
                 modifier = Modifier.fillMaxWidth()
-                    .border(BorderStroke(2.dp, NeonGreen), RoundedCornerShape(12.dp))
-                    .clickable {
-                        val clip = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clip.setPrimaryClip(ClipData.newPlainText("Kode Aktivasi", generatedCode))
-                        Toast.makeText(ctx, "Kode tersalin: $generatedCode", Toast.LENGTH_SHORT).show()
-                    },
+                    .border(BorderStroke(2.dp, NeonGreen), RoundedCornerShape(12.dp)),
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2),
             ) {
@@ -378,13 +562,33 @@ fun GenerateTab(vm: LicenseGenViewModel, ctx: Context) {
                     Spacer(Modifier.height(8.dp))
                     Text(generatedCode, style = MaterialTheme.typography.headlineSmall, color = NeonGreen, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
                     Spacer(Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp), tint = NeonGreen)
-                        Spacer(Modifier.width(4.dp))
-                        Text("Tap untuk copy", style = MaterialTheme.typography.bodySmall, color = NeonGreen)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Copy button
+                        Button(
+                            onClick = {
+                                val clip = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clip.setPrimaryClip(ClipData.newPlainText("Kode Aktivasi", generatedCode))
+                                Toast.makeText(ctx, "Kode tersalin!", Toast.LENGTH_SHORT).show()
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
+                        ) { Icon(Icons.Filled.ContentCopy, contentDescription = "Copy", modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Copy") }
+                        // Share button
+                        Button(
+                            onClick = {
+                                val sendIntent = Intent().apply {
+                                    action = Intent.ACTION_SEND
+                                    putExtra(Intent.EXTRA_TEXT, "Kode Lisensi RR Billing: $generatedCode\nUntuk: ${selectedUser?.email ?: "-"}\nPaket: $paket")
+                                    type = "text/plain"
+                                }
+                                ctx.startActivity(Intent.createChooser(sendIntent, "Bagikan Kode Lisensi"))
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground),
+                        ) { Icon(Icons.Filled.Share, contentDescription = "Share", modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Share") }
                     }
                     Spacer(Modifier.height(4.dp))
-                    Text("Untuk: ${selectedUser?.email ?: "-"}", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    Text("Untuk: ${selectedUser?.email ?: selectedUser?.username ?: "-"}", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                 }
             }
         }
@@ -393,35 +597,47 @@ fun GenerateTab(vm: LicenseGenViewModel, ctx: Context) {
 
 @Composable
 fun HistoryTab(vm: LicenseGenViewModel, ctx: Context) {
-    var items by remember { mutableStateOf<List<LicenseRecord>>(emptyList()) }
-    var loading by remember { mutableStateOf(true) }
-    val scope = rememberCoroutineScope()
+    var search by remember { mutableStateOf("") }
+    var revokeTarget by remember { mutableStateOf<LicenseRecord?>(null) }
+    var revokeMsg by remember { mutableStateOf("") }
 
-    LaunchedEffect(Unit) {
-        items = vm.getHistory()
-        loading = false
+    val filtered = remember(vm.historyList, search) {
+        if (search.isBlank()) vm.historyList
+        else vm.historyList.filter {
+            it.kode.contains(search, ignoreCase = true) ||
+            it.username.contains(search, ignoreCase = true) ||
+            it.email.contains(search, ignoreCase = true) ||
+            it.paket.contains(search, ignoreCase = true)
+        }
     }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("RIWAYAT GENERATE", style = MaterialTheme.typography.titleMedium, color = NeonCyan)
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(value = search, onValueChange = { search = it },
+            placeholder = { Text("Cari kode, user, paket...") }, singleLine = true,
+            modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
+            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonGreen, unfocusedBorderColor = DarkSurfaceV3,
+                cursorColor = NeonGreen, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp)) },
+        )
+        Spacer(Modifier.height(8.dp))
+        Text("${filtered.size} riwayat", style = MaterialTheme.typography.bodySmall, color = TextDim)
+        Spacer(Modifier.height(8.dp))
 
-        if (loading) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = NeonGreen)
-            }
-        } else if (items.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Belum ada riwayat", style = MaterialTheme.typography.bodyMedium, color = TextDim)
-            }
+        if (vm.historyList.isEmpty() && vm.firestoreReady) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(if (search.isBlank()) "Belum ada riwayat" else "Tidak cocok", style = MaterialTheme.typography.bodyMedium, color = TextDim) }
+        } else if (filtered.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(if (search.isBlank()) "Belum ada riwayat" else "Tidak cocok", style = MaterialTheme.typography.bodyMedium, color = TextDim) }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(items) { rec ->
+                items(filtered) { rec ->
                     val time = if (rec.generatedAt > 0) {
                         val sdf = java.text.SimpleDateFormat("dd/MM/yy HH:mm", java.util.Locale.US)
                         sdf.format(java.util.Date(rec.generatedAt))
                     } else "-"
-                    val status = if (rec.activatedAt > 0) "✅ Terpakai" else "⏳ Belum"
+                    val status = if (rec.revoked) "❌ Dinonaktifkan" else if (rec.activatedAt > 0) "✅ Terpakai" else "⏳ Belum"
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(10.dp),
@@ -431,7 +647,7 @@ fun HistoryTab(vm: LicenseGenViewModel, ctx: Context) {
                         Column(Modifier.padding(12.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(rec.kode, style = MaterialTheme.typography.titleMedium, color = NeonGreen, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                                Text(status, style = MaterialTheme.typography.bodySmall, color = if (rec.activatedAt > 0) NeonGreen else TextSecondary)
+                                Text(status, style = MaterialTheme.typography.bodySmall, color = if (rec.revoked) NeonRed else if (rec.activatedAt > 0) NeonGreen else TextSecondary)
                             }
                             Spacer(Modifier.height(6.dp))
                             HorizontalDivider(color = DarkSurfaceV3, thickness = 0.5.dp)
@@ -441,31 +657,102 @@ fun HistoryTab(vm: LicenseGenViewModel, ctx: Context) {
                             DetailRow("Paket", rec.paket)
                             DetailRow("Berlaku", rec.expiry)
                             DetailRow("Generate", time)
+                            if (!rec.revoked) {
+                                Spacer(Modifier.height(6.dp))
+                                OutlinedButton(
+                                    onClick = { revokeTarget = rec; revokeMsg = "" },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
+                                    border = BorderStroke(1.dp, NeonRed.copy(alpha = 0.5f)),
+                                ) { Text("NONAKTIFKAN LISENSI", fontWeight = FontWeight.Bold, fontSize = 11.sp) }
+                            }
                         }
                     }
                 }
             }
         }
     }
+
+    if (revokeTarget != null) {
+        AlertDialog(
+            onDismissRequest = { revokeTarget = null },
+            containerColor = DarkSurface,
+            title = { Text("⚠️ Nonaktifkan Lisensi?", color = NeonRed, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("Lisensi ${revokeTarget!!.kode} untuk ${revokeTarget!!.username} akan dinonaktifkan.", color = TextPrimary)
+                    Text("User tidak bisa menggunakan kode ini lagi.", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                    if (revokeMsg.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(revokeMsg, style = MaterialTheme.typography.bodySmall, color = if (revokeMsg.startsWith("Lisensi")) NeonGreen else NeonRed)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.revokeLicense(revokeTarget!!.id) { ok, msg ->
+                        revokeMsg = msg
+                        if (ok) revokeTarget = null
+                    }
+                }) { Text("NONAKTIFKAN", color = NeonRed) }
+            },
+            dismissButton = {
+                TextButton(onClick = { revokeTarget = null }) { Text("BATAL", color = NeonGreen) }
+            },
+        )
+    }
 }
 
 @Composable
 fun InvoiceTab(vm: LicenseGenViewModel, ctx: Context) {
     val pending = vm.invoiceList.filter { it.status == "WAITING_CONFIRMATION" }
+    val requests = vm.licenseRequests
 
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+        // ── License Request Notifications ──
+        if (requests.isNotEmpty()) {
+            Text("PEMBERITAHUAN REQUEST", style = MaterialTheme.typography.titleSmall, color = NeonOrange, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(6.dp))
+            requests.take(10).forEach { req ->
+                val sdf = java.text.SimpleDateFormat("dd/MM/yy HH:mm", java.util.Locale.US)
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                    border = BorderStroke(1.dp, if (!req.read) NeonOrange.copy(alpha = 0.5f) else DarkSurfaceV3),
+                ) {
+                    Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.NotificationsActive, contentDescription = null, tint = if (!req.read) NeonOrange else TextDim, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("User ${req.user} request ${req.paket}", style = MaterialTheme.typography.bodySmall, color = TextPrimary, fontWeight = FontWeight.Bold)
+                            Text("Rp${String.format("%,d", req.harga)} • ${sdf.format(java.util.Date(req.sentAt))}", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                        }
+                        if (!req.read) {
+                            Box(Modifier.size(8.dp).background(NeonOrange, shape = RoundedCornerShape(4.dp)))
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            HorizontalDivider(color = DarkSurfaceV3, thickness = 1.dp)
+            Spacer(Modifier.height(12.dp))
+        }
+
+        // ── Invoices ──
         Text("INVOICE MENUNGGU KONFIRMASI", style = MaterialTheme.typography.titleMedium, color = NeonCyan)
         Spacer(Modifier.height(8.dp))
         Text("${pending.size} menunggu", style = MaterialTheme.typography.bodySmall, color = TextDim)
         Spacer(Modifier.height(12.dp))
 
         if (pending.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
                 Text("Tidak ada invoice menunggu", style = MaterialTheme.typography.bodyMedium, color = TextDim)
             }
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(pending) { inv ->
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                pending.forEach { inv ->
                     var showConfirmDialog by remember { mutableStateOf(false) }
 
                     Card(
@@ -492,6 +779,29 @@ fun InvoiceTab(vm: LicenseGenViewModel, ctx: Context) {
                             } else "-"
                             DetailRow("Tanggal", dateStr)
 
+                            // WhatsApp contact button
+                            val userWa = vm.userList.find { it.username == inv.username }?.whatsapp ?: ""
+                            if (userWa.isNotBlank()) {
+                                Box(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                    val waMsg = "Halo ${inv.username}, kami terima pembayaran paket ${inv.paket} Rp${String.format("%,d", inv.harga)} (${inv.id}). Lisensi sedang diproses."
+                                    Button(
+                                        onClick = {
+                                            try {
+                                                val uri = Uri.parse("https://wa.me/${userWa.replace(Regex("[^0-9]"), "")}?text=${java.net.URLEncoder.encode(waMsg, "UTF-8")}")
+                                                ctx.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                                            } catch (e: Exception) { Toast.makeText(ctx, "Gagal buka WA: ${e.message}", Toast.LENGTH_SHORT).show() }
+                                        },
+                                        modifier = Modifier.fillMaxWidth().height(36.dp),
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
+                                    ) {
+                                        Icon(Icons.Filled.Chat, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("Hubungi ${inv.username} via WA", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    }
+                                }
+                            }
+
                             if (inv.buktiBase64.isNotBlank()) {
                                 Spacer(Modifier.height(8.dp))
                                 Text("Bukti Transfer:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
@@ -505,7 +815,7 @@ fun InvoiceTab(vm: LicenseGenViewModel, ctx: Context) {
                                     Image(
                                         bitmap = bitmap.asImageBitmap(),
                                         contentDescription = "Bukti Transfer",
-                                        modifier = Modifier.fillMaxWidth().aspectRatio(1f).padding(top = 4.dp),
+                                        modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp).padding(top = 4.dp),
                                     )
                                 } else {
                                     Text("(gagal decode gambar)", style = MaterialTheme.typography.bodySmall, color = NeonRed)
@@ -565,6 +875,47 @@ fun InvoiceTab(vm: LicenseGenViewModel, ctx: Context) {
                 }
             }
         }
+
+        Spacer(Modifier.height(24.dp))
+        HorizontalDivider(color = DarkSurfaceV3, thickness = 1.dp)
+        Spacer(Modifier.height(12.dp))
+
+        val confirmed = vm.invoiceList.filter { it.status == "CONFIRMED" && it.confirmedBy.isNotBlank() }.take(20)
+        Text("RIWAYAT KONFIRMASI", style = MaterialTheme.typography.titleMedium, color = NeonGreen)
+        Spacer(Modifier.height(4.dp))
+        Text("${confirmed.size} terkonfirmasi", style = MaterialTheme.typography.bodySmall, color = TextDim)
+        Spacer(Modifier.height(8.dp))
+
+        if (confirmed.isEmpty()) {
+            Text("Belum ada konfirmasi", style = MaterialTheme.typography.bodySmall, color = TextDim)
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                confirmed.forEach { inv ->
+                    val sdf = java.text.SimpleDateFormat("dd/MM/yy HH:mm", java.util.Locale.US)
+                    val verifTime = if (inv.dibayar > 0) sdf.format(java.util.Date(inv.dibayar)) else "-"
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                        border = BorderStroke(1.dp, NeonGreen.copy(alpha = 0.2f)),
+                    ) {
+                        Column(Modifier.padding(10.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(inv.id, style = MaterialTheme.typography.bodySmall, color = NeonGreen, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                                Text(inv.paket, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            DetailRow("User", inv.username)
+                            DetailRow("Verifikasi", verifTime)
+                            DetailRow("Oleh", inv.confirmedBy)
+                            if (inv.kodeLisensi.isNotBlank()) {
+                                DetailRow("Lisensi", inv.kodeLisensi)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -585,6 +936,7 @@ fun PromoTab(vm: LicenseGenViewModel, ctx: Context) {
     var addTvLt by remember { mutableStateOf(vm.promo.addTvOverride["LIFETIME"] ?: 0) }
     var msg by remember { mutableStateOf("") }
     var msgOk by remember { mutableStateOf(false) }
+    var promoDuration by remember { mutableStateOf(vm.promo.promoDurationHours) }
 
     LaunchedEffect(vm.promo) {
         promoAktif = vm.promo.promoAktif
@@ -600,6 +952,7 @@ fun PromoTab(vm: LicenseGenViewModel, ctx: Context) {
         addTv3 = vm.promo.addTvOverride["3 Bulan"] ?: 10
         addTv12 = vm.promo.addTvOverride["1 Tahun"] ?: 15
         addTvLt = vm.promo.addTvOverride["LIFETIME"] ?: 0
+        promoDuration = vm.promo.promoDurationHours
     }
 
     fun save() {
@@ -614,7 +967,7 @@ fun PromoTab(vm: LicenseGenViewModel, ctx: Context) {
             "1 Tahun" to addTv12.coerceAtLeast(0),
             "LIFETIME" to addTvLt.coerceAtLeast(0),
         )
-        vm.setPromo(promoAktif, diskonMap, overrides) { ok, message ->
+        vm.setPromo(promoAktif, diskonMap, overrides, promoDuration) { ok, message ->
             msg = message; msgOk = ok
             if (ok) Toast.makeText(ctx, message, Toast.LENGTH_SHORT).show()
         }
@@ -630,6 +983,21 @@ fun PromoTab(vm: LicenseGenViewModel, ctx: Context) {
             Row(Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("Aktifkan Promo", style = MaterialTheme.typography.bodyMedium, color = TextPrimary, modifier = Modifier.weight(1f))
                 Switch(checked = promoAktif, onCheckedChange = { promoAktif = it }, colors = SwitchDefaults.colors(checkedTrackColor = NeonGreen, checkedThumbColor = DarkBackground))
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+            Row(Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Durasi Promo (jam)", style = MaterialTheme.typography.bodyMedium, color = TextPrimary, modifier = Modifier.weight(1f))
+                OutlinedTextField(value = if (promoDuration == 0) "" else promoDuration.toString(), onValueChange = { promoDuration = it.filter { c -> c.isDigit() }.take(5).toIntOrNull() ?: 0 },
+                    placeholder = { Text("0 = tanpa batas") }, singleLine = true, modifier = Modifier.width(100.dp), shape = RoundedCornerShape(8.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonGreen, unfocusedBorderColor = DarkSurfaceV3,
+                        cursorColor = NeonGreen, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                        focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
+                    textStyle = MaterialTheme.typography.bodySmall.copy(textAlign = TextAlign.Center),
+                )
             }
         }
 
@@ -852,7 +1220,7 @@ private fun TvOverrideField(label: String, value: Int, onValueChange: (Int) -> U
 }
 
 @Composable
-fun NotifikasiTab(vm: LicenseGenViewModel, ctx: Context) {
+fun BroadcastTab(vm: LicenseGenViewModel, ctx: Context) {
     var targetSemua by remember { mutableStateOf(true) }
     var targetUsername by remember { mutableStateOf("") }
     var judul by remember { mutableStateOf("") }
@@ -860,34 +1228,57 @@ fun NotifikasiTab(vm: LicenseGenViewModel, ctx: Context) {
     var msg by remember { mutableStateOf("") }
     var msgOk by remember { mutableStateOf(false) }
     var isSending by remember { mutableStateOf(false) }
+    var modePopup by remember { mutableStateOf(false) }
+    var showUserPicker by remember { mutableStateOf(false) }
+    var pickerSearch by remember { mutableStateOf("") }
+
+    val accent = if (modePopup) NeonOrange else NeonCyan
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
-        Text("KIRIM NOTIFIKASI", style = MaterialTheme.typography.titleMedium, color = NeonCyan)
+        Text(if (modePopup) "KIRIM POPUP" else "KIRIM NOTIFIKASI", style = MaterialTheme.typography.titleMedium, color = accent)
         Spacer(Modifier.height(4.dp))
-        Text("Kirim push notification ke user", style = MaterialTheme.typography.bodySmall, color = TextDim)
-        Spacer(Modifier.height(16.dp))
+        Text(if (modePopup) "Muncul sebagai popup di aplikasi user" else "Push notification ke perangkat user", style = MaterialTheme.typography.bodySmall, color = TextDim)
+        Spacer(Modifier.height(12.dp))
+
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Notif", style = MaterialTheme.typography.bodySmall, color = if (!modePopup) NeonCyan else TextDim)
+                Spacer(Modifier.width(8.dp))
+                Switch(checked = modePopup, onCheckedChange = { modePopup = it }, colors = SwitchDefaults.colors(checkedTrackColor = NeonOrange, checkedThumbColor = DarkBackground, uncheckedTrackColor = NeonCyan, uncheckedThumbColor = DarkBackground))
+                Spacer(Modifier.width(8.dp))
+                Text("Popup", style = MaterialTheme.typography.bodySmall, color = if (modePopup) NeonOrange else TextDim)
+            }
+        }
+        Spacer(Modifier.height(12.dp))
 
         Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
             Column(Modifier.padding(16.dp)) {
-                Text("Target", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
-                Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(selected = targetSemua, onClick = { targetSemua = true; targetUsername = "" }, colors = RadioButtonDefaults.colors(selectedColor = NeonGreen))
+                    RadioButton(selected = targetSemua, onClick = { targetSemua = true; targetUsername = "" }, colors = RadioButtonDefaults.colors(selectedColor = accent))
                     Text("Semua User", style = MaterialTheme.typography.bodySmall, color = TextPrimary, modifier = Modifier.weight(1f))
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(selected = !targetSemua, onClick = { targetSemua = false }, colors = RadioButtonDefaults.colors(selectedColor = NeonCyan))
+                    RadioButton(selected = !targetSemua, onClick = { targetSemua = false }, colors = RadioButtonDefaults.colors(selectedColor = accent))
                     Text("User Tertentu", style = MaterialTheme.typography.bodySmall, color = TextPrimary, modifier = Modifier.weight(1f))
                 }
                 if (!targetSemua) {
                     Spacer(Modifier.height(4.dp))
-                    OutlinedTextField(value = targetUsername, onValueChange = { targetUsername = it },
-                        placeholder = { Text("Username") }, singleLine = true,
-                        modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonCyan, unfocusedBorderColor = DarkSurfaceV3,
-                            cursorColor = NeonCyan, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
-                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
-                    )
+                    Button(
+                        onClick = { showUserPicker = true },
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = DarkSurfaceV2, contentColor = TextPrimary),
+                        border = BorderStroke(1.dp, accent.copy(alpha = 0.4f)),
+                        enabled = !isSending,
+                    ) {
+                        if (targetUsername.isBlank()) {
+                            Text("Pilih User Target", fontWeight = FontWeight.Bold)
+                        } else {
+                            Icon(Icons.Filled.Person, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(targetUsername, fontWeight = FontWeight.Bold)
+                        }
+                    }
                 }
             }
         }
@@ -897,18 +1288,18 @@ fun NotifikasiTab(vm: LicenseGenViewModel, ctx: Context) {
         Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
             Column(Modifier.padding(16.dp)) {
                 OutlinedTextField(value = judul, onValueChange = { judul = it },
-                    label = { Text("Judul Notifikasi") }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
-                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonGreen, unfocusedBorderColor = DarkSurfaceV3,
-                        cursorColor = NeonGreen, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                    label = { Text(if (modePopup) "Judul Popup" else "Judul Notifikasi") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), enabled = !isSending,
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = accent, unfocusedBorderColor = DarkSurfaceV3,
+                        cursorColor = accent, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
                         focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
                 )
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(value = pesan, onValueChange = { pesan = it },
-                    label = { Text("Pesan Notifikasi") }, minLines = 3, maxLines = 5,
-                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
-                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonGreen, unfocusedBorderColor = DarkSurfaceV3,
-                        cursorColor = NeonGreen, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                    label = { Text(if (modePopup) "Pesan Popup" else "Pesan Notifikasi") }, minLines = 3, maxLines = 5,
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp), enabled = !isSending,
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = accent, unfocusedBorderColor = DarkSurfaceV3,
+                        cursorColor = accent, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
                         focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
                 )
             }
@@ -926,120 +1317,76 @@ fun NotifikasiTab(vm: LicenseGenViewModel, ctx: Context) {
                 if (judul.isBlank() || pesan.isBlank()) { msg = "Isi judul dan pesan"; msgOk = false; return@Button }
                 isSending = true; msg = ""
                 if (targetSemua) {
-                    vm.sendFcmToAllUsers(judul, pesan) { sent ->
+                    val action: (callback: ((Int) -> Unit)?) -> Unit = if (modePopup)
+                        { cb -> vm.sendPopupToAllUsers(judul, pesan, cb) }
+                        else { cb -> vm.sendFcmToAllUsers(judul, pesan, cb) }
+                    action { sent ->
                         isSending = false
-                        msg = "Notifikasi terkirim ke $sent user"; msgOk = true
+                        msg = "${if (modePopup) "Popup" else "Notifikasi"} terkirim ke $sent user"; msgOk = true
                         judul = ""; pesan = ""
                     }
                 } else {
                     if (targetUsername.isBlank()) { msg = "Masukkan username target"; msgOk = false; isSending = false; return@Button }
-                    vm.sendFcmToUser(targetUsername, judul, pesan)
+                    if (modePopup) vm.sendPopupToUser(targetUsername, judul, pesan) else vm.sendFcmToUser(targetUsername, judul, pesan)
                     isSending = false
-                    msg = "Notifikasi terkirim ke $targetUsername"; msgOk = true
+                    msg = "${if (modePopup) "Popup" else "Notifikasi"} terkirim ke $targetUsername"; msgOk = true
                     judul = ""; pesan = ""; targetUsername = ""
                 }
             },
             modifier = Modifier.fillMaxWidth().height(48.dp),
             shape = RoundedCornerShape(12.dp),
             enabled = !isSending,
-            colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
-        ) { if (isSending) CircularProgressIndicator(color = DarkBackground, modifier = Modifier.size(20.dp)) else Text("KIRIM NOTIFIKASI", fontWeight = FontWeight.Bold) }
+            colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = DarkBackground),
+        ) { if (isSending) CircularProgressIndicator(color = DarkBackground, modifier = Modifier.size(20.dp)) else Text(if (modePopup) "KIRIM POPUP" else "KIRIM NOTIFIKASI", fontWeight = FontWeight.Bold) }
     }
-}
 
-@Composable
-fun PopupTab(vm: LicenseGenViewModel, ctx: Context) {
-    var targetSemua by remember { mutableStateOf(true) }
-    var targetUsername by remember { mutableStateOf("") }
-    var judul by remember { mutableStateOf("") }
-    var pesan by remember { mutableStateOf("") }
-    var msg by remember { mutableStateOf("") }
-    var msgOk by remember { mutableStateOf(false) }
-    var isSending by remember { mutableStateOf(false) }
-
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
-        Text("KIRIM POPUP INAP", style = MaterialTheme.typography.titleMedium, color = NeonOrange)
-        Spacer(Modifier.height(4.dp))
-        Text("Notifikasi akan muncul sebagai popup di dalam aplikasi user", style = MaterialTheme.typography.bodySmall, color = TextDim)
-        Spacer(Modifier.height(16.dp))
-
-        Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
-            Column(Modifier.padding(16.dp)) {
-                Text("Target", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(selected = targetSemua, onClick = { targetSemua = true; targetUsername = "" }, colors = RadioButtonDefaults.colors(selectedColor = NeonOrange))
-                    Text("Semua User", style = MaterialTheme.typography.bodySmall, color = TextPrimary, modifier = Modifier.weight(1f))
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(selected = !targetSemua, onClick = { targetSemua = false }, colors = RadioButtonDefaults.colors(selectedColor = NeonOrange))
-                    Text("User Tertentu", style = MaterialTheme.typography.bodySmall, color = TextPrimary, modifier = Modifier.weight(1f))
-                }
-                if (!targetSemua) {
-                    Spacer(Modifier.height(4.dp))
-                    OutlinedTextField(value = targetUsername, onValueChange = { targetUsername = it },
-                        placeholder = { Text("Username") }, singleLine = true,
-                        modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonOrange, unfocusedBorderColor = DarkSurfaceV3,
-                            cursorColor = NeonOrange, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
-                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
-                    )
-                }
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
-            Column(Modifier.padding(16.dp)) {
-                OutlinedTextField(value = judul, onValueChange = { judul = it },
-                    label = { Text("Judul Popup") }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
-                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonOrange, unfocusedBorderColor = DarkSurfaceV3,
-                        cursorColor = NeonOrange, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
-                        focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(value = pesan, onValueChange = { pesan = it },
-                    label = { Text("Pesan Popup") }, minLines = 3, maxLines = 5,
-                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
-                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonOrange, unfocusedBorderColor = DarkSurfaceV3,
-                        cursorColor = NeonOrange, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
-                        focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
-                )
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        if (msg.isNotEmpty()) {
-            Text(msg, style = MaterialTheme.typography.bodySmall, color = if (msgOk) NeonGreen else NeonRed)
-            Spacer(Modifier.height(8.dp))
-        }
-
-        Button(
-            onClick = {
-                if (judul.isBlank() || pesan.isBlank()) { msg = "Isi judul dan pesan"; msgOk = false; return@Button }
-                isSending = true; msg = ""
-                if (targetSemua) {
-                    vm.sendPopupToAllUsers(judul, pesan) { sent ->
-                        isSending = false
-                        msg = "Popup terkirim ke $sent user"; msgOk = true
-                        judul = ""; pesan = ""
+    if (showUserPicker) {
+        Box(Modifier.fillMaxSize().background(Color(0xCC000000)).clickable(enabled = false) { }, contentAlignment = Alignment.Center) {
+            Card(
+                modifier = Modifier.fillMaxWidth(0.9f).heightIn(max = 500.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                border = BorderStroke(1.dp, accent.copy(alpha = 0.3f)),
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("PILIH USER", style = MaterialTheme.typography.titleMedium, color = accent, modifier = Modifier.weight(1f))
+                        IconButton(onClick = { showUserPicker = false }) { Icon(Icons.Filled.Close, contentDescription = "Tutup", tint = NeonRed) }
                     }
-                } else {
-                    if (targetUsername.isBlank()) { msg = "Masukkan username target"; msgOk = false; isSending = false; return@Button }
-                    vm.sendPopupToUser(targetUsername, judul, pesan)
-                    isSending = false
-                    msg = "Popup terkirim ke $targetUsername"; msgOk = true
-                    judul = ""; pesan = ""; targetUsername = ""
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(value = pickerSearch, onValueChange = { pickerSearch = it },
+                        placeholder = { Text("Cari username...") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = accent, unfocusedBorderColor = DarkSurfaceV3,
+                            cursorColor = accent, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
+                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp)) },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    val pickerList = vm.userList.filter { u ->
+                        pickerSearch.isBlank() || u.username.contains(pickerSearch, ignoreCase = true)
+                    }
+                    if (pickerList.isEmpty()) {
+                        Text("Tidak ada user", style = MaterialTheme.typography.bodyMedium, color = TextDim, modifier = Modifier.padding(16.dp))
+                    } else {
+                        LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                            items(pickerList) { user ->
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth().clickable { targetUsername = user.username; showUserPicker = false },
+                                    color = if (targetUsername == user.username) DarkSurfaceV2 else DarkSurface,
+                                ) {
+                                    Column(Modifier.padding(12.dp)) {
+                                        Text(user.username, style = MaterialTheme.typography.bodyMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
+                                        if (user.email.isNotBlank()) Text(user.email, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                    }
+                                }
+                                HorizontalDivider(color = DarkSurfaceV3, thickness = 0.5.dp)
+                            }
+                        }
+                    }
                 }
-            },
-            modifier = Modifier.fillMaxWidth().height(48.dp),
-            shape = RoundedCornerShape(12.dp),
-            enabled = !isSending,
-            colors = ButtonDefaults.buttonColors(containerColor = NeonOrange, contentColor = DarkBackground),
-        ) { if (isSending) CircularProgressIndicator(color = DarkBackground, modifier = Modifier.size(20.dp)) else Text("KIRIM POPUP", fontWeight = FontWeight.Bold) }
+            }
+        }
     }
 }
 
@@ -1049,12 +1396,12 @@ fun SettingsTab(vm: LicenseGenViewModel, ctx: Context) {
     var keyInput by remember { mutableStateOf("") }
     var keyMsg by remember { mutableStateOf("") }
     var keyMsgOk by remember { mutableStateOf(false) }
+    var showGenerateConfirm by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
         Text("PENGATURAN", style = MaterialTheme.typography.titleMedium, color = NeonCyan)
         Spacer(Modifier.height(8.dp))
 
-        // ECDSA Private Key
         Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
             Column(Modifier.padding(16.dp)) {
                 Text("PRIVATE KEY (ECDSA)", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
@@ -1062,8 +1409,7 @@ fun SettingsTab(vm: LicenseGenViewModel, ctx: Context) {
                 val hasKey = vm.hasPrivateKey()
                 Text(
                     if (hasKey) "✅ Private key terkonfigurasi" else "❌ Private key belum dikonfigurasi! Lisensi tidak bisa digenerate.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (hasKey) NeonGreen else NeonRed,
+                    style = MaterialTheme.typography.bodySmall, color = if (hasKey) NeonGreen else NeonRed,
                 )
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1073,15 +1419,7 @@ fun SettingsTab(vm: LicenseGenViewModel, ctx: Context) {
                         colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground),
                     ) { Text(if (showKeyInput) "Batal" else if (hasKey) "Ganti Key" else "Set Key") }
                     OutlinedButton(
-                        onClick = {
-                            vm.generateNewKeyPair { result ->
-                                if (result.startsWith("ERROR")) {
-                                    keyMsg = result; keyMsgOk = false
-                                } else {
-                                    keyMsg = "Key baru berhasil digenerate! Backup key ini."; keyMsgOk = true
-                                }
-                            }
-                        },
+                        onClick = { if (hasKey) showGenerateConfirm = true else vm.generateNewKeyPair { r -> keyMsg = if (r.startsWith("ERROR")) { keyMsgOk = false; r } else { keyMsgOk = true; "Key baru berhasil digenerate! Backup key ini." }; keyMsgOk = !r.startsWith("ERROR") } },
                         modifier = Modifier.weight(1f), shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
                         border = BorderStroke(1.dp, NeonGreen),
@@ -1089,27 +1427,20 @@ fun SettingsTab(vm: LicenseGenViewModel, ctx: Context) {
                 }
                 if (showKeyInput) {
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = keyInput, onValueChange = { keyInput = it; keyMsg = "" },
+                    OutlinedTextField(value = keyInput, onValueChange = { keyInput = it; keyMsg = "" },
                         label = { Text("Paste Base64 Private Key") }, minLines = 3, maxLines = 5,
                         modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = NeonGreen, unfocusedBorderColor = DarkSurfaceV3,
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonGreen, unfocusedBorderColor = DarkSurfaceV3,
                             cursorColor = NeonGreen, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
-                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                        ),
+                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
                     )
                     Spacer(Modifier.height(8.dp))
-                    Button(
-                        onClick = {
-                            if (keyInput.isBlank()) { keyMsg = "Masukkan key"; keyMsgOk = false; return@Button }
-                            vm.setPrivateKey(keyInput.trim())
-                            keyMsg = "Private key tersimpan!"; keyMsgOk = true
-                            showKeyInput = false
-                        },
-                        modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
-                    ) { Text("Simpan Key") }
+                    Button(onClick = {
+                        if (keyInput.isBlank()) { keyMsg = "Masukkan key"; keyMsgOk = false; return@Button }
+                        vm.setPrivateKey(keyInput.trim())
+                        keyMsg = "Private key tersimpan!"; keyMsgOk = true; showKeyInput = false
+                    }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("Simpan Key") }
                 }
                 if (keyMsg.isNotEmpty()) {
                     Spacer(Modifier.height(4.dp))
@@ -1117,23 +1448,19 @@ fun SettingsTab(vm: LicenseGenViewModel, ctx: Context) {
                 }
                 if (hasKey) {
                     Spacer(Modifier.height(12.dp))
-                    Button(
-                        onClick = {
-                            val key = vm.getPrivateKey()
-                            val clip = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clip.setPrimaryClip(ClipData.newPlainText("Private Key", key))
-                            Toast.makeText(ctx, "Key tersalin (RAHASIA!)", Toast.LENGTH_SHORT).show()
-                        },
-                        modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = NeonYellow, contentColor = DarkBackground),
-                    ) { Text("📋 Copy Key (Backup!)", fontWeight = FontWeight.Bold) }
+                    Button(onClick = {
+                        val key = vm.getPrivateKey()
+                        val clip = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clip.setPrimaryClip(ClipData.newPlainText("Private Key", key))
+                        Toast.makeText(ctx, "Key tersalin (RAHASIA!)", Toast.LENGTH_SHORT).show()
+                    }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonYellow, contentColor = DarkBackground)) { Text("📋 Copy Key (Backup!)", fontWeight = FontWeight.Bold) }
                 }
             }
         }
 
         Spacer(Modifier.height(12.dp))
 
-        // Info
         Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
             Column(Modifier.padding(16.dp)) {
                 Text("INFORMASI", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
@@ -1145,6 +1472,28 @@ fun SettingsTab(vm: LicenseGenViewModel, ctx: Context) {
         }
 
         Spacer(Modifier.height(30.dp))
+    }
+
+    if (showGenerateConfirm) {
+        AlertDialog(
+            onDismissRequest = { showGenerateConfirm = false },
+            containerColor = DarkSurface,
+            title = { Text("⚠️ Generate Key Baru?", color = NeonRed, fontWeight = FontWeight.Bold) },
+            text = {
+                Text("Key lama akan TIDAK BISA dipakai lagi. Lisensi yang sudah digenerate dengan key lama akan gagal verifikasi. Backup key lama dulu sebelum melanjutkan!", color = TextPrimary)
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showGenerateConfirm = false
+                    vm.generateNewKeyPair { result ->
+                        keyMsg = if (result.startsWith("ERROR")) { keyMsgOk = false; result } else { keyMsgOk = true; "Key baru berhasil digenerate! Backup key ini." }
+                    }
+                }) { Text("LANJUTKAN", color = NeonRed) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showGenerateConfirm = false }) { Text("BATAL", color = NeonGreen) }
+            },
+        )
     }
 }
 

@@ -14,7 +14,12 @@ import java.util.UUID
 
 /**
  * Simple Firebase-backed repository for syncing app state to Firestore.
- * Uses anonymous sign-in and writes a document under collection "billingps_devices" with the device ID as the doc ID.
+ * Uses anonymous sign-in as fallback for device-level sync, but
+ * PREFERS the user's email/password Firebase Auth session when available.
+ *
+ * SECURITY NOTE: Anonymous auth should NOT be used for sensitive operations.
+ * The app should require email/password Firebase Auth for license activation,
+ * invoice confirmation, and admin operations.
  */
 class CloudRepository(private val app: Application) {
     private val auth: FirebaseAuth = FirebaseAuth.getInstance()
@@ -28,19 +33,55 @@ class CloudRepository(private val app: Application) {
 
     suspend fun ensureSignedIn(): Boolean = suspendCancellableCoroutine { cont ->
         val user = auth.currentUser
-        if (user != null) { Log.i("CloudRepo", "Already signed in as ${user.uid}"); cont.resume(true); return@suspendCancellableCoroutine }
-        Log.i("CloudRepo", "Signing in anonymously...")
+        if (user != null) {
+            if (user.isAnonymous) {
+                Log.w("CloudRepo", "Using anonymous auth (degraded security) for ${user.uid}")
+            } else {
+                Log.i("CloudRepo", "Signed in as ${user.email ?: user.uid}")
+            }
+            cont.resume(true); return@suspendCancellableCoroutine
+        }
+        Log.w("CloudRepo", "No auth session — signing in anonymously (DEGRADED SECURITY)")
         auth.signInAnonymously()
             .addOnSuccessListener { r -> if (!cont.isCompleted) { Log.i("CloudRepo", "Anonymous sign-in success: ${r.user?.uid}"); cont.resume(true) } }
             .addOnFailureListener { ex -> if (!cont.isCompleted) { Log.i("CloudRepo", "Anonymous sign-in failed: ${ex.message}"); cont.resume(false) } }
     }
 
     /**
+     * Check if the current Firebase Auth user is fully authenticated (not anonymous).
+     * Critical operations should check this before proceeding.
+     */
+    fun isFullyAuthenticated(): Boolean {
+        val user = auth.currentUser ?: return false
+        return !user.isAnonymous
+    }
+
+    /**
+     * Require non-anonymous Firebase Auth for sensitive operations.
+     * Returns true only if a real (email/password) Firebase Auth session exists.
+     */
+    suspend fun requireRealAuth(): Boolean = suspendCancellableCoroutine { cont ->
+        val user = auth.currentUser
+        if (user != null && !user.isAnonymous) {
+            Log.i("CloudRepo", "Real auth confirmed: ${user.email ?: user.uid}")
+            cont.resume(true)
+        } else {
+            Log.w("CloudRepo", "Real auth required but not available")
+            cont.resume(false)
+        }
+        return@suspendCancellableCoroutine
+    }
+
+    /**
      * Sync the important parts of the app state to Firestore. Returns true on success.
+     * SECURITY: prefers non-anonymous auth; warns if using anonymous
      */
     suspend fun writeLicenseStatusToUserDoc(username: String, ls: Map<String, Any>): Boolean {
         if (username.isBlank()) return false
         if (!ensureSignedIn()) return false
+        if (!isFullyAuthenticated()) {
+            Log.w("CloudRepo", "writeLicenseStatusToUserDoc using anonymous auth — data may be rejected by Firestore rules")
+        }
         Log.i("CloudRepo", "writeLicenseStatusToUserDoc: username=$username ls=$ls")
         return suspendCancellableCoroutine { cont ->
             firestore.collection("billingps_users").document(username)
@@ -50,8 +91,8 @@ class CloudRepository(private val app: Application) {
         }
     }
 
-    suspend fun syncAll(state: AppUiState, username: String? = null): Boolean {
-            Log.i("CloudRepo", "syncAll start for user=${username ?: "(device)"}")
+    suspend fun syncAll(state: AppUiState, username: String? = null, appVersion: String = "0.0.0"): Boolean {
+            Log.i("CloudRepo", "syncAll start for user=${username ?: "(device)"}, appVersion=$appVersion")
             if (!ensureSignedIn()) { Log.i("CloudRepo", "ensureSignedIn failed"); return false }
 
             val tvs = state.tvList.map { tv ->
@@ -63,6 +104,7 @@ class CloudRepository(private val app: Application) {
                     "jenisPs" to tv.jenisPs,
                     "paketAktif" to tv.paketAktif,
                     "sisaDetik" to tv.sisaDetik,
+                    "timerActive" to tv.timerActive,
                 )
             }
 
@@ -87,7 +129,8 @@ class CloudRepository(private val app: Application) {
                 "currentUser" to state.currentUser,
                 "tvList" to tvs,
                 "transaksiList" to txs,
-                "appVersion" to "1.0.8",
+                "appVersion" to appVersion,
+                "lastActive" to System.currentTimeMillis(),
             )
             if (state.licenseStatus.status.isNotEmpty()) {
                 payload["licenseStatus"] = mapOf(
@@ -534,7 +577,10 @@ class CloudRepository(private val app: Application) {
             firestore.collection("invoices").document(inv.id)
                 .set(data)
                 .addOnSuccessListener { if (!cont.isCompleted) cont.resume(Unit) }
-                .addOnFailureListener { Log.i("CloudRepo", "saveInvoice failed: ${it.message}"); if (!cont.isCompleted) cont.resume(Unit) }
+                .addOnFailureListener { e ->
+                    Log.e("CloudRepo", "saveInvoice failed: ${e.message}")
+                    if (!cont.isCompleted) cont.resumeWith(Result.failure(e))
+                }
         }
     }
 
@@ -640,12 +686,26 @@ class CloudRepository(private val app: Application) {
                 rawOverride?.forEach { (k, v) ->
                     if (k is String && v is Number) addTvOverride[k] = v.toInt()
                 }
+                val newUserPromoActive = snap.getBoolean("newUserPromoActive") ?: false
+                val newUserDiscountPercent = (snap.get("newUserDiscountPercent") as? Number)?.toInt() ?: 30
+                val newUserPromoDurationHours = (snap.get("newUserPromoDurationHours") as? Number)?.toInt() ?: 96
+                val rawNewDiskon = snap.get("newUserDiskonPerPaket") as? Map<*, *>
+                val newUserDiskonPerPaket = mutableMapOf<String, Int>()
+                rawNewDiskon?.forEach { (k, v) -> if (k is String && v is Number) newUserDiskonPerPaket[k] = v.toInt() }
+                val promoStartedAt = snap.getLong("promoStartedAt") ?: 0L
+                val promoDurationHours = (snap.get("promoDurationHours") as? Number)?.toInt() ?: 0
                 val updatedBy = snap.getString("updatedBy") ?: ""
                 val updatedAt = snap.getLong("updatedAt") ?: 0L
                 onUpdate(PromoSettings(
                     promoAktif = promoAktif,
                     diskonPerPaket = diskonPerPaket,
                     addTvOverride = addTvOverride,
+                    newUserPromoActive = newUserPromoActive,
+                    newUserDiscountPercent = newUserDiscountPercent,
+                    newUserPromoDurationHours = newUserPromoDurationHours,
+                    newUserDiskonPerPaket = newUserDiskonPerPaket,
+                    promoStartedAt = promoStartedAt,
+                    promoDurationHours = promoDurationHours,
                     updatedBy = updatedBy,
                     updatedAt = updatedAt,
                 ))
@@ -739,6 +799,10 @@ class CloudRepository(private val app: Application) {
                 if (snap == null || !snap.exists()) { return@addSnapshotListener }
                 val ls = snap.get("licenseStatus") as? Map<*, *> ?: run { onUpdate(null); return@addSnapshotListener }
                 val status = ls["status"] as? String ?: ""
+                if (status == "revoked") {
+                    onUpdate(LicenseStatus(status = "revoked", pesan = "❌ Lisensi dicabut oleh admin"))
+                    return@addSnapshotListener
+                }
                 if (status != "active") { onUpdate(null); return@addSnapshotListener }
                 val expiry = ls["expiresAt"] as? String ?: ""
                 val storedMaxTv = (ls["maxTv"] as? Number)?.toInt() ?: 0
@@ -788,6 +852,8 @@ class CloudRepository(private val app: Application) {
                         newUserDiscountPercent = newUserDiscountPercent,
                         newUserPromoDurationHours = newUserPromoDurationHours,
                         newUserDiskonPerPaket = newUserDiskonPerPaket,
+                        promoStartedAt = snap.getLong("promoStartedAt") ?: 0L,
+                        promoDurationHours = (snap.get("promoDurationHours") as? Number)?.toInt() ?: 0,
                     ))
                 }
                 .addOnFailureListener { Log.e("CloudRepo", "fetchPromoSettings failed: ${it.message}"); cont.resume(null) }
@@ -840,5 +906,118 @@ class CloudRepository(private val app: Application) {
                 }
                 onUpdate(list)
             }
+    }
+
+    fun listenClientStatus(username: String, tvId: String, onUpdate: (ClientStatus) -> Unit): ListenerRegistration? {
+        if (username.isBlank() || tvId.isBlank()) return null
+        return firestore
+            .collection("billingps_users").document(username)
+            .collection("tvCommands").document(tvId)
+            .addSnapshotListener { snap, error ->
+                if (error != null) { Log.e("CloudRepo", "listenClientStatus error: ${error.message}"); return@addSnapshotListener }
+                if (snap == null) return@addSnapshotListener
+                val exists = snap.exists()
+                val online = snap.getBoolean("clientOnline") ?: false
+                val version = snap.getString("clientVersion") ?: ""
+                val lastSeen = snap.getTimestamp("lastSeen")?.toDate()?.time ?: 0L
+                val allFields = snap.data?.keys?.joinToString(",") ?: "none"
+                Log.i("CloudRepo", "listenClientStatus: tvId=$tvId exists=$exists online=$online version=$version lastSeen=$lastSeen fields=[$allFields]")
+                onUpdate(ClientStatus(online, version, lastSeen))
+            }
+    }
+
+    fun sendPlayVideo(username: String, tvId: String, videoUrl: String) {
+        if (username.isBlank() || tvId.isBlank() || videoUrl.isBlank()) return
+        firestore
+            .collection("billingps_users").document(username)
+            .collection("tvCommands").document(tvId)
+            .set(
+                mapOf(
+                    "playVideo" to true,
+                    "videoUrl" to videoUrl,
+                    "timestamp" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+                ),
+                com.google.firebase.firestore.SetOptions.merge(),
+            )
+    }
+
+    fun sendCacheMedia(username: String, tvId: String, mediaUrl: String) {
+        if (username.isBlank() || tvId.isBlank() || mediaUrl.isBlank()) return
+        firestore
+            .collection("billingps_users").document(username)
+            .collection("tvCommands").document(tvId)
+            .set(
+                mapOf(
+                    "cacheMedia" to true,
+                    "mediaUrl" to mediaUrl,
+                    "timestamp" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+                ),
+                com.google.firebase.firestore.SetOptions.merge(),
+            )
+    }
+
+    fun sendWarningImage(username: String, tvId: String, imageUrl: String) {
+        if (username.isBlank() || tvId.isBlank() || imageUrl.isBlank()) return
+        firestore
+            .collection("billingps_users").document(username)
+            .collection("tvCommands").document(tvId)
+            .set(
+                mapOf(
+                    "warningImageUrl" to imageUrl,
+                ),
+                com.google.firebase.firestore.SetOptions.merge(),
+            )
+    }
+
+    fun sendWarningVideo(username: String, tvId: String, videoUrl: String) {
+        if (username.isBlank() || tvId.isBlank() || videoUrl.isBlank()) return
+        firestore
+            .collection("billingps_users").document(username)
+            .collection("tvCommands").document(tvId)
+            .set(
+                mapOf(
+                    "warningVideoUrl" to videoUrl,
+                ),
+                com.google.firebase.firestore.SetOptions.merge(),
+            )
+    }
+
+    fun sendHdmiPort(username: String, tvId: String, hdmiPort: Int) {
+        if (username.isBlank() || tvId.isBlank() || hdmiPort <= 0) return
+        firestore
+            .collection("billingps_users").document(username)
+            .collection("tvCommands").document(tvId)
+            .set(
+                mapOf(
+                    "hdmiPort" to hdmiPort.toLong(),
+                ),
+                com.google.firebase.firestore.SetOptions.merge(),
+            )
+    }
+
+    // ── Save license request notification (for admin) ──────
+    fun saveLicenseRequestNotification(username: String, paket: String, harga: Int, invoiceId: String) {
+        if (!ensureSignedInSync()) return
+        try {
+            val data = HashMap<String, Any>()
+            data["type"] = "license_request"
+            data["username"] = "rrbilling"
+            data["user"] = username
+            data["paket"] = paket
+            data["harga"] = harga
+            data["invoiceId"] = invoiceId
+            data["title"] = "Request Lisensi Baru"
+            data["body"] = "User $username memesan paket $paket"
+            data["sentAt"] = System.currentTimeMillis()
+            data["read"] = false
+            firestore.collection("notifications").add(data)
+            Log.i("CloudRepo", "saveLicenseRequestNotification: $username - $paket")
+        } catch (e: Exception) {
+            Log.e("CloudRepo", "saveLicenseRequestNotification error: ${e.message}")
+        }
+    }
+
+    private fun ensureSignedInSync(): Boolean {
+        return auth.currentUser != null
     }
 }

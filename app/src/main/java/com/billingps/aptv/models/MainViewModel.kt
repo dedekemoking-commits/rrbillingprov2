@@ -177,6 +177,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val autoCutRepeat = mutableSetOf<String>()
     private val pendingSleepJobs = mutableMapOf<String, Job>()
     private val sessionWakeJobs = mutableMapOf<String, Job>()
+    private var supabaseLicensePollerJob: Job? = null
+    @Volatile private var supabaseLicenseActive = false
 
     init {
         StorageUtil.init(application)
@@ -468,12 +470,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.value = _state.value.copy(trialBatas = 0L, maxTv = 0)
             StorageUtil.saveTrial(0L)
         }
-        // Start real-time license listener if logged in
+        // Restore license + listeners if logged in. restoreLicenseAndTrial
+        // starts the Supabase poller before the Firestore listener so a stale
+        // Firestore doc cannot revoke a valid Supabase license on startup.
         if (cu.isNotEmpty()) {
-            startLicenseListener(cu)
-            startPromoListener()
-            startNotifListener(cu)
-            startClientStatusListeners(cu)
+            viewModelScope.launch {
+                try {
+                    restoreLicenseAndTrial(cu)
+                } catch (e: Exception) {
+                    Log.e("MainVM", "loadAll restoreLicenseAndTrial: ${e.message}")
+                }
+            }
             // Force fetch latest promo from Firestore
             viewModelScope.launch {
                 val fetched = cloudRepo.fetchPromoSettings()
@@ -1282,35 +1289,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         // 2) Coba ambil data terbaru dari cloud — PRIORITAS UTAMA
+        supabaseLicenseActive = false
+        var licenseFromSupabase = false
+        var supabaseLic: LicenseStatus? = null
         try {
-            val cloudLic = withContext(Dispatchers.IO) { cloudRepo.fetchLicenseForUser(username) }
-            if (cloudLic != null && cloudLic.status == "active") {
-                Log.i("MainVM", "restoreLicenseAndTrial: cloud FOUND status=${cloudLic.status} maxTv=${cloudLic.maxTv} promoAddTv=${cloudLic.promoAddTv} pesan='${cloudLic.pesan}'")
-                // Cloud adalah primary — tapi jika cloud tidak punya promoAddTv, pertahankan dari lokal
-                var mergedPromoAddTv = if (cloudLic.promoAddTv > 0) cloudLic.promoAddTv
-                    else lic.promoAddTv
-                // Jika masih 0, coba langsung dari user doc (mungkin promo ada di sana)
-                if (mergedPromoAddTv == 0) {
-                    try {
-                        val userDocLic = withContext(Dispatchers.IO) { cloudRepo.fetchUserLicenseStatus(username) }
-                        if (userDocLic != null && userDocLic.promoAddTv > 0) {
-                            mergedPromoAddTv = userDocLic.promoAddTv
-                            Log.i("MainVM", "restoreLicenseAndTrial: promoAddTv from userDoc=$mergedPromoAddTv")
-                        }
-                    } catch (e: Exception) { Log.e("MainVM", "fetchUserDoc promo failed: ${e.message}") }
+            supabaseLic = withContext(Dispatchers.IO) { supabaseRepo.fetchLicenseStatus(username) }
+        } catch (e: Exception) {
+            Log.e("MainVM", "supabase fetch license failed: ${e.message}")
+        }
+        if (supabaseLic?.status == "active") {
+            Log.i("MainVM", "restoreLicenseAndTrial: Supabase FOUND status=active maxTv=${supabaseLic.maxTv} expiresAt='${supabaseLic.expiresAt}'")
+            lic = supabaseLic
+            licenseFromSupabase = true
+            supabaseLicenseActive = true
+            trial = 0L
+            StorageUtil.saveLicense(lic)
+        } else if (supabaseLic?.status == "revoked") {
+            Log.i("MainVM", "restoreLicenseAndTrial: Supabase license REVOKED")
+            lic = LicenseStatus(
+                status = "revoked",
+                pesan = supabaseLic.pesan.ifBlank { "Lisensi dicabut oleh admin." },
+            )
+            supabaseLicenseActive = false
+            trial = 0L
+            StorageUtil.saveLicense(lic)
+        } else {
+            try {
+                val cloudLic = withContext(Dispatchers.IO) { cloudRepo.fetchLicenseForUser(username) }
+                if (cloudLic != null && cloudLic.status == "active") {
+                    Log.i("MainVM", "restoreLicenseAndTrial: cloud FOUND status=${cloudLic.status} maxTv=${cloudLic.maxTv} promoAddTv=${cloudLic.promoAddTv} pesan='${cloudLic.pesan}'")
+                    // Cloud adalah primary — tapi jika cloud tidak punya promoAddTv, pertahankan dari lokal
+                    var mergedPromoAddTv = if (cloudLic.promoAddTv > 0) cloudLic.promoAddTv
+                        else lic.promoAddTv
+                    // Jika masih 0, coba langsung dari user doc (mungkin promo ada di sana)
+                    if (mergedPromoAddTv == 0) {
+                        try {
+                            val userDocLic = withContext(Dispatchers.IO) { cloudRepo.fetchUserLicenseStatus(username) }
+                            if (userDocLic != null && userDocLic.promoAddTv > 0) {
+                                mergedPromoAddTv = userDocLic.promoAddTv
+                                Log.i("MainVM", "restoreLicenseAndTrial: promoAddTv from userDoc=$mergedPromoAddTv")
+                            }
+                        } catch (e: Exception) { Log.e("MainVM", "fetchUserDoc promo failed: ${e.message}") }
+                    }
+                    lic = cloudLic.copy(promoAddTv = mergedPromoAddTv)
+                    if (mergedPromoAddTv > 0) {
+                        lic = lic.copy(maxTv = mergedPromoAddTv)
+                    }
+                    trial = 0L
+                    StorageUtil.saveLicense(lic)
+                } else if (supabaseLic?.status == "active") {
+                    Log.i("MainVM", "restoreLicenseAndTrial: Supabase FOUND status=active maxTv=${supabaseLic.maxTv} expiresAt='${supabaseLic.expiresAt}'")
+                    lic = supabaseLic
+                    licenseFromSupabase = true
+                    trial = 0L
+                    StorageUtil.saveLicense(lic)
+                } else {
+                    Log.i("MainVM", "restoreLicenseAndTrial: cloud null or not active: $cloudLic")
                 }
-                lic = cloudLic.copy(promoAddTv = mergedPromoAddTv)
-                if (mergedPromoAddTv > 0) {
-                    lic = lic.copy(maxTv = mergedPromoAddTv)
-                }
-                trial = 0L
-                StorageUtil.saveLicense(lic)
-            } else {
-                Log.i("MainVM", "restoreLicenseAndTrial: cloud null or not active: $cloudLic")
-            }
-        } catch (e: Exception) { Log.e("MainVM", "cloud fetch license failed: ${e.message}") }
+            } catch (e: Exception) { Log.e("MainVM", "cloud fetch license failed: ${e.message}") }
+        }
 
-        if (lic.status == "active" && !enforceLicenseIntegrity(username, lic)) {
+        if (!licenseFromSupabase && lic.status == "active" && !enforceLicenseIntegrity(username, lic)) {
             lic = LicenseStatus()
         }
 
@@ -1322,7 +1361,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 else -> parseMaxTvFromPesan(lic.pesan) ?: lic.maxTv
             }
             Log.i("MainVM", "restoreLicenseAndTrial: ACTIVE lic.maxTv=${lic.maxTv} pesan='${lic.pesan}' -> effectiveMaxTv=$effectiveMaxTv")
-            _state.value = _state.value.copy(licenseStatus = lic, trialBatas = 0L, maxTv = effectiveMaxTv)
+            _state.value = _state.value.copy(licenseStatus = lic.copy(maxTv = effectiveMaxTv), trialBatas = 0L, maxTv = effectiveMaxTv)
             refreshHubConfig()
             startListeners(username)
             return
@@ -1453,7 +1492,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val maxTrustedMaxTv = trusted.mapNotNull { signedMaxTv(it) }.maxOrNull()
-        if (lic.maxTv == 0) {
+        val effectiveMaxTv = when {
+            lic.promoAddTv > 0 -> lic.promoAddTv
+            lic.maxTv > 0 -> lic.maxTv
+            else -> parseMaxTvFromPesan(lic.pesan) ?: 0
+        }
+        if (effectiveMaxTv == 0) {
             val hasUnlimited = trusted.any { record ->
                 val q = signedMaxTv(record)
                 q == null || q >= 999999
@@ -1462,7 +1506,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 Log.w("MainVM", "License integrity: unlimited TV not signed for $username")
                 return LicenseIntegrityResult(false)
             }
-        } else if (maxTrustedMaxTv != null && lic.maxTv > maxTrustedMaxTv) {
+        } else if (maxTrustedMaxTv != null && effectiveMaxTv > maxTrustedMaxTv) {
             Log.w("MainVM", "License integrity: maxTv exceeds signed maxTv for $username")
             return LicenseIntegrityResult(false)
         }
@@ -1495,15 +1539,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             status = "revoked",
             pesan = "Lisensi tidak valid. Hubungi admin.",
         )
-        _state.value = _state.value.copy(licenseStatus = revoked, maxTv = 0)
+        _state.value = _state.value.copy(licenseStatus = revoked, maxTv = trialQuotaMaxTv())
         StorageUtil.saveLicense(revoked)
         refreshHubConfig()
         Log.w("MainVM", "License integrity failed for $username; revoked ids=${result.invalidIds}")
         return false
     }
 
+    private fun trialQuotaMaxTv(): Int =
+        if (_state.value.trialBatas > System.currentTimeMillis()) 2 else 0
+
     private fun parseMaxTvFromPesan(pesan: String): Int? {
         val u = pesan.uppercase()
+        if (u.contains("UNLIMITED")) return 0
+        val total = Regex("TOTAL\\s+(\\d+)\\s*TV", RegexOption.IGNORE_CASE)
+            .find(pesan)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        if (total != null && total > 0) return total
         return when {
             u.contains("LIFETIME") -> 0
             u.contains("TAHUNAN") || u.contains("1 TAHUN") -> 15
@@ -1547,6 +1598,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun startListeners(username: String) {
         startLicenseListener(username)
+        startSupabaseLicensePolling(username)
         startPromoListener()
         startNotifListener(username)
         initFcmToken(username)
@@ -1559,16 +1611,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         userDocListener = cloudRepo.listenUserLicense(username) { cloudLic ->
             if (cloudLic != null) {
                 if (cloudLic.status == "revoked") {
+                    if (supabaseLicenseActive) {
+                        Log.i("MainVM", "listener: Firestore revoked ignored, Supabase license active")
+                        return@listenUserLicense
+                    }
                     Log.i("MainVM", "listener: license REVOKED, clearing local state")
-                    _state.value = _state.value.copy(licenseStatus = LicenseStatus(), maxTv = 0)
+                    _state.value = _state.value.copy(licenseStatus = LicenseStatus(), maxTv = trialQuotaMaxTv())
                     StorageUtil.saveLicense(LicenseStatus())
                     refreshHubConfig()
                 } else {
                     viewModelScope.launch {
-                        if (!enforceLicenseIntegrity(username, cloudLic)) return@launch
-                        Log.i("MainVM", "listener: license updated to ${cloudLic.status} expires=${cloudLic.expiresAt}")
-                        _state.value = _state.value.copy(licenseStatus = cloudLic, trialBatas = 0L, maxTv = cloudLic.maxTv)
-                        StorageUtil.saveLicense(cloudLic)
+                        if (!supabaseLicenseActive && !enforceLicenseIntegrity(username, cloudLic)) return@launch
+                        val effectiveMaxTv = when {
+                            cloudLic.promoAddTv > 0 -> cloudLic.promoAddTv
+                            cloudLic.maxTv > 0 -> cloudLic.maxTv
+                            else -> parseMaxTvFromPesan(cloudLic.pesan) ?: 0
+                        }
+                        Log.i("MainVM", "listener: license updated to ${cloudLic.status} expires=${cloudLic.expiresAt} maxTv=$effectiveMaxTv")
+                        _state.value = _state.value.copy(licenseStatus = cloudLic.copy(maxTv = effectiveMaxTv), trialBatas = 0L, maxTv = effectiveMaxTv)
+                        StorageUtil.saveLicense(cloudLic.copy(maxTv = effectiveMaxTv))
                         refreshHubConfig()
                         // Activate the unactivated license doc so License Generator history shows it as activated
                         withContext(Dispatchers.IO) {
@@ -1741,6 +1802,95 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         userDocListener = null
         invoicesListener?.remove()
         invoicesListener = null
+        supabaseLicensePollerJob?.cancel()
+        supabaseLicensePollerJob = null
+    }
+
+    private fun startSupabaseLicensePolling(username: String) {
+        supabaseLicensePollerJob?.cancel()
+        supabaseLicensePollerJob = viewModelScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                try {
+                    val lic = supabaseRepo.fetchLicenseStatus(username)
+                    if (lic != null) {
+                        withContext(Dispatchers.Main) { applySupabaseLicense(lic) }
+                    }
+                    val confirmed = supabaseRepo.fetchConfirmedInvoices(username)
+                    if (confirmed.isNotEmpty()) {
+                        withContext(Dispatchers.Main) { mergeSupabaseInvoices(confirmed) }
+                    }
+                } catch (e: Exception) {
+                    Log.w("MainVM", "supabase license poll: ${e.message}")
+                }
+                delay(15_000)
+            }
+        }
+    }
+
+    private fun applySupabaseLicense(lic: LicenseStatus) {
+        if (lic.status == "revoked") {
+            supabaseLicenseActive = false
+            if (_state.value.licenseStatus.status != "revoked") {
+                Log.i("MainVM", "supabase poll: license REVOKED")
+                val revoked = LicenseStatus(
+                    status = "revoked",
+                    pesan = lic.pesan.ifBlank { "Lisensi dicabut oleh admin." },
+                )
+                _state.value = _state.value.copy(licenseStatus = revoked, maxTv = trialQuotaMaxTv())
+                StorageUtil.saveLicense(revoked)
+                refreshHubConfig()
+            }
+            return
+        }
+        if (lic.status != "active") {
+            supabaseLicenseActive = false
+            return
+        }
+        supabaseLicenseActive = true
+
+        val current = _state.value.licenseStatus
+        if (current.status == "active") {
+            val currentExpiry = parseExpiryMillis(current.expiresAt)
+            val newExpiry = parseExpiryMillis(lic.expiresAt)
+            if (currentExpiry != null && newExpiry != null && newExpiry < currentExpiry) return
+            if (current.maxTv == 0 && lic.maxTv > 0) return
+            if (current.expiresAt == lic.expiresAt &&
+                current.maxTv == lic.maxTv &&
+                current.paket == lic.paket &&
+                current.clientEnabled == lic.clientEnabled
+            ) {
+                return
+            }
+        }
+
+        Log.i("MainVM", "supabase poll: license active maxTv=${lic.maxTv} expires=${lic.expiresAt}")
+        _state.value = _state.value.copy(licenseStatus = lic, trialBatas = 0L, maxTv = lic.maxTv)
+        StorageUtil.saveLicense(lic)
+        refreshHubConfig()
+    }
+
+    private fun mergeSupabaseInvoices(cloudInvoices: List<Invoice>) {
+        val current = _state.value.invoices.toMutableList()
+        var changed = false
+        for (cloud in cloudInvoices) {
+            val idx = current.indexOfFirst { it.id == cloud.id }
+            if (idx >= 0) {
+                val existing = current[idx]
+                if (existing.status != "CONFIRMED" || existing.kodeLisensi != cloud.kodeLisensi) {
+                    current[idx] = cloud
+                    changed = true
+                }
+            } else {
+                current.add(cloud)
+                changed = true
+            }
+        }
+        if (!changed) return
+        _state.value = _state.value.copy(
+            invoices = current,
+            pendingInvoiceCount = current.count { it.status == "WAITING_CONFIRMATION" },
+        )
+        viewModelScope.launch(Dispatchers.IO) { StorageUtil.saveInvoices(current) }
     }
 
     private var broadcastListener: ListenerRegistration? = null
@@ -3503,14 +3653,39 @@ fun bersihkanTransaksi() {
         val updated = newList.firstOrNull { it.id == invoiceId }
         if (updated != null) {
             viewModelScope.launch {
+                var supabaseInvoiceOk = false
+                try {
+                    withContext(Dispatchers.IO) {
+                        supabaseInvoiceOk = supabaseRepo.saveInvoice(updated)
+                        if (supabaseInvoiceOk) {
+                            supabaseRepo.saveLicenseRequest(
+                                username = updated.username,
+                                paket = updated.paket,
+                                harga = updated.harga,
+                                invoiceId = updated.id,
+                                jumlahTv = updated.jumlahTv,
+                            )
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("MainVM", "supabase save invoice in uploadBukti: ${e.message}")
+                }
+
+                var firestoreOk = false
                 try {
                     cloudRepo.saveInvoiceToCloud(updated)
                     cloudRepo.saveLicenseRequestNotification(updated.username, updated.paket, updated.harga, updated.id)
-                    _state.value = _state.value.copy(statusMessage = "Bukti terkirim! Menunggu konfirmasi RR License Generator.")
+                    firestoreOk = true
                 } catch (e: Exception) {
                     Log.e("MainVM", "saveInvoiceToCloud in uploadBukti: ${e.message}")
+                }
+
+                if (supabaseInvoiceOk || firestoreOk) {
+                    Log.i("MainVM", "uploadBukti: supabase=$supabaseInvoiceOk firestore=$firestoreOk")
+                    _state.value = _state.value.copy(statusMessage = "Bukti terkirim! Menunggu konfirmasi RR License Generator.")
+                } else {
                     _state.value = _state.value.copy(
-                        statusMessage = "Gagal mengirim bukti: ${e.message}. Coba lagi.",
+                        statusMessage = "Gagal mengirim bukti. Periksa koneksi lalu coba lagi.",
                     )
                     // Revert status locally so user can retry
                     val revertList = _state.value.invoices.map {

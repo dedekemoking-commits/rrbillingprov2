@@ -66,6 +66,12 @@ enum class BackgroundOption(val displayName: String, val colors: BackgroundColor
         darkSurfaceV2 = Color(0xFF1C2333),
         darkSurfaceV3 = Color(0xFF242B3D),
     )),
+    WHITE("Putih", BackgroundColors(
+        darkBackground = Color(0xFFFFFFFF),
+        darkSurface = Color(0xFFF8FAFC),
+        darkSurfaceV2 = Color(0xFFF1F5F9),
+        darkSurfaceV3 = Color(0xFFE2E8F0),
+    )),
 }
 
 data class ThemeColors(

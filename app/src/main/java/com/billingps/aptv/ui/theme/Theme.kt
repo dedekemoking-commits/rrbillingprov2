@@ -53,26 +53,32 @@ fun applyBackground(option: BackgroundOption) {
 fun colorSchemeFor(fontOption: ThemeOption, bgOption: BackgroundOption): ColorScheme {
     val p = fontOption.palette
     val b = bgOption.colors
-    return if (fontOption == ThemeOption.LIGHT_MODE || fontOption == ThemeOption.TOSCA_GREEN) {
+    val useLight = fontOption == ThemeOption.LIGHT_MODE ||
+        fontOption == ThemeOption.TOSCA_GREEN ||
+        bgOption == BackgroundOption.WHITE
+    val whiteBackground = bgOption == BackgroundOption.WHITE
+    val lightTextPrimary = Color(0xFF0F172A)
+    val lightTextSecondary = Color(0xFF475569)
+    return if (useLight) {
         lightColorScheme(
-            primary = p.neonGreen,
-            onPrimary = p.textOnGreen,
+            primary = if (whiteBackground) p.neonGreenDim else p.neonGreen,
+            onPrimary = if (whiteBackground) Color.White else p.textOnGreen,
             primaryContainer = p.gamersGreenDark,
             onPrimaryContainer = p.neonGreen,
             secondary = p.neonCyan,
-            onSecondary = p.textOnGreen,
+            onSecondary = if (whiteBackground) Color.White else p.textOnGreen,
             secondaryContainer = Color(0xFFB3E5FC),
             onSecondaryContainer = p.neonCyan,
             tertiary = p.neonPurple,
-            onTertiary = p.textOnGreen,
+            onTertiary = if (whiteBackground) Color.White else p.textOnGreen,
             background = b.darkBackground,
-            onBackground = p.textPrimary,
+            onBackground = if (whiteBackground) lightTextPrimary else p.textPrimary,
             surface = b.darkSurface,
-            onSurface = p.textPrimary,
+            onSurface = if (whiteBackground) lightTextPrimary else p.textPrimary,
             surfaceVariant = b.darkSurfaceV2,
-            onSurfaceVariant = p.textSecondary,
+            onSurfaceVariant = if (whiteBackground) lightTextSecondary else p.textSecondary,
             error = p.neonRed,
-            onError = p.textPrimary,
+            onError = if (whiteBackground) Color.White else p.textPrimary,
             errorContainer = Color(0xFFFFCDD2),
             onErrorContainer = p.neonRed,
             outline = p.neonGreenDim,
@@ -119,6 +125,12 @@ fun BillingPSTheme(
     LaunchedEffect(fontTheme, bgTheme) {
         applyFontTheme(fontTheme)
         applyBackground(bgTheme)
+        if (bgTheme == BackgroundOption.WHITE) {
+            TextPrimary = Color(0xFF0F172A)
+            TextSecondary = Color(0xFF475569)
+            TextDim = Color(0xFF94A3B8)
+            TextOnGreen = Color.White
+        }
     }
     MaterialTheme(
         colorScheme = colorSchemeFor(fontTheme, bgTheme),

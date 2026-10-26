@@ -931,7 +931,7 @@ class RRBridge(
                     .put("status", state.licenseStatus.status)
                     .put("pesan", state.licenseStatus.pesan)
                     .put("expiresAt", state.licenseStatus.expiresAt)
-                    .put("maxTv", state.licenseStatus.maxTv)
+                    .put("maxTv", state.maxTv)
                     .put("promoAddTv", state.licenseStatus.promoAddTv)
                     .put("paket", state.licenseStatus.paket)
                     .put("clientEnabled", mainViewModel.isClientFeatureEnabled())

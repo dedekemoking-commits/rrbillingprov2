@@ -8,9 +8,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -19,6 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import java.io.StringReader
 import java.net.HttpURLConnection
 import java.net.URL
@@ -50,6 +54,11 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
     private var promoListener: ListenerRegistration? = null
     private var licenseRequestListener: ListenerRegistration? = null
     private var historyListener: ListenerRegistration? = null
+
+    private var supabaseInvoices: List<Invoice> = emptyList()
+    private var firestoreInvoices: List<Invoice> = emptyList()
+    private var supabaseRequests: List<LicenseRequest> = emptyList()
+    private var firestoreRequests: List<LicenseRequest> = emptyList()
 
     var isLoggedIn by mutableStateOf(false); private set
     var currentUser by mutableStateOf(""); private set
@@ -229,7 +238,10 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                         hargaPerTv = o.optInt("hargaPerTv", 0),
                     ))
                 }
-                withContext(Dispatchers.Main) { invoiceList = items.sortedByDescending { it.dibuat } }
+                withContext(Dispatchers.Main) {
+                    supabaseInvoices = items
+                    publishInvoices()
+                }
             }
         } catch (ex: Exception) { Log.e("LicenseGen", "parse invoices: ${ex.message}") }
         // Status lisensi online (license_status) — sumber kebenaran revoke.
@@ -313,17 +325,136 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                         sentAt = o.optLong("sentAt", 0L), read = o.optBoolean("read", false),
                     ))
                 }
-                val newPending = items.count { !it.read }
                 withContext(Dispatchers.Main) {
-                    if (newPending > pendingRequestCount && pendingRequestCount >= 0) {
-                        val latest = items.firstOrNull { !it.read }
+                    val previousPending = pendingRequestCount
+                    supabaseRequests = items
+                    publishRequests()
+                    if (pendingRequestCount > previousPending && previousPending >= 0) {
+                        val latest = licenseRequests.firstOrNull { !it.read }
                         if (latest != null) NotificationHelper.show("Request Lisensi Baru", "${latest.user} — ${latest.paket} (Rp${String.format("%,d", latest.harga)})")
                     }
-                    pendingRequestCount = newPending
-                    licenseRequests = items
                 }
             }
         } catch (ex: Exception) { Log.e("LicenseGen", "parse notif: ${ex.message}") }
+    }
+
+    private fun publishInvoices() {
+        val merged = LinkedHashMap<String, Invoice>()
+        for (inv in supabaseInvoices) merged[invoiceKey(inv)] = inv
+        for (inv in firestoreInvoices) {
+            val key = invoiceKey(inv)
+            val existing = merged[key]
+            merged[key] = if (existing == null) inv else mergeInvoice(existing, inv)
+        }
+        invoiceList = merged.values.sortedByDescending { it.dibuat }
+    }
+
+    private fun mergeInvoice(a: Invoice, b: Invoice): Invoice {
+        val aConfirmed = a.status == "CONFIRMED" && a.kodeLisensi.isNotBlank()
+        val bConfirmed = b.status == "CONFIRMED" && b.kodeLisensi.isNotBlank()
+        if (aConfirmed != bConfirmed) return if (aConfirmed) a else b
+        if (a.buktiBase64.isNotBlank() != b.buktiBase64.isNotBlank()) {
+            return if (a.buktiBase64.isNotBlank()) a else b
+        }
+        return b
+    }
+
+    private fun invoiceKey(inv: Invoice): String =
+        inv.id.ifBlank { "${inv.username}|${inv.dibuat}" }
+
+    private fun publishRequests() {
+        val merged = LinkedHashMap<String, LicenseRequest>()
+        for (req in supabaseRequests) merged[requestKey(req)] = req
+        for (req in firestoreRequests) {
+            val key = requestKey(req)
+            val existing = merged[key]
+            merged[key] = if (existing == null) req else req.copy(read = existing.read && req.read)
+        }
+        val sorted = merged.values.sortedByDescending { it.sentAt }
+        licenseRequests = sorted
+        pendingRequestCount = sorted.count { !it.read }
+    }
+
+    private fun requestKey(req: LicenseRequest): String =
+        req.invoiceId.ifBlank { req.id }
+
+    private fun longValue(value: Any?): Long = when (value) {
+        is Number -> value.toLong()
+        is Timestamp -> value.toDate().time
+        is String -> value.toLongOrNull() ?: 0L
+        else -> 0L
+    }
+
+    private fun docToInvoice(doc: DocumentSnapshot): Invoice? {
+        val d = doc.data ?: return null
+        return Invoice(
+            id = (d["id"] as? String)?.takeIf { it.isNotBlank() } ?: doc.id,
+            username = d["username"] as? String ?: "",
+            email = d["email"] as? String ?: "",
+            paket = d["paket"] as? String ?: "",
+            harga = (d["harga"] as? Number)?.toInt() ?: 0,
+            status = d["status"] as? String ?: "PENDING",
+            dibuat = longValue(d["dibuat"]),
+            dibayar = longValue(d["dibayar"]),
+            confirmedBy = d["confirmedBy"] as? String ?: "",
+            kodeLisensi = d["kodeLisensi"] as? String ?: "",
+            buktiBase64 = d["buktiBase64"] as? String ?: "",
+            jumlahTv = (d["jumlahTv"] as? Number)?.toInt()
+                ?: (d["jumlah_tv"] as? Number)?.toInt() ?: 0,
+            maxTv = (d["maxTv"] as? Number)?.toInt() ?: 0,
+            mode = d["mode"] as? String ?: "",
+            baseMaxTv = (d["baseMaxTv"] as? Number)?.toInt() ?: 0,
+            clientEnabled = d["clientEnabled"] as? Boolean ?: true,
+            permintaan = d["permintaan"] as? String ?: "",
+            hargaPerTv = (d["hargaPerTv"] as? Number)?.toInt() ?: 0,
+        )
+    }
+
+    private fun startFirestoreInvoiceListener() {
+        invoicesListener?.remove()
+        invoicesListener = firestore.collection("invoices")
+            .orderBy("dibuat", Query.Direction.DESCENDING)
+            .limit(100)
+            .addSnapshotListener { snap, error ->
+                if (error != null) {
+                    Log.e("LicenseGen", "listen invoices: ${error.message}")
+                    return@addSnapshotListener
+                }
+                firestoreInvoices = snap?.documents?.mapNotNull { docToInvoice(it) } ?: emptyList()
+                publishInvoices()
+            }
+    }
+
+    private fun startFirestoreRequestListener() {
+        licenseRequestListener?.remove()
+        licenseRequestListener = firestore.collection("notifications")
+            .whereEqualTo("type", "license_request")
+            .addSnapshotListener { snap, error ->
+                if (error != null) {
+                    Log.e("LicenseGen", "listen license requests: ${error.message}")
+                    return@addSnapshotListener
+                }
+                val previousPending = pendingRequestCount
+                firestoreRequests = snap?.documents?.mapNotNull { doc ->
+                    val d = doc.data ?: return@mapNotNull null
+                    LicenseRequest(
+                        id = doc.id,
+                        user = d["user"] as? String ?: "",
+                        paket = d["paket"] as? String ?: "",
+                        harga = (d["harga"] as? Number)?.toInt() ?: 0,
+                        invoiceId = d["invoiceId"] as? String ?: "",
+                        title = d["title"] as? String ?: "",
+                        body = d["body"] as? String ?: "",
+                        sentAt = longValue(d["sentAt"]),
+                        read = d["read"] as? Boolean ?: false,
+                    )
+                } ?: emptyList()
+                publishRequests()
+                if (pendingRequestCount > previousPending && previousPending >= 0) {
+                    val latest = licenseRequests.firstOrNull { !it.read }
+                    if (latest != null) NotificationHelper.show("Request Lisensi Baru", "${latest.user} — ${latest.paket} (Rp${String.format("%,d", latest.harga)})")
+                }
+            }
     }
 
     private fun parseStringIntMap(o: JSONObject?): Map<String, Int> {
@@ -573,24 +704,33 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
         licenseRequests = licenseRequests.map { it.copy(read = true) }
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // Menandai notifikasi terbaca. PATCH via HttpURLConnection tidak bisa
-    // diandalkan (lihat updateById), jadi pakai POST upsert dengan id.
-    try {
-        val notifIds = supabaseFetch(
-            "notifications?select=id&type=eq.license_request&read=eq.false&limit=200"
-        )
-        val arr = notifIds?.let { org.json.JSONArray(it) }
-        if (arr != null && arr.length() > 0) {
-            val row = JSONObject()
-            row.put("read", true)
-            for (i in 0 until arr.length()) {
-                val id = arr.getJSONObject(i).optString("id", "")
-                if (id.isNotEmpty()) updateById("notifications", id, row)
-            }
-        }
-    } catch (_: Exception) { }
+                val notifIds = supabaseFetch(
+                    "notifications?select=id&type=eq.license_request&read=eq.false&limit=200"
+                )
+                val arr = notifIds?.let { JSONArray(it) }
+                if (arr != null && arr.length() > 0) {
+                    val row = JSONObject()
+                    row.put("read", true)
+                    for (i in 0 until arr.length()) {
+                        val id = arr.getJSONObject(i).optString("id", "")
+                        if (id.isNotEmpty()) updateById("notifications", id, row)
+                    }
+                }
             } catch (e: Exception) {
-                Log.e("LicenseGen", "markLicenseRequestsRead error: ${e.message}")
+                Log.e("LicenseGen", "markLicenseRequestsRead supabase: ${e.message}")
+            }
+            try {
+                val snap = firestore.collection("notifications")
+                    .whereEqualTo("type", "license_request")
+                    .get()
+                    .awaitResult()
+                for (doc in snap.documents) {
+                    if (doc.getBoolean("read") != true) {
+                        doc.reference.update("read", true).awaitResult()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("LicenseGen", "markLicenseRequestsRead firestore: ${e.message}")
             }
         }
     }
@@ -604,18 +744,26 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
         invoicesListener = null
         promoListener?.remove()
         promoListener = null
+        licenseRequestListener?.remove()
+        licenseRequestListener = null
         historyListener?.remove()
         historyListener = null
+        supabasePollerJob?.cancel()
+        supabasePollerJob = null
         userList = emptyList()
         invoiceList = emptyList()
+        supabaseInvoices = emptyList()
+        firestoreInvoices = emptyList()
+        supabaseRequests = emptyList()
+        firestoreRequests = emptyList()
+        licenseRequests = emptyList()
+        pendingRequestCount = 0
         promo = PromoSettings()
         historyList = emptyList()
     }
 
     private fun startNotificationListener() {
-        // Firestore-based notifications digantikan polling Supabase
-        licenseRequestListener?.remove()
-        licenseRequestListener = null
+        startFirestoreRequestListener()
         startSupabasePolling()
     }
 
@@ -687,8 +835,8 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                 Log.i("LicenseGen", "snapshot received: ${snap.documents.size} docs, ${allUsers.size} users parsed, userList.size=${userList.size}")
             }
 
-        // Polling Supabase untuk promo, invoices, history; users tetap Firestore
-        invoicesListener?.remove(); invoicesListener = null
+        startFirestoreInvoiceListener()
+        startFirestoreRequestListener()
         historyListener?.remove(); historyListener = null
         promoListener?.remove(); promoListener = null
         startSupabasePolling()
@@ -849,11 +997,97 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                     prefer = "resolution=merge-duplicates,return=minimal")
                 if (!okLs) throw RuntimeException("Gagal tulis license_status")
 
-                // Auto-send push notification
                 val notifTitle = "🎉 Lisensi Aktif!"
                 val notifBody = if (targetMaxTv >= 999999)
                     "${invoice.paket} aktif hingga $expiry • unlimited TV"
                 else "${invoice.paket} aktif s/d $expiry • total $targetMaxTv TV"
+
+                val fsInvoice = hashMapOf<String, Any>(
+                    "id" to invoice.id,
+                    "username" to invoice.username,
+                    "email" to invoice.email,
+                    "paket" to invoice.paket,
+                    "harga" to invoice.harga,
+                    "status" to "CONFIRMED",
+                    "dibuat" to invoice.dibuat,
+                    "dibayar" to nowMs,
+                    "confirmedBy" to currentUser,
+                    "kodeLisensi" to kode,
+                    "buktiBase64" to invoice.buktiBase64,
+                    "jumlahTv" to qty,
+                    "maxTv" to targetMaxTv,
+                    "mode" to mode,
+                    "baseMaxTv" to invoice.baseMaxTv,
+                    "clientEnabled" to clientEnabled,
+                    "permintaan" to licenseDoc.optString("permintaan"),
+                )
+                firestore.collection("invoices").document(invoice.id)
+                    .set(fsInvoice, SetOptions.merge()).awaitResult()
+
+                val fsLicense = hashMapOf<String, Any>(
+                    "id" to kode,
+                    "kode" to kode,
+                    "payload" to payload,
+                    "signature" to signature,
+                    "paket" to invoice.paket,
+                    "username" to invoice.username,
+                    "email" to invoice.email,
+                    "expiry" to expiry,
+                    "maxTv" to targetMaxTv,
+                    "jumlahTv" to qty,
+                    "maxActivations" to 1,
+                    "clientEnabled" to clientEnabled,
+                    "mode" to mode,
+                    "permintaan" to licenseDoc.optString("permintaan"),
+                    "generatedBy" to currentUser,
+                    "generatedAt" to nowMs,
+                    "activatedAt" to 0L,
+                    "activatedDeviceId" to "",
+                    "revoked" to false,
+                )
+                firestore.collection("licenses").document(kode)
+                    .set(fsLicense).awaitResult()
+
+                val fsStatus = hashMapOf<String, Any>(
+                    "status" to "active",
+                    "pesan" to lsRow.optString("pesan"),
+                    "expiresAt" to expiry,
+                    "maxTv" to targetMaxTv,
+                    "promoAddTv" to 0,
+                    "paket" to invoice.paket,
+                    "clientEnabled" to clientEnabled,
+                    "mode" to mode,
+                )
+                firestore.collection("billingps_users").document(invoice.username)
+                    .set(hashMapOf("licenseStatus" to fsStatus), SetOptions.merge()).awaitResult()
+
+                try {
+                    val reqSnap = firestore.collection("notifications")
+                        .whereEqualTo("type", "license_request")
+                        .get()
+                        .awaitResult()
+                    for (doc in reqSnap.documents) {
+                        if (doc.getString("invoiceId") == invoice.id && doc.getBoolean("read") != true) {
+                            doc.reference.update("read", true).awaitResult()
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w("LicenseGen", "mark request read: ${e.message}")
+                }
+
+                try {
+                    firestore.collection("notifications").add(hashMapOf(
+                        "username" to invoice.username,
+                        "title" to notifTitle,
+                        "body" to notifBody,
+                        "type" to "license_confirmed",
+                        "sentAt" to nowMs,
+                        "read" to false,
+                    )).awaitResult()
+                } catch (e: Exception) {
+                    Log.w("LicenseGen", "firestore notification: ${e.message}")
+                }
+
                 sendFcmToUser(invoice.username, notifTitle, notifBody)
 
                 // Save notification history (Supabase)
@@ -1392,3 +1626,9 @@ private suspend fun com.google.android.gms.tasks.Task<*>?.await() {
             .addOnFailureListener { if (!cont.isCompleted) cont.resume(Unit) }
     }
 }
+
+private suspend fun <T> com.google.android.gms.tasks.Task<T>.awaitResult(): T =
+    suspendCancellableCoroutine { cont ->
+        addOnSuccessListener { if (!cont.isCompleted) cont.resume(it) }
+        addOnFailureListener { if (!cont.isCompleted) cont.resumeWithException(it) }
+    }

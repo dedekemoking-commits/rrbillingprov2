@@ -14,6 +14,8 @@ object LicenseCatalog {
     const val MODE_ADD = "add"
     const val MODE_RENEW = "renew"
 
+    const val VENDOR_ACCOUNT = "rrbillingpro"
+
     data class Plan(
         val code: String,
         val label: String,

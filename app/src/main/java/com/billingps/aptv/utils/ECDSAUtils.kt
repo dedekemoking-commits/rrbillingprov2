@@ -145,20 +145,24 @@ object ECDSAUtils {
         return false
     }
 
-    fun verify(data: String, signatureB64: String): Boolean {
-        // Integrity check: reject ECDSA verification on rooted devices
-        if (checkRoot()) {
-            Log.e("ECDSAUtils", "verify blocked: rooted device detected")
-            return false
-        }
+    fun verifySignature(data: String, signatureB64: String): Boolean {
         return try {
             val sig = Signature.getInstance("SHA256withECDSA")
             sig.initVerify(publicKey)
             sig.update(data.toByteArray(Charsets.UTF_8))
             sig.verify(Base64.decode(signatureB64, Base64.DEFAULT))
         } catch (e: Exception) {
-            Log.e("ECDSAUtils", "verify failed: ${e.message}")
+            Log.e("ECDSAUtils", "verifySignature failed: ${e.message}")
             false
         }
+    }
+
+    fun verify(data: String, signatureB64: String): Boolean {
+        // Integrity check: reject ECDSA verification on rooted devices
+        if (checkRoot()) {
+            Log.e("ECDSAUtils", "verify blocked: rooted device detected")
+            return false
+        }
+        return verifySignature(data, signatureB64)
     }
 }

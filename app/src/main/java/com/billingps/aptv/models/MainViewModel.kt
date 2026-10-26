@@ -1276,6 +1276,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) { Log.e("MainVM", "expiry check: ${e.message}") }
         }
 
+        if (lic.status == "active" && !enforceLicenseIntegrity(username, lic)) {
+            lic = LicenseStatus()
+            trial = 0L
+        }
+
         // 2) Coba ambil data terbaru dari cloud — PRIORITAS UTAMA
         try {
             val cloudLic = withContext(Dispatchers.IO) { cloudRepo.fetchLicenseForUser(username) }
@@ -1304,6 +1309,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 Log.i("MainVM", "restoreLicenseAndTrial: cloud null or not active: $cloudLic")
             }
         } catch (e: Exception) { Log.e("MainVM", "cloud fetch license failed: ${e.message}") }
+
+        if (lic.status == "active" && !enforceLicenseIntegrity(username, lic)) {
+            lic = LicenseStatus()
+        }
 
         // 3) Kalau ada lisensi aktif — terapkan hak penuh sesuai paket
         if (lic.status == "active") {
@@ -1342,14 +1351,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 trial = System.currentTimeMillis() + 3 * 24 * 60 * 60 * 1000L
                 try { withContext(Dispatchers.IO) { cloudRepo.saveTrialToCloud(username, trial) } } catch (e: Exception) {}
                 Log.i("MainVM", "restoreLicenseAndTrial: granting new trial (first device)")
-            } else if (trialDeviceId == currentDeviceId) {
-                // Same device had trial before — grant again if trial tracking allows
-                trial = System.currentTimeMillis() + 3 * 24 * 60 * 60 * 1000L
-                try { withContext(Dispatchers.IO) { cloudRepo.saveTrialToCloud(username, trial) } } catch (e: Exception) {}
-                Log.i("MainVM", "restoreLicenseAndTrial: re-granting trial (same device)")
             } else {
-                // Different device — trial already used elsewhere, no new trial
-                Log.w("MainVM", "restoreLicenseAndTrial: trial already granted to another device ($trialDeviceId), blocking new trial")
+                // Trial already used on this device — never grant a second free trial
+                Log.w("MainVM", "restoreLicenseAndTrial: trial already used on device ($trialDeviceId), blocking new trial")
                 trial = 0L
             }
         }
@@ -1358,6 +1362,144 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         StorageUtil.saveTrial(trial)
         refreshHubConfig()
         startListeners(username)
+    }
+
+    private data class LicenseIntegrityResult(
+        val valid: Boolean,
+        val invalidIds: List<String> = emptyList(),
+    )
+
+    private fun payloadJson(record: LicenseRecord): org.json.JSONObject? {
+        if (record.payload.isBlank()) return null
+        return try { org.json.JSONObject(record.payload) } catch (e: Exception) { null }
+    }
+
+    private fun payloadMatchesRecord(record: LicenseRecord): Boolean {
+        val json = payloadJson(record) ?: return false
+        val signedUser = json.optString("u", "")
+        if (signedUser.isNotBlank() && record.username.isNotBlank() &&
+            !signedUser.equals(record.username, ignoreCase = true)) return false
+        val signedEmail = json.optString("m", "")
+        if (signedEmail.isNotBlank() && record.email.isNotBlank() &&
+            !signedEmail.equals(record.email, ignoreCase = true)) return false
+        return true
+    }
+
+    private fun signedExpiry(record: LicenseRecord): String {
+        val json = payloadJson(record) ?: return record.expiry
+        return json.optString("e", "").takeIf { it.isNotBlank() } ?: record.expiry
+    }
+
+    private fun signedMaxTv(record: LicenseRecord): Int? {
+        val json = payloadJson(record) ?: return record.maxTv.takeIf { it > 0 }
+        if (!json.has("q")) return record.maxTv.takeIf { it > 0 }
+        return json.optInt("q", -1).takeIf { it >= 0 }
+    }
+
+    private fun parseExpiryMillis(value: String): Long? {
+        if (value.isBlank()) return null
+        return try {
+            java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                .parse(value)?.time
+        } catch (e: Exception) { null }
+    }
+
+    private suspend fun checkLicenseIntegrity(username: String, lic: LicenseStatus): LicenseIntegrityResult {
+        if (username.equals(LicenseCatalog.VENDOR_ACCOUNT, ignoreCase = true)) {
+            return LicenseIntegrityResult(true)
+        }
+        val email = _state.value.users[username]?.email ?: ""
+        val records = withContext(Dispatchers.IO) {
+            cloudRepo.getLicenseRecordsForUser(username, email)
+        } ?: return LicenseIntegrityResult(true)
+
+        if (records.isEmpty()) {
+            Log.w("MainVM", "License integrity: no records for $username")
+            return LicenseIntegrityResult(false)
+        }
+
+        val selfConfirmed = mutableMapOf<String, Boolean>()
+        for (record in records) {
+            if (record.generatedBy.isNotBlank()) {
+                selfConfirmed[record.id] = withContext(Dispatchers.IO) {
+                    cloudRepo.isRentalAdminAccount(record.generatedBy)
+                }
+            }
+        }
+
+        val trusted = records.filter { record ->
+            !record.revoked &&
+                selfConfirmed[record.id] != true &&
+                payloadMatchesRecord(record)
+        }
+        if (trusted.isEmpty()) {
+            val invalidIds = records
+                .filter { record ->
+                    record.revoked ||
+                        selfConfirmed[record.id] == true ||
+                        !payloadMatchesRecord(record)
+                }
+                .map { it.id }
+            Log.w("MainVM", "License integrity: no trusted records for $username")
+            return LicenseIntegrityResult(false, invalidIds)
+        }
+
+        val maxTrustedExpiry = trusted.mapNotNull { parseExpiryMillis(signedExpiry(it)) }.maxOrNull()
+        val userExpiry = parseExpiryMillis(lic.expiresAt)
+        if (maxTrustedExpiry != null && userExpiry != null &&
+            userExpiry > maxTrustedExpiry + 2L * 24 * 60 * 60 * 1000) {
+            Log.w("MainVM", "License integrity: expiry exceeds signed expiry for $username")
+            return LicenseIntegrityResult(false)
+        }
+
+        val maxTrustedMaxTv = trusted.mapNotNull { signedMaxTv(it) }.maxOrNull()
+        if (lic.maxTv == 0) {
+            val hasUnlimited = trusted.any { record ->
+                val q = signedMaxTv(record)
+                q == null || q >= 999999
+            }
+            if (!hasUnlimited) {
+                Log.w("MainVM", "License integrity: unlimited TV not signed for $username")
+                return LicenseIntegrityResult(false)
+            }
+        } else if (maxTrustedMaxTv != null && lic.maxTv > maxTrustedMaxTv) {
+            Log.w("MainVM", "License integrity: maxTv exceeds signed maxTv for $username")
+            return LicenseIntegrityResult(false)
+        }
+
+        return LicenseIntegrityResult(true)
+    }
+
+    private suspend fun enforceLicenseIntegrity(username: String, lic: LicenseStatus): Boolean {
+        if (lic.status != "active") return true
+        val result = checkLicenseIntegrity(username, lic)
+        if (result.valid) return true
+
+        withContext(Dispatchers.IO) {
+            result.invalidIds.forEach { id ->
+                if (id.isNotBlank()) cloudRepo.revokeLicense(id)
+            }
+            cloudRepo.writeLicenseStatusToUserDoc(
+                username,
+                mapOf(
+                    "status" to "revoked",
+                    "pesan" to "Lisensi tidak valid. Hubungi admin.",
+                    "expiresAt" to "",
+                    "maxTv" to 0,
+                    "promoAddTv" to 0,
+                    "clientEnabled" to false,
+                ),
+            )
+        }
+        val revoked = LicenseStatus(
+            status = "revoked",
+            pesan = "Lisensi tidak valid. Hubungi admin.",
+        )
+        _state.value = _state.value.copy(licenseStatus = revoked, maxTv = 0)
+        StorageUtil.saveLicense(revoked)
+        refreshHubConfig()
+        Log.w("MainVM", "License integrity failed for $username; revoked ids=${result.invalidIds}")
+        return false
     }
 
     private fun parseMaxTvFromPesan(pesan: String): Int? {
@@ -1422,12 +1564,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     StorageUtil.saveLicense(LicenseStatus())
                     refreshHubConfig()
                 } else {
-                    Log.i("MainVM", "listener: license updated to ${cloudLic.status} expires=${cloudLic.expiresAt}")
-                    _state.value = _state.value.copy(licenseStatus = cloudLic, trialBatas = 0L, maxTv = cloudLic.maxTv)
-                    StorageUtil.saveLicense(cloudLic)
-                    refreshHubConfig()
-                    // Activate the unactivated license doc so License Generator history shows it as activated
                     viewModelScope.launch {
+                        if (!enforceLicenseIntegrity(username, cloudLic)) return@launch
+                        Log.i("MainVM", "listener: license updated to ${cloudLic.status} expires=${cloudLic.expiresAt}")
+                        _state.value = _state.value.copy(licenseStatus = cloudLic, trialBatas = 0L, maxTv = cloudLic.maxTv)
+                        StorageUtil.saveLicense(cloudLic)
+                        refreshHubConfig()
+                        // Activate the unactivated license doc so License Generator history shows it as activated
                         withContext(Dispatchers.IO) {
                             cloudRepo.findAndActivateLicenseByUsername(username, cloudLic.expiresAt, deviceType = "android")
                         }

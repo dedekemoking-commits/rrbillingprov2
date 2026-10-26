@@ -7,6 +7,7 @@ import android.util.Log
 import com.billingps.aptv.models.*
 import com.billingps.aptv.utils.ECDSAUtils
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
@@ -456,29 +457,43 @@ class CloudRepository(private val app: Application) {
                 .get()
                 .addOnSuccessListener { snap ->
                     val activated = snap.documents
-                        .filter { doc -> (doc.getLong("activatedAt") ?: 0) > 0 && doc.getBoolean("revoked") != true }
+                        .filter { doc ->
+                            (doc.getLong("activatedAt") ?: 0) > 0 &&
+                                doc.getBoolean("revoked") != true &&
+                                isTrustedLicenseDoc(doc)
+                        }
                         .maxByOrNull { doc -> doc.getLong("activatedAt") ?: 0 }
                     if (activated == null) { Log.i("CloudRepo", "queryLicenseByField($field=$value): no activated doc"); cont.resume(null); return@addOnSuccessListener }
                     val data = activated.data ?: run { Log.i("CloudRepo", "queryLicenseByField($field=$value): no data"); cont.resume(null); return@addOnSuccessListener }
-                    val paket = data["paket"] as? String ?: ""
-                    val expiry = data["expiry"] as? String ?: ""
+                    val signed = payloadJson(activated)
+                    val paket = signed?.optString("p", "")?.takeIf { it.isNotBlank() }
+                        ?: (data["paket"] as? String ?: "")
+                    val expiry = signed?.optString("e", "")?.takeIf { it.isNotBlank() }
+                        ?: (data["expiry"] as? String ?: "")
                     Log.i("CloudRepo", "queryLicenseByField($field=$value): found paket='$paket' expiry=$expiry")
                     val promoAddTv = (data["promoMaxTv"] as? Number)?.toInt() ?: 0
+                    val signedMaxTv = signed?.optInt("q", -1) ?: -1
                     val storedMaxTv = (data["maxTv"] as? Number)?.toInt() ?: 0
                     val effectiveMaxTv = when {
+                        signedMaxTv >= 0 -> signedMaxTv
                         storedMaxTv > 0 -> storedMaxTv
                         promoAddTv > 0 -> promoAddTv
                         else -> LicenseCatalog.legacyMaxTv(paket)
                     }
+                    val clientEnabled = if (signed?.has("c") == true) {
+                        signed.optBoolean("c", true)
+                    } else {
+                        (data["clientEnabled"] as? Boolean)
+                            ?: LicenseCatalog.clientEnabled(paket)
+                    }
                     cont.resume(LicenseStatus(
                         status = "active",
-                        pesan = "✅ Lisensi $paket aktif hingga $expiry",
+                        pesan = "\u2705 Lisensi $paket aktif hingga $expiry",
                         expiresAt = expiry,
                         maxTv = effectiveMaxTv,
                         promoAddTv = promoAddTv,
                         paket = paket,
-                        clientEnabled = (data["clientEnabled"] as? Boolean)
-                            ?: LicenseCatalog.clientEnabled(paket),
+                        clientEnabled = clientEnabled,
                     ))
                 }
                 .addOnFailureListener { ex -> Log.i("CloudRepo", "queryLicenseByField($field=$value) failed: ${ex.message}"); cont.resume(null) }
@@ -565,8 +580,10 @@ class CloudRepository(private val app: Application) {
                 .whereEqualTo("username", username)
                 .get()
                 .addOnSuccessListener { snap ->
-                    val unactivated = snap.documents
+                    val candidates = snap.documents
                         .filter { doc -> (doc.getLong("activatedAt") ?: 0) == 0L && doc.getBoolean("revoked") != true }
+                    val unactivated = candidates
+                        .filter { doc -> isTrustedLicenseDoc(doc) }
                         .maxByOrNull { doc -> doc.getLong("generatedAt") ?: 0 }
                     if (unactivated == null) {
                         Log.i("CloudRepo", "findAndActivate: no unactivated license for $username")
@@ -654,10 +671,14 @@ class CloudRepository(private val app: Application) {
                 .get()
                 .addOnSuccessListener { licSnap ->
                     // Try to find an unactivated license (activatedAt == 0) for this user
-                    val unactivated = licSnap.documents
+                    val candidates = licSnap.documents
                         .filter { doc -> (doc.getLong("activatedAt") ?: 0) == 0L && doc.getBoolean("revoked") != true }
+                    val unactivated = candidates
+                        .filter { doc -> isTrustedLicenseDoc(doc) }
                         .maxByOrNull { doc -> doc.getLong("generatedAt") ?: 0 }
-                    if (unactivated == null) { cont.resume(null); return@addOnSuccessListener }
+                    if (unactivated == null) {
+                        cont.resume(null); return@addOnSuccessListener
+                    }
                     val data = unactivated.data ?: run { cont.resume(null); return@addOnSuccessListener }
                     val kode = data["kode"] as? String ?: ""
                     val paket = data["paket"] as? String ?: ""
@@ -966,6 +987,96 @@ class CloudRepository(private val app: Application) {
                     Log.e("CloudRepo", "getActiveLicensesForUser failed: ${ex.message}")
                     cont.resume(emptyList())
                 }
+        }
+    }
+
+    private suspend fun queryLicenseRecords(field: String, value: String): List<LicenseRecord>? {
+        if (value.isBlank()) return emptyList()
+        if (!ensureSignedIn()) return null
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("licenses")
+                .whereEqualTo(field, value)
+                .get()
+                .addOnSuccessListener { snap ->
+                    val list = snap.documents.mapNotNull { doc ->
+                        val d = doc.data ?: return@mapNotNull null
+                        val rawDevices = d["activatedDevices"] as? List<Map<String, Any>>
+                        val activatedDevices = rawDevices?.mapNotNull { dev ->
+                            val dt = dev["deviceType"] as? String ?: return@mapNotNull null
+                            val di = dev["deviceId"] as? String ?: ""
+                            val da = (dev["activatedAt"] as? Number)?.toLong() ?: 0L
+                            ActivatedDevice(deviceType = dt, deviceId = di, activatedAt = da)
+                        } ?: emptyList()
+                        LicenseRecord(
+                            id = doc.id,
+                            kode = d["kode"] as? String ?: "",
+                            payload = d["payload"] as? String ?: "",
+                            signature = d["signature"] as? String ?: "",
+                            paket = d["paket"] as? String ?: "",
+                            username = d["username"] as? String ?: "",
+                            email = d["email"] as? String ?: "",
+                            expiry = d["expiry"] as? String ?: "",
+                            generatedBy = d["generatedBy"] as? String ?: "",
+                            generatedAt = (d["generatedAt"] as? Number)?.toLong() ?: 0L,
+                            activatedAt = (d["activatedAt"] as? Number)?.toLong() ?: 0L,
+                            activatedDeviceId = d["activatedDeviceId"] as? String ?: "",
+                            revoked = d["revoked"] as? Boolean ?: false,
+                            maxActivations = (d["maxActivations"] as? Number)?.toInt() ?: 2,
+                            activatedDevices = activatedDevices,
+                            promoMaxTv = (d["promoMaxTv"] as? Number)?.toInt() ?: 0,
+                            maxTv = (d["maxTv"] as? Number)?.toInt() ?: 0,
+                            clientEnabled = d["clientEnabled"] as? Boolean ?: true,
+                        )
+                    }
+                    cont.resume(list)
+                }
+                .addOnFailureListener { ex ->
+                    Log.e("CloudRepo", "queryLicenseRecords($field=$value) failed: ${ex.message}")
+                    cont.resume(null)
+                }
+        }
+    }
+
+    suspend fun getLicenseRecordsForUser(username: String, email: String = ""): List<LicenseRecord>? {
+        val byUsername = queryLicenseRecords("username", username) ?: return null
+        if (byUsername.isNotEmpty() || email.isBlank()) return byUsername
+        return queryLicenseRecords("email", email)
+    }
+
+    private fun payloadJson(doc: DocumentSnapshot): org.json.JSONObject? {
+        val payload = doc.getString("payload") ?: return null
+        return try { org.json.JSONObject(payload) } catch (e: Exception) { null }
+    }
+
+    private fun payloadMatchesDoc(doc: DocumentSnapshot): Boolean {
+        val json = payloadJson(doc) ?: return false
+        val signedUser = json.optString("u", "")
+        val docUser = doc.getString("username") ?: ""
+        if (signedUser.isNotBlank() && docUser.isNotBlank() &&
+            !signedUser.equals(docUser, ignoreCase = true)) return false
+        val signedEmail = json.optString("m", "")
+        val docEmail = doc.getString("email") ?: ""
+        if (signedEmail.isNotBlank() && docEmail.isNotBlank() &&
+            !signedEmail.equals(docEmail, ignoreCase = true)) return false
+        return true
+    }
+
+    private fun isTrustedLicenseDoc(doc: DocumentSnapshot): Boolean {
+        val payload = doc.getString("payload") ?: ""
+        val signature = doc.getString("signature") ?: ""
+        if (payload.isBlank() || signature.isBlank()) return false
+        if (!payloadMatchesDoc(doc)) return false
+        return ECDSAUtils.verifySignature(payload, signature)
+    }
+
+    suspend fun isRentalAdminAccount(username: String): Boolean {
+        if (username.isBlank()) return false
+        if (!ensureSignedIn()) return false
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("billingps_users").document("_user_$username")
+                .get()
+                .addOnSuccessListener { snap -> cont.resume(snap.exists()) }
+                .addOnFailureListener { cont.resume(false) }
         }
     }
 

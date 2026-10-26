@@ -23,6 +23,10 @@ class ClientApkManager(private val context: Context) {
      * Extract the bundled TV client APK from assets to cache dir.
      */
     fun extractClientApk(): File? {
+        if (!ApkServer.clientAllowed) {
+            Log.i("ClientApkManager", "Client APK blocked: feature disabled for this plan")
+            return null
+        }
         return try {
             val apkFile = File(context.cacheDir, "tv-client.apk")
             if (apkFile.exists()) apkFile.delete()
@@ -43,6 +47,9 @@ class ClientApkManager(private val context: Context) {
      * Try direct ADB install (Android 10- or already paired).
      */
     suspend fun tryDirectInstall(ip: String, port: Int, apkPath: String): AdbPairingResult {
+        if (!ApkServer.clientAllowed) {
+            return AdbPairingResult(false, "Fitur Client APK tidak aktif pada paket Bulanan")
+        }
         return withContext(Dispatchers.IO) {
             try {
                 if (!Python.isStarted()) {
@@ -96,6 +103,9 @@ class ClientApkManager(private val context: Context) {
      * Connect (after pairing) and install APK.
      */
     suspend fun installAfterPairing(ip: String, connectionPort: Int, apkPath: String): AdbPairingResult {
+        if (!ApkServer.clientAllowed) {
+            return AdbPairingResult(false, "Fitur Client APK tidak aktif pada paket Bulanan")
+        }
         return withContext(Dispatchers.IO) {
             try {
                 if (!Python.isStarted()) {

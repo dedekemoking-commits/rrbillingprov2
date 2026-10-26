@@ -13,6 +13,9 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 
 object ApkServer {
+    @Volatile
+    var clientAllowed: Boolean = true
+
 
     private const val PORT = 18080
     private var serverThread: Thread? = null
@@ -94,7 +97,11 @@ object ApkServer {
                     serveUploadedFile(client.getOutputStream(), requestedPath)
                 }
                 requestedPath.contains("tv-client.apk") || requestedPath == "/" -> {
-                    sendApk(client.getOutputStream())
+                    if (clientAllowed) {
+                        sendApk(client.getOutputStream())
+                    } else {
+                        sendForbidden(client.getOutputStream())
+                    }
                 }
                 else -> {
                     send404(client.getOutputStream())
@@ -245,6 +252,20 @@ object ApkServer {
             out.write(body.toByteArray())
             out.flush()
         } catch (e: Exception) {}
+    }
+
+    private fun sendForbidden(out: OutputStream) {
+        val body = "<html><body><h1>Fitur client tidak aktif pada paket ini.</h1></body></html>"
+        val header = "HTTP/1.1 403 Forbidden\r\n" +
+                "Content-Type: text/html; charset=utf-8\r\n" +
+                "Content-Length: ${body.toByteArray().size}\r\n" +
+                "Connection: close\r\n" +
+                "\r\n"
+        try {
+            out.write(header.toByteArray())
+            out.write(body.toByteArray())
+            out.flush()
+        } catch (_: Exception) {}
     }
 
     fun getLocalIpAddress(context: Context): String? {

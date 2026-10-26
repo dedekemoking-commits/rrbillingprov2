@@ -5,6 +5,8 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.billingps.aptv.tv.TvHubManager
+import com.billingps.aptv.tv.TvRemotePower
 import com.chaquo.python.Python
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -12,6 +14,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class TvUiState(
     val ip: String = "",
@@ -28,6 +32,7 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<TvUiState> = _uiState.asStateFlow()
 
     private val prefs = application.getSharedPreferences("tv_certs", Context.MODE_PRIVATE)
+    private val powerInFlight = ConcurrentHashMap<String, AtomicBoolean>()
 
     private fun getCert(): Pair<String, String>? {
         val cert = prefs.getString("cert_pem", null) ?: return null
@@ -200,21 +205,51 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun sendPower(ip: String, certPem: String, keyPem: String) {
-        _uiState.value = _uiState.value.copy(status = "Sending Power...", isBusy = true)
+    fun sendPower(
+        ip: String,
+        certPem: String,
+        keyPem: String,
+        on: Boolean? = null,
+        onResult: ((TvRemotePower.Result) -> Unit)? = null,
+    ) {
+        val key = ip.ifBlank { "default" }
+        val inFlight = powerInFlight.computeIfAbsent(key) { AtomicBoolean(false) }
+        if (!inFlight.compareAndSet(false, true)) {
+            onResult?.invoke(
+                TvRemotePower.Result(false, "Perintah power sedang diproses", confirmed = false)
+            )
+            return
+        }
+        val label = when (on) {
+            true -> "Power ON"
+            false -> "Power OFF"
+            null -> "Power"
+        }
+        _uiState.value = _uiState.value.copy(status = "Sending $label...", isBusy = true)
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                try {
-                    Python.getInstance().getModule("tv_mesin").callAttr("TvController")
-                        .callAttr("send_power", ip, certPem, keyPem)
-                } catch (e: Exception) { Log.e("BillingPS", "send_power threw", e); null }
-            }
-            if (result != null) {
-                val sent = result.callAttr("get", "sent")?.toBoolean() ?: false
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    TvRemotePower.send(ip, certPem, keyPem, on)
+                }
+                result.isOn?.let { TvHubManager.noteScreenStateByIp(ip, it) }
                 _uiState.value = _uiState.value.copy(
-                    status = if (sent) "Power sent" else "Power failed",
-                    isBusy = false)
-            } else { _uiState.value = _uiState.value.copy(status = "Error", isBusy = false) }
+                    status = if (result.ok) {
+                        if (result.confirmed) "Power confirmed" else "Power sent"
+                    } else {
+                        "Power failed: ${result.message}"
+                    },
+                    isBusy = false,
+                )
+                onResult?.invoke(
+                    if (result.message.isBlank()) {
+                        result.copy(message = if (result.ok) "Power terkirim" else "Power gagal")
+                    } else {
+                        result
+                    }
+                )
+            } finally {
+                inFlight.set(false)
+            }
         }
     }
 

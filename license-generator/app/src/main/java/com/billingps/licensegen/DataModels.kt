@@ -60,4 +60,32 @@ data class Invoice(
     val confirmedBy: String = "",
     val kodeLisensi: String = "",
     val buktiBase64: String = "",
-)
+    val jumlahTv: Int = 0,
+    val maxTv: Int = 0,
+    val mode: String = "",
+    val baseMaxTv: Int = 0,
+    val clientEnabled: Boolean = true,
+    // Ringkasan yang dikirim client saat membuat invoice, supaya tab Invoice
+    // bisa menampilkan kalimat utuh: "rrbillingpro meminta lisensi LIFETIME
+    // untuk 5 TV". Tanpa ini admin harus menyimpulkan sendiri dari beberapa
+    // angka terpisah (paket + jumlah_tv) yang sering tidak sinkron.
+    val permintaan: String = "",
+    val hargaPerTv: Int = 0,
+) {
+
+    /** Ringkasan yang selalu punya isi, walau client versi lama tidak mengirim field `permintaan`. */
+    fun ringkas(): String {
+        if (permintaan.isNotBlank()) return permintaan
+        val tv = if (jumlahTv > 0) jumlahTv else maxTv
+        val tvTxt = if (tv > 0) "$tv TV" else "jumlah TV tidak disebutkan"
+        val perTv = if (hargaPerTv > 0) " (Rp ${hargaPerTv}/TV)" else ""
+        return "$username meminta lisensi $paket untuk $tvTxt$perTv"
+    }
+
+    /** Harga per TV, dihitung dari harga total bila client tidak mengirim field dedicated. */
+    fun hargaPerTvEfektif(): Int {
+        if (hargaPerTv > 0) return hargaPerTv
+        val tv = if (jumlahTv > 0) jumlahTv else maxTv
+        return if (tv > 0) harga / tv else 0
+    }
+}

@@ -45,13 +45,16 @@ class TimerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        when (intent?.action ?: ACTION_START) {
             ACTION_START -> {
+                StorageUtil.init(this)
                 if (tickFuture != null) {
-                    Log.i("TimerService", "Already running, ignoring duplicate start")
+                    cachedTvList = StorageUtil.loadTvList()
+                    lastTickTime = System.currentTimeMillis()
+                    updateNotification(cachedTvList)
+                    Log.i("TimerService", "Duplicate start, reloaded ${cachedTvList.size} TVs")
                     return START_STICKY
                 }
-                StorageUtil.init(this)
                 cachedTvList = StorageUtil.loadTvList()
                 lastTickTime = System.currentTimeMillis()
                 startForeground(NOTIFICATION_ID, buildNotification(cachedTvList))
@@ -100,6 +103,7 @@ class TimerService : Service() {
         var anyActive = false
         val expiredIds = mutableListOf<String>()
         var hasChanges = false
+        var forcePersist = false
 
         val updatedList = cachedTvList.toMutableList()
         updatedList.forEachIndexed { index, tv ->
@@ -111,9 +115,10 @@ class TimerService : Service() {
                 if (newSisa <= 0) {
                     updatedList[index] = tv.copy(
                         timerActive = false, sisaDetik = 0L,
-                        paketAktif = "WAKTU HABIS",
+                        paketAktif = if (tv.sudahBayar) "" else "WAKTU HABIS",
                     )
                     expiredIds.add(tv.id)
+                    forcePersist = true
                 } else {
                     anyActive = true
                 }
@@ -122,8 +127,11 @@ class TimerService : Service() {
         }
         cachedTvList = updatedList
 
-        // Persist only when changes occurred, max every 30 ticks
-        if (hasChanges) {
+        // Persist immediately on expiry, otherwise max every 30 ticks
+        if (forcePersist) {
+            StorageUtil.saveTvList(cachedTvList)
+            persistCounter = 0
+        } else if (hasChanges) {
             persistCounter++
             if (persistCounter % 30 == 0) {
                 StorageUtil.saveTvList(cachedTvList)

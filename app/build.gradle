@@ -13,8 +13,8 @@ android {
         applicationId 'com.billingps.aptv'
         minSdk 23
         targetSdk 34
-        versionCode 17
-        versionName '2.2.6'
+        versionCode 25
+        versionName '2.2.14'
 
         ndk {
             abiFilters "arm64-v8a"
@@ -84,6 +84,7 @@ dependencies {
     implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.7.0'
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.webkit:webkit:1.10.0'
 
     // Compose Tooling (Required for Previews)
     debugImplementation 'androidx.compose.ui:ui-tooling'
@@ -98,6 +99,9 @@ dependencies {
     implementation 'com.sun.mail:android-activation:1.6.7'
     // Security - EncryptedSharedPreferences
     implementation 'androidx.security:security-crypto:1.1.0-alpha06'
+    // WebSocket hub untuk TV client
+    implementation 'org.java-websocket:Java-WebSocket:1.5.6'
+
     // Google Sign-In
     implementation 'com.google.android.gms:play-services-auth:20.7.0'
 }

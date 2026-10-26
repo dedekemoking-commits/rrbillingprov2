@@ -18,23 +18,20 @@ service cloud.firestore {
     match /licenses/{docId} {
       // Anyone authenticated can read licenses (for activation lookup)
       allow read: if isAuth();
-      // Only super admin can create/update/delete licenses
-      allow create: if isSuperAdmin();
-      allow update: if isSuperAdmin();
+      // Admin (RR Lisensi) creates/updates licenses; app signs in anonymously so can't use UID check
+      allow create: if isAuth();
+      allow update: if isAuth();
       allow delete: if false;
     }
 
     // Invoices collection
     match /invoices/{docId} {
-      // Users can read their own invoices; admin can read all
-      allow read: if isAuth() && (
-        request.resource.data.username == request.auth.uid
-        || isSuperAdmin()
-      );
-      // Users can create invoices — but the invoice username must match auth UID
-      allow create: if isAuth() && request.resource.data.username == request.auth.uid;
-      // Only super admin can update/confirm invoices
-      allow update: if isSuperAdmin();
+      // Anyone authenticated can read invoices (user invoices + admin license generator)
+      allow read: if isAuth();
+      // Users can create invoices; username is the app-internal username, not auth UID
+      allow create: if isAuth();
+      // Admin (RR Lisensi) confirms invoices; app signs in anonymously so can't use UID check
+      allow update: if isAuth();
       allow delete: if false;
     }
 
@@ -43,9 +40,9 @@ service cloud.firestore {
       // Anyone authenticated can read and create notifications
       allow read: if isAuth();
       allow create: if isAuth();
-      // Optional: only allow create if notification targets the current user
-      // allow create: if isAuth() && request.resource.data.username == request.auth.uid;
-      allow update, delete: if false;
+      // Admin (RR Lisensi) marks requests as read
+      allow update: if isAuth();
+      allow delete: if false;
     }
 
     // BillingPS Users collection — one document per username

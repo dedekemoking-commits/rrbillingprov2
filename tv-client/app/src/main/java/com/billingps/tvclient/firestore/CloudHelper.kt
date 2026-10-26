@@ -19,6 +19,8 @@ data class TvCommand(
     val warningImageUrl: String = "",
     val warningVideoUrl: String = "",
     val hdmiPort: Int = -1,
+    val playCachedMedia: Boolean = false,
+    val hideWarning: Boolean = false,
 )
 
 data class TvStatus(
@@ -63,17 +65,29 @@ class CloudHelper {
                 val warningImageUrl = snap.getString("warningImageUrl") ?: ""
                 val warningVideoUrl = snap.getString("warningVideoUrl") ?: ""
                 val hdmiPort = snap.getLong("hdmiPort")?.toInt() ?: -1
-                if (showWarning || playVideo || stopVideo || cacheMedia || warningImageUrl.isNotEmpty() || warningVideoUrl.isNotEmpty() || hdmiPort > 0) {
-                    onCommand(TvCommand(showWarning, warningMessage, playVideo, videoUrl, stopVideo, cacheMedia, mediaUrl, warningImageUrl, warningVideoUrl, hdmiPort))
+                val playCachedMedia = snap.getBoolean("playCachedMedia") ?: false
+                val hideWarning = snap.getBoolean("hideWarning") ?: false
+                if (showWarning || hideWarning || playVideo || stopVideo || cacheMedia || warningImageUrl.isNotEmpty() || warningVideoUrl.isNotEmpty() || hdmiPort > 0 || playCachedMedia) {
+                    onCommand(TvCommand(showWarning, warningMessage, playVideo, videoUrl, stopVideo, cacheMedia, mediaUrl, warningImageUrl, warningVideoUrl, hdmiPort, playCachedMedia, hideWarning))
                     if (showWarning) {
                         firestore.collection("billingps_users").document(username)
                             .collection("tvCommands").document(tvId)
                             .update("showWarning", false)
                     }
+                    if (hideWarning) {
+                        firestore.collection("billingps_users").document(username)
+                            .collection("tvCommands").document(tvId)
+                            .update("hideWarning", false)
+                    }
                     if (stopVideo) {
                         firestore.collection("billingps_users").document(username)
                             .collection("tvCommands").document(tvId)
                             .update("stopVideo", false)
+                    }
+                    if (playCachedMedia) {
+                        firestore.collection("billingps_users").document(username)
+                            .collection("tvCommands").document(tvId)
+                            .update("playCachedMedia", false)
                     }
                 }
             }

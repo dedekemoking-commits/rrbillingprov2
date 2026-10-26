@@ -133,10 +133,17 @@ fun loadUsers(): Map<String, UserData> {
         return old ?: ""
     }
 
+    fun saveDeviceSessionId(sessionId: String) {
+        securePrefs.edit().putString("deviceSessionId", sessionId).apply()
+    }
+
+    fun loadDeviceSessionId(): String = securePrefs.getString("deviceSessionId", "") ?: ""
+
     fun clearSession() {
         securePrefs.edit()
             .remove("currentUser")
             .remove("currentRole")
+            .remove("deviceSessionId")
             .apply()
         prefs.edit()
             .remove("currentUser")
@@ -159,6 +166,16 @@ fun loadUsers(): Map<String, UserData> {
     fun loadPaketDurasi(): Map<String, Int> = jsonToMap(prefs.getString("paketDurasi", null))
     fun loadMenuMakanan(): Map<String, Int> = jsonToMap(prefs.getString("menuMakanan", null))
     fun loadMenuMinuman(): Map<String, Int> = jsonToMap(prefs.getString("menuMinuman", null))
+
+    fun saveStok(makanan: Map<String, Int>, minuman: Map<String, Int>) {
+        prefs.edit()
+            .putString("stokMakanan", mapToJson(makanan))
+            .putString("stokMinuman", mapToJson(minuman))
+            .apply()
+    }
+
+    fun loadStokMakanan(): Map<String, Int> = jsonToMap(prefs.getString("stokMakanan", null))
+    fun loadStokMinuman(): Map<String, Int> = jsonToMap(prefs.getString("stokMinuman", null))
 
     fun saveJenisPsList(list: List<String>) {
         val arr = org.json.JSONArray(list)
@@ -189,6 +206,13 @@ fun loadUsers(): Map<String, UserData> {
                 put("bebas", tv.bebas)
                 put("paketHarga", tv.paketHarga)
                 put("totalPesanan", tv.totalPesanan)
+                put("trxId", tv.trxId)
+                val tvPesananObj = JSONObject()
+                tv.pesanan.forEach { (k, v) -> tvPesananObj.put(k, v) }
+                put("pesanan", tvPesananObj)
+                val tvPesananHargaObj = JSONObject()
+                tv.pesananHarga.forEach { (k, v) -> tvPesananHargaObj.put(k, v) }
+                put("pesananHarga", tvPesananHargaObj)
                 put("bebasMulai", tv.bebasMulai)
                 put("bebasHargaPerJam", tv.bebasHargaPerJam)
                 put("bebasPesananTotal", tv.bebasPesananTotal)
@@ -196,6 +220,16 @@ fun loadUsers(): Map<String, UserData> {
                 put("certPem", tv.certPem)
                 put("keyPem", tv.keyPem)
                 put("cancelBatas", tv.cancelBatas)
+                put("sudahBayar", tv.sudahBayar)
+                put("namaRental", tv.namaRental)
+                put("promoVideoPath", tv.promoVideoPath)
+                put("lockscreenVideoPath", tv.lockscreenVideoPath)
+                put("popupMode", tv.popupMode)
+                put("popupLastMinutes", tv.popupLastMinutes)
+                put("bebasInterval", tv.bebasInterval)
+                put("bebasDurasi", tv.bebasDurasi)
+                put("hdmiPort", tv.hdmiPort)
+                put("hdmiInputHint", tv.hdmiInputHint)
             })
         }
         prefs.edit().putString("tvList", arr.toString()).apply()
@@ -207,6 +241,12 @@ fun loadUsers(): Map<String, UserData> {
         val list = mutableListOf<TvData>()
         for (i in 0 until arr.length()) {
             val o = arr.getJSONObject(i)
+            val tvPesananRaw = o.optJSONObject("pesanan") ?: JSONObject()
+            val tvPesanan = mutableMapOf<String, Int>()
+            tvPesananRaw.keys().forEach { k -> tvPesanan[k] = tvPesananRaw.optInt(k) }
+            val tvPesananHargaRaw = o.optJSONObject("pesananHarga") ?: JSONObject()
+            val tvPesananHarga = mutableMapOf<String, Int>()
+            tvPesananHargaRaw.keys().forEach { k -> tvPesananHarga[k] = tvPesananHargaRaw.optInt(k) }
             list.add(TvData(
                 id = o.optString("id"),
                 nama = o.optString("nama"),
@@ -221,6 +261,9 @@ fun loadUsers(): Map<String, UserData> {
                 bebas = o.optBoolean("bebas"),
                 paketHarga = o.optInt("paketHarga"),
                 totalPesanan = o.optInt("totalPesanan"),
+                trxId = o.optString("trxId"),
+                pesanan = tvPesanan,
+                pesananHarga = tvPesananHarga,
                 bebasMulai = o.optLong("bebasMulai"),
                 bebasHargaPerJam = o.optInt("bebasHargaPerJam"),
                 bebasPesananTotal = o.optInt("bebasPesananTotal"),
@@ -228,12 +271,36 @@ fun loadUsers(): Map<String, UserData> {
                 certPem = o.optString("certPem"),
                 keyPem = o.optString("keyPem"),
                 cancelBatas = o.optLong("cancelBatas"),
+                sudahBayar = o.optBoolean("sudahBayar"),
+                namaRental = o.optString("namaRental"),
+                promoVideoPath = o.optString("promoVideoPath"),
+                lockscreenVideoPath = o.optString("lockscreenVideoPath"),
+                popupMode = o.optString("popupMode", "always"),
+                popupLastMinutes = o.optInt("popupLastMinutes", 5),
+                bebasInterval = o.optInt("bebasInterval", 60),
+                bebasDurasi = o.optInt("bebasDurasi", 30),
+                hdmiPort = o.optInt("hdmiPort", 0),
+                hdmiInputHint = o.optString("hdmiInputHint"),
             ))
         }
         return list
     }
 
     // ── Transaksi ──────────────────────────────────────────
+    fun backupBeforeRepair() {
+        prefs.edit()
+            .putString("transaksiList_backup_repair_v1", prefs.getString("transaksiList", "[]"))
+            .putString("tvList_backup_repair_v1", prefs.getString("tvList", "[]"))
+            .putLong("backup_repair_v1_time", System.currentTimeMillis())
+            .commit()
+    }
+
+    fun isRepairV1Done(): Boolean = prefs.getBoolean("trxRepairV1", false)
+
+    fun markRepairV1Done() {
+        prefs.edit().putBoolean("trxRepairV1", true).apply()
+    }
+
     fun saveTransaksi(list: List<Transaksi>) {
         val arr = JSONArray()
         list.forEach { t ->
@@ -246,6 +313,8 @@ fun loadUsers(): Map<String, UserData> {
                 put("total", t.total)
                 put("paketHarga", t.paketHarga)
                 put("tvJenisPs", t.tvJenisPs)
+                put("sudahBayar", t.sudahBayar)
+                put("metode", t.metode)
                 val pesananObj = JSONObject()
                 t.pesanan.forEach { (k, v) -> pesananObj.put(k, v) }
                 put("pesanan", pesananObj)
@@ -280,6 +349,8 @@ fun loadUsers(): Map<String, UserData> {
                 paketHarga = o.optInt("paketHarga"),
                 pesananHarga = pesananHarga,
                 tvJenisPs = o.optString("tvJenisPs"),
+                sudahBayar = o.optBoolean("sudahBayar", false),
+                metode = o.optString("metode"),
             ))
         }
         return list
@@ -293,6 +364,8 @@ fun loadUsers(): Map<String, UserData> {
             .putString("licenseExpires", status.expiresAt)
             .putInt("licenseMaxTv", status.maxTv)
             .putInt("licensePromoAddTv", status.promoAddTv)
+            .putString("licensePaket", status.paket)
+            .putBoolean("licenseClientEnabled", status.clientEnabled)
             .apply()
         // Also keep in regular prefs for backward compatibility
         prefs.edit()
@@ -301,6 +374,8 @@ fun loadUsers(): Map<String, UserData> {
             .putString("licenseExpires", status.expiresAt)
             .putInt("licenseMaxTv", status.maxTv)
             .putInt("licensePromoAddTv", status.promoAddTv)
+            .putString("licensePaket", status.paket)
+            .putBoolean("licenseClientEnabled", status.clientEnabled)
             .apply()
     }
 
@@ -314,6 +389,8 @@ fun loadUsers(): Map<String, UserData> {
                 expiresAt = securePrefs.getString("licenseExpires", "") ?: "",
                 maxTv = securePrefs.getInt("licenseMaxTv", 0),
                 promoAddTv = securePrefs.getInt("licensePromoAddTv", 0),
+                paket = securePrefs.getString("licensePaket", "") ?: "",
+                clientEnabled = securePrefs.getBoolean("licenseClientEnabled", true),
             )
         }
         // Fallback + migrate from old prefs
@@ -323,6 +400,8 @@ fun loadUsers(): Map<String, UserData> {
             expiresAt = prefs.getString("licenseExpires", "") ?: "",
             maxTv = prefs.getInt("licenseMaxTv", 0),
             promoAddTv = prefs.getInt("licensePromoAddTv", 0),
+            paket = prefs.getString("licensePaket", "") ?: "",
+            clientEnabled = prefs.getBoolean("licenseClientEnabled", true),
         )
         if (old.status.isNotEmpty()) saveLicense(old)
         return old
@@ -357,6 +436,9 @@ fun loadUsers(): Map<String, UserData> {
                 put("confirmedBy", inv.confirmedBy)
                 put("kodeLisensi", inv.kodeLisensi)
                 put("buktiBase64", inv.buktiBase64)
+                put("jumlahTv", inv.jumlahTv)
+                put("mode", inv.mode)
+                put("baseMaxTv", inv.baseMaxTv)
             })
         }
         prefs.edit().putString("invoices", arr.toString()).apply()
@@ -386,6 +468,9 @@ fun loadUsers(): Map<String, UserData> {
                 confirmedBy = o.optString("confirmedBy"),
                 kodeLisensi = kodeLisensi,
                 buktiBase64 = o.optString("buktiBase64"),
+                jumlahTv = o.optInt("jumlahTv", 0),
+                mode = o.optString("mode", ""),
+                baseMaxTv = o.optInt("baseMaxTv", 0),
             ))
         }
         return list
@@ -505,6 +590,26 @@ fun loadUsers(): Map<String, UserData> {
     }
 
     fun loadTvPassword(): String = securePrefs.getString("tvPasswordHash", "") ?: ""
+
+    // ── TV Pairing Certificates ─────────────────────────────
+    private val tvCertPrefs: SharedPreferences
+        get() = _ctx!!.getSharedPreferences("tv_certs", Context.MODE_PRIVATE)
+
+    fun tvCertMatches(certPem: String, keyPem: String): Boolean {
+        if (certPem.isBlank() && keyPem.isBlank()) return false
+        val cert = tvCertPrefs.getString("cert_pem", "") ?: ""
+        val key = tvCertPrefs.getString("key_pem", "") ?: ""
+        return (certPem.isNotBlank() && cert == certPem) ||
+            (keyPem.isNotBlank() && key == keyPem)
+    }
+
+    fun clearTvCerts() {
+        tvCertPrefs.edit().remove("cert_pem").remove("key_pem").apply()
+    }
+
+    fun clearTvCertsIfMatches(certPem: String, keyPem: String) {
+        if (tvCertMatches(certPem, keyPem)) clearTvCerts()
+    }
 
     // ── Kode Generasi ───────────────────────────────────────
     fun saveKodeGenerasiList(list: List<KodeGenerasi>) {
@@ -645,6 +750,8 @@ fun loadUsers(): Map<String, UserData> {
         val keepPaketDurasi = prefs.getString("paketDurasi", null)
         val keepMakanan = prefs.getString("menuMakanan", null)
         val keepMinuman = prefs.getString("menuMinuman", null)
+        val keepStokMakanan = prefs.getString("stokMakanan", null)
+        val keepStokMinuman = prefs.getString("stokMinuman", null)
         val keepJenisPs = prefs.getString("jenisPsList", null)
         val keepInvoices = prefs.getString("invoices", null)
         val keepNotifications = prefs.getString("notifications", null)
@@ -671,6 +778,8 @@ fun loadUsers(): Map<String, UserData> {
         if (keepPaketDurasi != null) editor.putString("paketDurasi", keepPaketDurasi)
         if (keepMakanan != null) editor.putString("menuMakanan", keepMakanan)
         if (keepMinuman != null) editor.putString("menuMinuman", keepMinuman)
+        if (keepStokMakanan != null) editor.putString("stokMakanan", keepStokMakanan)
+        if (keepStokMinuman != null) editor.putString("stokMinuman", keepStokMinuman)
         if (keepJenisPs != null) editor.putString("jenisPsList", keepJenisPs)
         if (keepInvoices != null) editor.putString("invoices", keepInvoices)
         if (keepNotifications != null) editor.putString("notifications", keepNotifications)

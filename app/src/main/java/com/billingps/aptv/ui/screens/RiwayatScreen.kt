@@ -30,6 +30,8 @@ import androidx.compose.ui.unit.dp
 import android.util.Log
 import com.billingps.aptv.models.MainViewModel
 import com.billingps.aptv.models.Transaksi
+import com.billingps.aptv.models.fnbTotal
+import com.billingps.aptv.models.paketTotal
 import com.billingps.aptv.ui.charts.*
 import com.billingps.aptv.ui.theme.*
 
@@ -120,10 +122,20 @@ fun RiwayatScreen(viewModel: MainViewModel) {
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
         if (uri != null) {
             try {
-                val header = "Waktu,Kasir,Kota/TV,Paket,Pesanan,Total\n"
+                val header = "ID,Waktu,Kasir,TV,Paket,PaketHarga,FnbHarga,Total,Status,Metode\n"
                 val rows = txList.joinToString("\n") { t ->
-                    val pesananStr = t.pesanan.entries.joinToString(" | ") { (k, v) -> "$k x$v" }.ifEmpty { "-" }
-                    listOf(t.waktu, t.kasir, t.kota, t.paket, "\"$pesananStr\"", fmtRp(t.total)).joinToString(",")
+                    listOf(
+                        t.id,
+                        t.waktu,
+                        t.kasir,
+                        t.kota,
+                        t.paket,
+                        t.paketTotal().toString(),
+                        t.fnbTotal().toString(),
+                        t.total.toString(),
+                        if (t.sudahBayar) "LUNAS" else "BELUM",
+                        t.metode,
+                    ).joinToString(",")
                 }
                 ctx.contentResolver.openOutputStream(uri)?.use { it.write((header + rows).toByteArray(Charsets.UTF_8)) }
                 Toast.makeText(ctx, "Tersimpan", Toast.LENGTH_LONG).show()

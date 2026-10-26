@@ -214,6 +214,7 @@ object ThermalPrinter {
             text("TV    : $tvNama\n")
             if (tvJenisPs.isNotBlank()) text("PS    : $tvJenisPs\n")
             text("Kasir : $kasir\n")
+            if (transaksi.metode.isNotBlank()) text("Bayar : ${transaksi.metode}\n")
             text("--------------------------------\n")
 
             val txRiwayat = if (riwayatTransaksi.isNotEmpty()) {
@@ -257,12 +258,12 @@ object ThermalPrinter {
                 t.pesanan.forEach { (name, qty) ->
                     if (qty <= 0) return@forEach
                     val itemPrice = t.pesananHarga[name]
-                    val itemTotal = if (itemPrice != null && itemPrice > 0) {
+                    val unitPrice = if (itemPrice != null && itemPrice > 0) {
                         itemPrice
                     } else {
-                        val unitPrice = menuMakanan[name] ?: menuMinuman[name] ?: 0
-                        unitPrice * qty
+                        menuMakanan[name] ?: menuMinuman[name] ?: 0
                     }
+                    val itemTotal = unitPrice * qty
                     val existing = aggregatedFood[name]
                     if (existing != null) {
                         aggregatedFood[name] = (existing.first + qty) to (existing.second + itemTotal)

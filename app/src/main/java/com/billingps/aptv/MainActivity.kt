@@ -12,9 +12,11 @@ import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.ViewModelProvider
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -47,6 +49,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.billingps.aptv.ui.screens.*
 import com.billingps.aptv.ui.theme.BillingPSTheme
 import com.billingps.aptv.ui.theme.*
+import com.billingps.aptv.tv.TvHubManager
 import com.billingps.aptv.utils.ConnectivityObserver
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
@@ -55,10 +58,99 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
+    private lateinit var mainViewModel: MainViewModel
+    private lateinit var tvViewModel: TvViewModel
+    private var pendingDocumentPick: ((Uri?) -> Unit)? = null
+    private var pendingCreateDocument: ((Uri?) -> Unit)? = null
+    private var pendingBluetoothPermission: ((Boolean) -> Unit)? = null
+
+    private val documentPicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        val callback = pendingDocumentPick
+        pendingDocumentPick = null
+        callback?.invoke(uri)
+    }
+
+    private val documentCreator = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv"),
+    ) { uri ->
+        val callback = pendingCreateDocument
+        pendingCreateDocument = null
+        callback?.invoke(uri)
+    }
+
+    private val bluetoothPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        val granted = result[Manifest.permission.BLUETOOTH_CONNECT] == true &&
+            result[Manifest.permission.BLUETOOTH_SCAN] == true
+        val callback = pendingBluetoothPermission
+        pendingBluetoothPermission = null
+        callback?.invoke(granted)
+    }
+
+    fun pickDocument(mimeTypes: Array<String>, onResult: (Uri?) -> Unit) {
+        pendingDocumentPick?.invoke(null)
+        pendingDocumentPick = onResult
+        try {
+            documentPicker.launch(mimeTypes)
+        } catch (e: Exception) {
+            Log.e("MainActivity", "pickDocument gagal: ${e.message}")
+            pendingDocumentPick = null
+            onResult(null)
+        }
+    }
+
+    fun createDocument(suggestedName: String, onResult: (Uri?) -> Unit) {
+        pendingCreateDocument?.invoke(null)
+        pendingCreateDocument = onResult
+        try {
+            documentCreator.launch(suggestedName)
+        } catch (e: Exception) {
+            Log.e("MainActivity", "createDocument gagal: ${e.message}")
+            pendingCreateDocument = null
+            onResult(null)
+        }
+    }
+
+    fun requestBluetoothPermissions(onResult: (Boolean) -> Unit) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            onResult(true)
+            return
+        }
+
+        val permissions = arrayOf(
+            Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.BLUETOOTH_SCAN,
+        )
+        val missing = permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) {
+            onResult(true)
+            return
+        }
+
+        pendingBluetoothPermission?.invoke(false)
+        pendingBluetoothPermission = onResult
+        try {
+            bluetoothPermissionLauncher.launch(missing.toTypedArray())
+        } catch (e: Exception) {
+            Log.e("MainActivity", "requestBluetoothPermissions gagal: ${e.message}")
+            pendingBluetoothPermission = null
+            onResult(false)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        mainViewModel = ViewModelProvider(this)[MainViewModel::class.java]
+        tvViewModel = ViewModelProvider(this)[TvViewModel::class.java]
+
         createNotificationChannel()
+        TvHubManager.ensureStarted(this)
         // Init Python di background agar tidak blokir UI thread (fix ANR)
         CoroutineScope(Dispatchers.IO).launch {
             try {
@@ -70,8 +162,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
         setContent {
-            val mainViewModel: MainViewModel = viewModel()
-            val tvViewModel: TvViewModel = viewModel()
             val mainState by mainViewModel.state.collectAsStateWithLifecycle()
             BillingPSTheme(fontTheme = mainState.themeOption, bgTheme = mainState.backgroundOption) {
                 AppRoot(mainViewModel, tvViewModel)
@@ -205,7 +295,25 @@ fun AppRoot(
             onLoginSuccess = { /* state akan berubah otomatis */ },
         )
     } else {
-        MainScreen(mainViewModel, tvViewModel)
+        WebUiScreen(mainViewModel, tvViewModel)
+    }
+
+    if (mainState.quotaPopupVisible) {
+        AlertDialog(
+            onDismissRequest = { mainViewModel.dismissQuotaPopup() },
+            containerColor = DarkSurface,
+            titleContentColor = NeonCyan,
+            textContentColor = TextPrimary,
+            title = { Text(mainState.quotaPopupTitle, fontWeight = FontWeight.Bold) },
+            text = { Text(mainState.quotaPopupBody, color = TextPrimary) },
+            confirmButton = {
+                Button(
+                    onClick = { mainViewModel.dismissQuotaPopup() },
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground),
+                ) { Text("Mengerti") }
+            },
+        )
     }
 
     if (mainState.needsSmtpSetup && !StorageUtil.loadSmtpSkipPermanently()) {
@@ -486,7 +594,7 @@ fun MainScreen(
                 BottomTab.TV -> DashboardScreen(mainViewModel, tvViewModel)
                 BottomTab.RIWAYAT -> RiwayatScreen(mainViewModel)
                 BottomTab.HARGA -> KontrolHargaScreen(mainViewModel)
-                BottomTab.CLIENT -> ClientScreen(mainViewModel, tvViewModel)
+                BottomTab.CLIENT -> ClientScreen(mainViewModel)
                 BottomTab.LISENSI -> VerifikasiScreen(mainViewModel)
                 BottomTab.PROFILE -> ProfileScreen(mainViewModel, onLogout = { mainViewModel.logout() })
             }

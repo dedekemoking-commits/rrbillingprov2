@@ -6,6 +6,7 @@ import android.media.AudioManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.FrameLayout
@@ -50,12 +51,25 @@ class WarningActivity : Activity() {
         setContentView(layout)
 
         // Turunkan volume TV saat warning muncul
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val originalVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 3, 0)
+        var originalVolume = -1
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            originalVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 3, 0)
+        } catch (e: Exception) {
+            Log.e("WarningActivity", "Volume change failed: ${e.message}")
+        }
 
+        val volToRestore = originalVolume
         autoDismissHandler.postDelayed({
-            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, originalVolume, 0)
+            if (volToRestore >= 0) {
+                try {
+                    val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, volToRestore, 0)
+                } catch (e: Exception) {
+                    Log.e("WarningActivity", "Volume restore failed: ${e.message}")
+                }
+            }
             finish()
         }, 6000)
 

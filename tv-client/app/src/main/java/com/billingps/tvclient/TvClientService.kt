@@ -46,6 +46,8 @@ class TvClientService : Service() {
         private var isPlayingMedia = false
         fun isRunning() = running
         fun isMediaPlaying() = isPlayingMedia
+        fun resetMediaPlaying() { isPlayingMedia = false }
+        fun markMediaPlaying() { isPlayingMedia = true }
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -53,7 +55,9 @@ class TvClientService : Service() {
     private val _warningTriggered = MutableStateFlow(false)
     val warningTriggered: StateFlow<Boolean> = _warningTriggered
     private var heartbeatJob: Job? = null
+    private var powerPollJob: Job? = null
     private var mediaStoppedReceiver: BroadcastReceiver? = null
+    private var screenOnReceiver: BroadcastReceiver? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -66,14 +70,42 @@ class TvClientService : Service() {
                 }
             }
         }
-        registerReceiver(mediaStoppedReceiver, IntentFilter(ACTION_MEDIA_STOPPED))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(mediaStoppedReceiver, IntentFilter(ACTION_MEDIA_STOPPED), RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(mediaStoppedReceiver, IntentFilter(ACTION_MEDIA_STOPPED))
+        }
+        OverlayManager.onVideoEnded = {
+            isPlayingMedia = false
+            Log.i("TvClientService", "Overlay video ended, flag reset")
+        }
+        screenOnReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == Intent.ACTION_SCREEN_ON || intent.action == Intent.ACTION_USER_PRESENT) {
+                    Log.i("TvClientService", "Screen on (dynamic receiver), playing cached media")
+                    isPlayingMedia = false
+                    playCachedMedia()
+                }
+            }
+        }
+        val screenFilter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(screenOnReceiver, screenFilter, RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(screenOnReceiver, screenFilter)
+        }
     }
 
     override fun onDestroy() {
         running = false
         isPlayingMedia = false
         heartbeatJob?.cancel()
+        powerPollJob?.cancel()
         mediaStoppedReceiver?.let { unregisterReceiver(it) }
+        screenOnReceiver?.let { unregisterReceiver(it) }
         cloudHelper.cleanup()
         scope.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -90,11 +122,10 @@ class TvClientService : Service() {
             val cachedPath = prefs.getString(PREF_CACHED_MEDIA, null)
             if (cachedPath != null && File(cachedPath).exists()) {
                 isPlayingMedia = true
-                val intent = Intent(this, VideoPlayerActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-                }
-                startActivity(intent)
-                Log.i("TvClientService", "Playing cached media")
+                OverlayManager.playCachedVideo(this, cachedPath)
+                Log.i("TvClientService", "Playing cached media via overlay: $cachedPath")
+            } else {
+                Log.w("TvClientService", "playCachedMedia skipped: cache missing ($cachedPath)")
             }
         } catch (e: Exception) {
             Log.e("TvClientService", "playCachedMedia failed: ${e.message}")
@@ -103,23 +134,33 @@ class TvClientService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
-            when (intent?.action) {
-                ACTION_START -> {
-                    if (running) return START_STICKY
-                    running = true
+            val action = intent?.action
+            if (action == ACTION_STOP) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            // ACTION_START or null (START_STICKY restart after process kill)
+            val prefs = getSharedPreferences("tvclient_prefs", Context.MODE_PRIVATE)
+            val username = prefs.getString(PREF_USERNAME, "") ?: ""
+            val tvId = prefs.getString(PREF_TV_ID, "") ?: ""
+            if (!running) {
+                running = true
+                try {
                     startForeground(NOTIFICATION_ID, buildNotification())
-                    playCachedMedia()
-                    val username = getSharedPreferences("tvclient_prefs", Context.MODE_PRIVATE)
-                        .getString(PREF_USERNAME, "") ?: ""
-                    val tvId = getSharedPreferences("tvclient_prefs", Context.MODE_PRIVATE)
-                        .getString(PREF_TV_ID, "") ?: ""
-                    if (username.isNotEmpty() && tvId.isNotEmpty()) {
-                        startListening(username, tvId)
-                    }
+                } catch (e: Exception) {
+                    Log.w("TvClientService", "startForeground failed (notification perm?): ${e.message}")
                 }
-                ACTION_STOP -> {
-                    stopSelf()
-                }
+            }
+            if (action == ACTION_START) {
+                isPlayingMedia = false
+                playCachedMedia()
+            } else {
+                Log.i("TvClientService", "onStartCommand restart (no intent), re-attaching listeners")
+            }
+            if (username.isNotEmpty() && tvId.isNotEmpty()) {
+                startListening(username, tvId)
+            } else if (action == ACTION_START) {
+                Log.w("TvClientService", "ACTION_START but username/tvId not configured")
             }
         } catch (e: Exception) {
             Log.e("TvClientService", "onStartCommand error: ${e.message}", e)
@@ -131,6 +172,7 @@ class TvClientService : Service() {
 
     private fun startListening(username: String, tvId: String) {
         startHeartbeat(username, tvId)
+        startPowerPolling()
         scope.launch {
             cloudHelper.ensureSignedIn()
             cloudHelper.listenTvStatus(username, tvId) { status ->
@@ -138,6 +180,28 @@ class TvClientService : Service() {
             }
             cloudHelper.listenTvCommands(username, tvId) { cmd ->
                 handleCommand(username, tvId, cmd)
+            }
+        }
+    }
+
+    private fun startPowerPolling() {
+        powerPollJob?.cancel()
+        val pm = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+        powerPollJob = scope.launch {
+            var lastInteractive = pm.isInteractive
+            while (isActive) {
+                delay(3000)
+                try {
+                    val now = pm.isInteractive
+                    if (lastInteractive == false && now == true) {
+                        Log.i("TvClientService", "Power polling: screen wake detected, playing cached media")
+                        isPlayingMedia = false
+                        playCachedMedia()
+                    }
+                    lastInteractive = now
+                } catch (e: Exception) {
+                    Log.e("TvClientService", "Power polling error: ${e.message}")
+                }
             }
         }
     }
@@ -167,24 +231,37 @@ class TvClientService : Service() {
             getSharedPreferences("tvclient_prefs", Context.MODE_PRIVATE)
                 .edit().putInt(PREF_HDMI_PORT, cmd.hdmiPort).apply()
         }
+        if (cmd.hideWarning) {
+            currentWarningShown = false
+            OverlayManager.hideWarning()
+        }
         if (cmd.showWarning && !currentWarningShown) {
             currentWarningShown = true
             _warningTriggered.value = true
-            showWarningOverlay(cmd.warningMessage)
+            // Pesan dari kasir (mis. PIN QR) diprioritaskan; fallback sisa waktu.
+            val waktuMsg = if (lastSisaDetik > 0) {
+                val menit = lastSisaDetik / 60
+                val detik = lastSisaDetik % 60
+                "Sisa ${menit}m ${detik}d!"
+            } else {
+                "⚠️ Waktu hampir habis!"
+            }
+            val isPin = cmd.warningMessage.isNotBlank()
+            val msg = if (isPin) cmd.warningMessage else waktuMsg
+            showWarningOverlay(msg, alignStart = isPin)
         }
         if (cmd.stopVideo) {
             isPlayingMedia = false
-            val intent = Intent("com.billingps.tvclient.STOP_VIDEO")
-            sendBroadcast(intent)
+            OverlayManager.stopVideo()
+            Log.i("TvClientService", "Stop video command, overlay closed")
+        }
+        if (cmd.playCachedMedia) {
+            playCachedMedia()
         }
     }
 
-    private fun showWarningOverlay(message: String) {
-        val intent = Intent(this, WarningOverlayActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-            putExtra("message", message)
-        }
-        startActivity(intent)
+    private fun showWarningOverlay(message: String, alignStart: Boolean = false) {
+        OverlayManager.showWarning(this, message, alignStart = alignStart)
     }
 
     private fun downloadAndCacheMedia(urlStr: String) {
@@ -259,7 +336,7 @@ class TvClientService : Service() {
                         delay(30_000)
                         continue
                     }
-                    val ok = cloudHelper.sendHeartbeat(username, tvId, "1.0.0")
+                    val ok = cloudHelper.sendHeartbeat(username, tvId, "4.1")
                     if (ok) Log.i("TvClientService", "Heartbeat sent for $tvId")
                     else Log.w("TvClientService", "Heartbeat FAILED for $tvId")
                 } catch (e: Exception) {
@@ -274,11 +351,13 @@ class TvClientService : Service() {
         lastSisaDetik = status.sisaDetik
         // Play cached media when a new session starts (paketAktif becomes non-empty)
         if (status.paketAktif.isNotEmpty() && lastPaketAktif.isEmpty()) {
+            currentWarningShown = false
             playCachedMedia()
         }
-        // Reset media playing flag when session ends
+        // Reset media playing flag and warning flag when session ends
         if (status.paketAktif.isEmpty() && lastPaketAktif.isNotEmpty()) {
             isPlayingMedia = false
+            currentWarningShown = false
         }
         lastPaketAktif = status.paketAktif
         val isAlmostHabis = status.timerActive && status.sisaDetik in 1..300

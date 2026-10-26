@@ -16,6 +16,9 @@ data class TvData(
     val bebas: Boolean = false,
     val paketHarga: Int = 0,
     val totalPesanan: Int = 0,
+    val trxId: String = "",
+    val pesanan: Map<String, Int> = emptyMap(),
+    val pesananHarga: Map<String, Int> = emptyMap(),
     val bebasMulai: Long = 0,
     val bebasHargaPerJam: Int = 0,
     val bebasPesananTotal: Int = 0,
@@ -24,6 +27,15 @@ data class TvData(
     val keyPem: String = "",
     val cancelBatas: Long = 0,
     val sudahBayar: Boolean = false,
+    val namaRental: String = "",
+    val promoVideoPath: String = "",
+    val lockscreenVideoPath: String = "",
+    val popupMode: String = "always",
+    val popupLastMinutes: Int = 5,
+    val bebasInterval: Int = 60,
+    val bebasDurasi: Int = 30,
+    val hdmiPort: Int = 0,
+    val hdmiInputHint: String = "",
 ) : Serializable
 
 data class Transaksi(
@@ -38,7 +50,14 @@ data class Transaksi(
     val pesananHarga: Map<String, Int> = emptyMap(),
     val tvJenisPs: String = "",
     val sudahBayar: Boolean = false,
+    val metode: String = "",
 )
+
+fun Transaksi.fnbTotal(): Int =
+    pesanan.entries.sumOf { (name, qty) -> (pesananHarga[name] ?: 0) * qty }
+
+fun Transaksi.paketTotal(): Int =
+    (total - fnbTotal()).coerceAtLeast(0)
 
 data class UserData(
     val username: String = "",
@@ -64,12 +83,20 @@ data class AuthResult(
     val message: String,
 )
 
+data class FnbSaleResult(
+    val success: Boolean,
+    val message: String = "",
+    val transactionId: String = "",
+)
+
 data class LicenseStatus(
     val status: String = "", // active, trial, inactive
     val pesan: String = "",
     val expiresAt: String = "",
-    val maxTv: Int = 0, // 0 = unlimited
-    val promoAddTv: Int = 0, // promo add-on TV count (from promoMaxTv in license code)
+    val maxTv: Int = 0, // 0 = unlimited (legacy only)
+    val promoAddTv: Int = 0, // legacy promo TV count
+    val paket: String = "",
+    val clientEnabled: Boolean = true, // old licenses keep client access
 )
 
 data class KodeGenerasi(
@@ -99,9 +126,11 @@ data class LicenseRecord(
     val activatedAt: Long = 0,
     val activatedDeviceId: String = "",
     val revoked: Boolean = false,
-    val maxActivations: Int = 2,
+    val maxActivations: Int = 1,
     val activatedDevices: List<ActivatedDevice> = emptyList(),
     val promoMaxTv: Int = 0,
+    val maxTv: Int = 0,
+    val clientEnabled: Boolean = true,
 )
 
 data class SmtpConfig(
@@ -168,10 +197,25 @@ data class Invoice(
     val confirmedBy: String = "",
     val kodeLisensi: String = "",
     val buktiBase64: String = "",
+    val jumlahTv: Int = 0, // 0 = legacy invoice
+    val mode: String = "", // new, add, renew; empty = legacy
+    val baseMaxTv: Int = 0,
 )
 
 data class ClientStatus(
     val online: Boolean = false,
     val version: String = "",
     val lastSeen: Long = 0L,
+)
+
+data class DeviceConflict(
+    val activeDeviceId: String = "",
+    val activeDeviceName: String = "perangkat lain",
+)
+
+data class DeviceClaimResult(
+    val success: Boolean = false,
+    val sessionId: String = "",
+    val conflict: DeviceConflict? = null,
+    val error: String = "",
 )

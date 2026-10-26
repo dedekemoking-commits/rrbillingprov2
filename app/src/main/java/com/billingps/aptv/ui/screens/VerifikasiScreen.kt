@@ -160,10 +160,10 @@ fun VerifikasiScreen(viewModel: MainViewModel) {
         SubscriptionPackagesVerif(
             promo = state.promo,
             viewModel = viewModel,
-            onBeliInvoice = { paket, harga ->
+            onBeliInvoice = { paket, harga, jumlahTv, mode ->
                 invDialogPaket = paket
-                invDialogHarga = harga
-                lastInvoice = viewModel.buatInvoice(paket, harga.replace(Regex("[^0-9]"), "").toIntOrNull() ?: 0)
+                invDialogHarga = "Rp$harga"
+                lastInvoice = viewModel.buatInvoice(paket, harga, jumlahTv, mode)
                 showInvoiceDialog = true
             },
         )
@@ -368,20 +368,16 @@ fun VerifikasiScreen(viewModel: MainViewModel) {
     }
 }
 
-private val paketHargaMap = mapOf(
-    "1 Bulan" to 99000,
-    "3 Bulan" to 299000,
-    "1 Tahun" to 999000,
-    "LIFETIME" to 2000000,
-)
-
 @Composable
 private fun SubscriptionPackagesVerif(
     promo: PromoSettings,
     viewModel: MainViewModel,
-    onBeliInvoice: (String, String) -> Unit,
+    onBeliInvoice: (String, Int, Int, String) -> Unit,
 ) {
     var tick by remember { mutableLongStateOf(0L) }
+    var qty by remember { mutableIntStateOf(1) }
+    val licenseActive = viewModel.state.value.licenseStatus.status == "active"
+    val mode = if (licenseActive) "add" else "new"
     LaunchedEffect(Unit) {
         while (true) {
             delay(30_000)
@@ -390,10 +386,8 @@ private fun SubscriptionPackagesVerif(
     }
 
     val paketList = listOf(
-        PaketInfo("1 Bulan", 99_000, 5, "ADD TV 5", NeonGreen),
-        PaketInfo("3 Bulan", 299_000, 10, "ADD TV 10", NeonCyan),
-        PaketInfo("1 Tahun", 999_000, 15, "ADD TV 15", NeonYellow),
-        PaketInfo("LIFETIME", 2_000_000, 0, "ADD TV unlimited", NeonOrange),
+        PaketInfo("LIFETIME", "Lifetime", 75_000, "Rp75.000 per TV · client APK", NeonGreen, true),
+        PaketInfo("BULANAN", "Bulanan", 10_000, "Rp10.000 per TV / bulan · tanpa client APK", NeonCyan, false),
     )
 
     Card(
@@ -443,39 +437,51 @@ private fun SubscriptionPackagesVerif(
                 }
             }
             Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Jumlah kartu TV", style = MaterialTheme.typography.bodySmall, color = TextPrimary, fontWeight = FontWeight.Bold)
+                    Text(
+                        if (licenseActive) "Tambah TV ke kuota saat ini" else "Lisensi baru",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                    )
+                }
+                OutlinedButton(onClick = { qty = (qty - 1).coerceAtLeast(1) }) { Text("−") }
+                Text(
+                    "$qty",
+                    modifier = Modifier.width(36.dp),
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                )
+                OutlinedButton(onClick = { qty = (qty + 1).coerceAtMost(99) }) { Text("+") }
+            }
+            Spacer(Modifier.height(8.dp))
             paketList.forEach { p ->
-                val diskonHarga = viewModel.hargaSetelahDiskon(p.nama, p.harga)
-                val promoAddTv = viewModel.getAddTvOverride(p.nama)
-                val addTvText = if (promoAddTv != null) {
-                    val normalTv = p.addTv
-                    val bonus = promoAddTv - normalTv
-                    if (bonus > 0) "🔥 ADD TV $promoAddTv (+$bonus dari normal)" else "ADD TV $promoAddTv"
-                } else {
-                    p.desc
-                }
-                val hargaText = if (promo.promoAktif && diskonHarga < p.harga) {
-                    "~~${fmtRp(p.harga)}~~ → ${fmtRp(diskonHarga)}"
-                } else {
-                    fmtRp(p.harga)
-                }
-                val accentColor = if (promo.promoAktif) NeonOrange else p.color
+                val total = p.harga * qty
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                     shape = RoundedCornerShape(10.dp),
                     colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2),
-                    border = BorderStroke(1.dp, accentColor),
+                    border = BorderStroke(1.dp, p.color),
                 ) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(p.nama, style = MaterialTheme.typography.bodyMedium, color = p.color, fontWeight = FontWeight.Bold)
-                            Text(hargaText, style = MaterialTheme.typography.bodySmall, color = TextPrimary)
-                            Text(addTvText, style = MaterialTheme.typography.bodySmall, color = if (promoAddTv != null) NeonOrange else TextSecondary)
+                            Text(p.label, style = MaterialTheme.typography.bodyMedium, color = p.color, fontWeight = FontWeight.Bold)
+                            Text("Rp${fmtRpInt(total)} · $qty TV", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                            Text(p.desc, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            Text(
+                                if (p.clientEnabled) "Client APK tersedia" else "Tanpa client APK",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (p.clientEnabled) NeonCyan else TextDim,
+                            )
                         }
                         Button(
-                            onClick = { onBeliInvoice(p.nama, if (promo.promoAktif) "Rp${fmtRpInt(diskonHarga)}" else "Rp${fmtRpInt(p.harga)}") },
+                            onClick = { onBeliInvoice(p.code, total, qty, mode) },
                             shape = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = accentColor, contentColor = DarkBackground),
-                        ) { Text("Bayar") }
+                            colors = ButtonDefaults.buttonColors(containerColor = p.color, contentColor = DarkBackground),
+                        ) { Text(if (licenseActive) "Tambah" else "Bayar") }
                     }
                 }
             }
@@ -484,7 +490,14 @@ private fun SubscriptionPackagesVerif(
 }
 
 private data class SubData(val nama: String, val harga: String, val desc: String, val color: Color)
-private data class PaketInfo(val nama: String, val harga: Int, val addTv: Int, val desc: String, val color: Color)
+private data class PaketInfo(
+    val code: String,
+    val label: String,
+    val harga: Int,
+    val desc: String,
+    val color: Color,
+    val clientEnabled: Boolean,
+)
 
 private fun fmtRpInt(angka: Int): String = String.format("%,d", angka)
 
@@ -555,7 +568,7 @@ private fun UploadBuktiDialogVerif(invoice: Invoice, onConfirm: (String) -> Unit
         if (uri != null) {
             try {
                 val inputStream: java.io.InputStream = ctx.contentResolver.openInputStream(uri) ?: return@rememberLauncherForActivityResult
-                val bmp = BitmapFactory.decodeStream(inputStream)
+                val bmp = BitmapFactory.decodeStream(inputStream) ?: return@rememberLauncherForActivityResult
                 inputStream.close()
                 val maxDim = 1024f
                 val scale = minOf(maxDim / bmp.width, maxDim / bmp.height, 1f)
@@ -644,7 +657,7 @@ private fun InvoiceDetailDialog(invoice: Invoice, viewModel: MainViewModel, onDi
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) try {
             val inputStream = ctx.contentResolver.openInputStream(uri) ?: return@rememberLauncherForActivityResult
-            val bmp = BitmapFactory.decodeStream(inputStream); inputStream.close()
+            val bmp = BitmapFactory.decodeStream(inputStream) ?: return@rememberLauncherForActivityResult; inputStream.close()
             val maxDim = 1024f
             val scale = minOf(maxDim / bmp.width, maxDim / bmp.height, 1f)
             val resized = if (scale < 1f) Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true) else bmp

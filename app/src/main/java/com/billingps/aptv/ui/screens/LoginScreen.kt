@@ -4,7 +4,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Person
@@ -98,18 +100,23 @@ fun LoginScreen(
 
     val loginGradient = Brush.verticalGradient(colors = listOf(Color(0xFFF0FDF4), Color(0xFF00C9A7)))
 
-    Box(modifier = Modifier.fillMaxSize().background(loginGradient)) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().background(loginGradient)) {
+        val compact = maxHeight < 560.dp
         Column(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = maxHeight)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = if (compact) 8.dp else 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.SpaceBetween,
+            verticalArrangement = if (compact) Arrangement.Top else Arrangement.SpaceBetween,
         ) {
             // Top section: logo + title + license
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Image(
                     painter = androidx.compose.ui.res.painterResource(com.billingps.aptv.R.drawable.logo_transparant),
                     contentDescription = "Logo",
-                    modifier = Modifier.size(180.dp),
+                    modifier = Modifier.size(if (compact) 96.dp else 180.dp),
                 )
 
                 Spacer(Modifier.height(2.dp))
@@ -119,7 +126,8 @@ fun LoginScreen(
                     style = MaterialTheme.typography.titleLarge.copy(
                         shadow = Shadow(color = Color(0xFF001B3D).copy(alpha = 0.6f), blurRadius = 12f),
                         brush = Brush.horizontalGradient(colors = listOf(Color.Black, Color(0xFF001B3D)))
-                    )
+                    ),
+                    textAlign = TextAlign.Center,
                 )
 
                 if (showLicense) {
@@ -134,12 +142,12 @@ fun LoginScreen(
 
             // Middle: login card
             Card(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(top = if (compact) 8.dp else 0.dp),
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = DarkSurface),
                 border = androidx.compose.foundation.BorderStroke(1.dp, NeonGreen.copy(alpha = 0.3f)),
             ) {
-                Column(Modifier.padding(16.dp)) {
+                Column(Modifier.padding(if (compact) 12.dp else 16.dp)) {
                     OutlinedTextField(
                         value = username,
                         onValueChange = { username = it; errMsg = "" },
@@ -636,13 +644,15 @@ fun LoginScreen(
                             Spacer(Modifier.height(12.dp))
                             Button(onClick = {
                                 if (selectedKasir.isEmpty()) return@Button
-                                val ok = viewModel.loginKasir(selectedKasir, kasirPass)
-                                if (ok) {
-                                    selectedKasir = ""; kasirPass = ""; kasirErr = ""
-                                    showKasirLogin = false
-                                    onLoginSuccess()
-                                } else {
-                                    kasirErr = "Password salah"
+                                scope.launch {
+                                    val ok = viewModel.loginKasir(selectedKasir, kasirPass)
+                                    if (ok) {
+                                        selectedKasir = ""; kasirPass = ""; kasirErr = ""
+                                        showKasirLogin = false
+                                        onLoginSuccess()
+                                    } else {
+                                        kasirErr = if (state.deviceConflict != null) "Akun aktif di perangkat lain" else "Password salah"
+                                    }
                                 }
                             }, modifier = Modifier.fillMaxWidth(), enabled = selectedKasir.isNotEmpty() && kasirPass.length >= 4, shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground)) {
                                 Text("Login Kasir")
@@ -656,6 +666,56 @@ fun LoginScreen(
                 }
             }
         }
+    }
+
+    if (state.sessionNotice.isNotBlank()) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissSessionNotice() },
+            title = { Text("Sesi Berakhir") },
+            text = { Text(state.sessionNotice) },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.dismissSessionNotice() },
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground),
+                ) { Text("Mengerti") }
+            },
+        )
+    }
+
+    val conflict = state.deviceConflict
+    if (conflict != null) {
+        AlertDialog(
+            onDismissRequest = { if (!state.isBusy) viewModel.dismissDeviceConflict() },
+            title = { Text("Akun Sedang Digunakan") },
+            text = {
+                Text(
+                    "Akun ini sedang aktif di ${conflict.activeDeviceName}. " +
+                        "Satu akun hanya dapat digunakan pada satu perangkat. " +
+                        "Ambil alih sesi akan mengeluarkan perangkat lain."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.takeoverDeviceLogin() },
+                    enabled = !state.isBusy,
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonRed, contentColor = Color.White),
+                ) {
+                    if (state.isBusy) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text("Keluarkan dari perangkat lain")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { viewModel.dismissDeviceConflict() },
+                    enabled = !state.isBusy,
+                ) {
+                    Text("Keluar aplikasi", color = TextSecondary)
+                }
+            },
+        )
     }
 }
 

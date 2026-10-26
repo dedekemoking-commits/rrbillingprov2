@@ -12,12 +12,22 @@ android {
         applicationId 'com.billingps.tvclient'
         minSdk 23
         targetSdk 34
-        versionCode 1
-        versionName '1.0.0'
+        versionCode 41
+        versionName '4.1'
+    }
+
+    signingConfigs {
+        release {
+            storeFile file(System.getenv("USERPROFILE") + "/.android/debug.keystore")
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
     }
 
     buildTypes {
         release {
+            signingConfig signingConfigs.release
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }

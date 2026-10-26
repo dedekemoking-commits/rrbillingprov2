@@ -196,10 +196,45 @@ fun ProfileScreen(
 
             // User Management (Admin)
             if (state.currentRole == "admin") {
+                var resetTarget by remember { mutableStateOf<String?>(null) }
+                var hapusTarget by remember { mutableStateOf<String?>(null) }
                 Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
                     Column(Modifier.padding(16.dp)) {
                         Text("MANAJEMEN KASIR", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
+
+                        // Daftar akun kasir
+                        val kasirList = state.users.values.filter { it.role == "kasir" }.sortedBy { it.username }
                         Spacer(Modifier.height(8.dp))
+                        if (kasirList.isEmpty()) {
+                            Text("Belum ada akun kasir.", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                        } else {
+                            Text("${kasirList.size} akun terdaftar", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            Spacer(Modifier.height(4.dp))
+                            kasirList.forEach { kasir ->
+                                val isSelf = kasir.username == state.currentUser
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)
+                                        .background(DarkSurfaceV2, RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(Icons.Filled.Person, contentDescription = null, tint = NeonCyan, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(kasir.username, style = MaterialTheme.typography.bodySmall, color = TextPrimary, fontWeight = FontWeight.Bold)
+                                        Text(if (isSelf) "Akun Anda" else "Dibuat: ${kasir.dibuat.take(10)}", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                                    }
+                                    TextButton(onClick = { resetTarget = kasir.username }, enabled = !isSelf, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Reset", color = NeonYellow, style = MaterialTheme.typography.labelSmall) }
+                                    TextButton(onClick = { hapusTarget = kasir.username }, enabled = !isSelf, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Hapus", color = NeonRed, style = MaterialTheme.typography.labelSmall) }
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+                        HorizontalDivider(color = DarkSurfaceV3.copy(alpha = 0.5f), thickness = 0.5.dp)
+                        Spacer(Modifier.height(8.dp))
+
+                        // Form tambah kasir
                         OutlinedTextField(value = regUser, onValueChange = { regUser = it; regMsg = "" }, label = { Text("Username kasir") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
                         var regPassVisible by remember { mutableStateOf(false) }
                         OutlinedTextField(value = regPass, onValueChange = { regPass = it }, label = { Text("Password (min 6, huruf besar & angka)") }, singleLine = true, visualTransformation = if (regPassVisible) VisualTransformation.None else PasswordVisualTransformation(), trailingIcon = { IconButton(onClick = { regPassVisible = !regPassVisible }) { Icon(if (regPassVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility, null, tint = TextSecondary) } }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
@@ -225,6 +260,87 @@ fun ProfileScreen(
                     }
                 }
 
+                // Reset password kasir dialog
+                if (resetTarget != null) {
+                    val target = resetTarget!!
+                    var newPass by remember { mutableStateOf("") }
+                    var resetMsg by remember { mutableStateOf("") }
+                    var resetMsgOk by remember { mutableStateOf(false) }
+                    AlertDialog(
+                        onDismissRequest = { resetTarget = null },
+                        containerColor = DarkSurface,
+                        title = { Text("RESET PASSWORD", color = NeonYellow, fontWeight = FontWeight.Bold) },
+                        text = {
+                            Column {
+                                Text("Kasir: $target", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(value = newPass, onValueChange = { newPass = it; resetMsg = "" }, label = { Text("Password baru (min 6, huruf besar & angka)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = fieldColors())
+                                if (resetMsg.isNotEmpty()) {
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(resetMsg, style = MaterialTheme.typography.bodySmall, color = if (resetMsgOk) NeonGreen else NeonRed)
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            Button(
+                                onClick = {
+                                    if (newPass.length < 6 || !newPass.any { it.isUpperCase() } || !newPass.any { it.isDigit() }) {
+                                        resetMsg = "Min 6 karakter, harus huruf besar & angka"; resetMsgOk = false; return@Button
+                                    }
+                                    if (viewModel.gantiPassword(target, newPass)) {
+                                        Toast.makeText(ctx, "Password $target berhasil direset", Toast.LENGTH_SHORT).show()
+                                        resetTarget = null
+                                    } else {
+                                        resetMsg = "Gagal mereset password"; resetMsgOk = false
+                                    }
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = NeonYellow, contentColor = DarkBackground),
+                            ) { Text("Simpan") }
+                        },
+                        dismissButton = {
+                            OutlinedButton(
+                                onClick = { resetTarget = null },
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
+                                border = BorderStroke(1.dp, TextSecondary.copy(alpha = 0.5f)),
+                            ) { Text("Batal") }
+                        },
+                    )
+                }
+
+                // Hapus kasir dialog
+                if (hapusTarget != null) {
+                    val target = hapusTarget!!
+                    AlertDialog(
+                        onDismissRequest = { hapusTarget = null },
+                        containerColor = DarkSurface,
+                        title = { Text("HAPUS KASIR", color = NeonRed, fontWeight = FontWeight.Bold) },
+                        text = { Text("Hapus akun kasir '$target'? Akun tidak bisa login lagi.", color = TextSecondary) },
+                        confirmButton = {
+                            Button(
+                                onClick = {
+                                    if (viewModel.hapusUser(target)) {
+                                        Toast.makeText(ctx, "Kasir $target dihapus", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(ctx, "Gagal menghapus kasir", Toast.LENGTH_SHORT).show()
+                                    }
+                                    hapusTarget = null
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = NeonRed, contentColor = androidx.compose.ui.graphics.Color.White),
+                                shape = RoundedCornerShape(10.dp),
+                            ) { Text("Hapus") }
+                        },
+                        dismissButton = {
+                            OutlinedButton(
+                                onClick = { hapusTarget = null },
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
+                                border = BorderStroke(1.dp, TextSecondary.copy(alpha = 0.5f)),
+                            ) { Text("Batal") }
+                        },
+                    )
+                }
                 }
 
             // Theme Display

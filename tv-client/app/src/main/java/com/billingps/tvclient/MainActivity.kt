@@ -4,11 +4,17 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import android.util.Log
 import android.view.Gravity
 import android.widget.*
 import androidx.core.content.ContextCompat
+import androidx.core.content.PermissionChecker
 import com.billingps.tvclient.firestore.CloudHelper
 import com.google.android.gms.tasks.Tasks
 import com.google.firebase.firestore.FirebaseFirestore
@@ -22,6 +28,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        checkNotificationPermission()
+        checkOverlayPermission()
 
         try {
             val prefs = getSharedPreferences("tvclient_prefs", Context.MODE_PRIVATE)
@@ -182,7 +190,7 @@ class MainActivity : Activity() {
                 setTextColor(Color.WHITE)
                 setOnClickListener {
                     stopService(Intent(this@MainActivity, TvClientService::class.java))
-                    getSharedPreferences("tvclient_prefs", Context.MODE_PRIVATE).edit().clear().apply()
+                    getSharedPreferences("tvclient_prefs", Context.MODE_PRIVATE).edit().clear().commit()
                     showSetupScreen()
                 }
             }
@@ -269,7 +277,7 @@ class MainActivity : Activity() {
             .putString(TvClientService.PREF_USERNAME, username)
             .putString(TvClientService.PREF_TV_ID, tvId)
             .putString(TvClientService.PREF_TV_NAMA, tvNama)
-            .apply()
+            .commit()
 
         Toast.makeText(this, "Terhubung ke $tvNama", Toast.LENGTH_SHORT).show()
         startServiceAndShowStatus(username, tvNama)
@@ -281,5 +289,49 @@ class MainActivity : Activity() {
         }
         ContextCompat.startForegroundService(this, intent)
         showConnectedScreen(username, tvNama)
+    }
+
+    private fun checkOverlayPermission() {
+        if (!OverlayManager.canDrawOverlays(this)) {
+            Log.w("MainActivity", "SYSTEM_ALERT_WINDOW not granted, prompting user")
+            AlertDialog.Builder(this)
+                .setTitle("Izinkan Tampil di Atas Aplikasi Lain")
+                .setMessage("BillingPS TV Client memerlukan izin untuk menampilkan peringatan sisa waktu dan video iklan di atas semua tampilan (termasuk saat input HDMI).")
+                .setPositiveButton("Buka Pengaturan") { _, _ ->
+                    val intent = Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:$packageName")
+                    )
+                    startActivity(intent)
+                }
+                .setNegativeButton("Nanti", null)
+                .setCancelable(false)
+                .show()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (OverlayManager.canDrawOverlays(this)) {
+            Log.i("MainActivity", "SYSTEM_ALERT_WINDOW granted")
+        }
+    }
+
+    private fun checkNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (PermissionChecker.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 1001) {
+            val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+            Log.i("MainActivity", "POST_NOTIFICATIONS granted=$granted")
+        }
     }
 }

@@ -224,7 +224,7 @@ fun MainScreen(vm: LicenseGenViewModel) {
         prevRequestCount = vm.pendingRequestCount
     }
 
-    val tabTitles = listOf("User", "Generate", "Riwayat", "Invoice", "Promo", "Broadcast", "Settings")
+    val tabTitles = listOf("User", "Generate", "Online", "Riwayat", "Invoice", "Promo", "Broadcast", "Settings")
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -258,19 +258,20 @@ fun MainScreen(vm: LicenseGenViewModel) {
                 tabTitles.forEachIndexed { idx, title ->
                     Tab(selected = tab == idx, onClick = {
                         tab = idx
-                        if (idx == 3 && reqCount > 0) vm.markLicenseRequestsRead()
+                        if (idx == 4 && reqCount > 0) vm.markLicenseRequestsRead()
                     }, text = {
                         when (idx) {
                             0 -> Text("User")
                             1 -> Text("Generate")
-                            2 -> Text("Riwayat")
-                            3 -> {
+                            2 -> Text("Online")
+                            3 -> Text("Riwayat")
+                            4 -> {
                                 val badgeCount = pendingCount + reqCount
                                 if (badgeCount > 0) {
                                     BadgedBox(badge = { Badge { Text("$badgeCount") } }) { Text("Invoice") }
                                 } else Text("Invoice")
                             }
-                            4 -> {
+                            5 -> {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text("Promo")
                                     if (promoAktif) {
@@ -279,8 +280,8 @@ fun MainScreen(vm: LicenseGenViewModel) {
                                     }
                                 }
                             }
-                            5 -> Text("Broadcast")
-                            6 -> Text("Settings")
+                            6 -> Text("Broadcast")
+                            7 -> Text("Settings")
                         }
                     })
                 }
@@ -289,11 +290,12 @@ fun MainScreen(vm: LicenseGenViewModel) {
             when (tab) {
                 0 -> UserListTab(vm, ctx)
                 1 -> GenerateTab(vm, ctx)
-                2 -> HistoryTab(vm, ctx)
-                3 -> InvoiceTab(vm, ctx)
-                4 -> PromoTab(vm, ctx)
-                5 -> BroadcastTab(vm, ctx)
-                6 -> SettingsTab(vm, ctx)
+                2 -> OnlineTab(vm, ctx)
+                3 -> HistoryTab(vm, ctx)
+                4 -> InvoiceTab(vm, ctx)
+                5 -> PromoTab(vm, ctx)
+                6 -> BroadcastTab(vm, ctx)
+                7 -> SettingsTab(vm, ctx)
             }
         }
     }
@@ -433,6 +435,7 @@ fun GenerateTab(vm: LicenseGenViewModel, ctx: Context) {
     var showUserPicker by remember { mutableStateOf(false) }
     var pickerSearch by remember { mutableStateOf("") }
     var paket by remember { mutableStateOf("BULANAN") }
+    var jumlahTv by remember { mutableStateOf(1) }
     var generatedCode by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf("") }
 
@@ -515,7 +518,7 @@ fun GenerateTab(vm: LicenseGenViewModel, ctx: Context) {
         Text("Paket:", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
         Spacer(Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("BULANAN", "3BULAN", "TAHUNAN", "LIFETIME").forEach { p ->
+            listOf("BULANAN", "LIFETIME").forEach { p ->
                 FilterChip(
                     selected = paket == p,
                     onClick = { paket = p; generatedCode = "" },
@@ -527,11 +530,77 @@ fun GenerateTab(vm: LicenseGenViewModel, ctx: Context) {
 
         Spacer(Modifier.height(16.dp))
 
+        // Jumlah TV yang boleh ditambahkan user. Ini yang jadi batas nyata
+        // di aplikasi kasir: main.py membandingkan len(kartu) dengan
+        // maxTv dari license_status, jadi nilai di sini yang menentukan,
+        // bukan sekadar catatan di riwayat.
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp),
+            colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2),
+            border = BorderStroke(1.dp, NeonCyan.copy(alpha = 0.3f)),
+        ) {
+            Column(Modifier.padding(12.dp)) {
+                Text("JUMLAH TV", style = MaterialTheme.typography.labelSmall,
+                    color = NeonCyan, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = { if (jumlahTv > 1) { jumlahTv--; generatedCode = "" } },
+                        modifier = Modifier.width(48.dp).height(44.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(0.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan),
+                        border = BorderStroke(1.dp, NeonCyan),
+                    ) { Text("−", fontSize = 20.sp, fontWeight = FontWeight.Bold) }
+
+                    OutlinedTextField(
+                        value = jumlahTv.toString(),
+                        onValueChange = { s ->
+                            val n = s.filter { it.isDigit() }.toIntOrNull()
+                            if (n != null) jumlahTv = n.coerceIn(1, 254)
+                            generatedCode = ""
+                        },
+                        modifier = Modifier.weight(1f).height(56.dp).padding(horizontal = 8.dp),
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            textAlign = TextAlign.Center, fontSize = 18.sp,
+                            color = TextPrimary, fontWeight = FontWeight.Bold),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = NeonCyan, unfocusedBorderColor = DarkSurfaceV3,
+                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+                            cursorColor = NeonCyan,
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                    )
+
+                    OutlinedButton(
+                        onClick = { if (jumlahTv < 254) { jumlahTv++; generatedCode = "" } },
+                        modifier = Modifier.width(48.dp).height(44.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(0.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan),
+                        border = BorderStroke(1.dp, NeonCyan),
+                    ) { Text("+", fontSize = 20.sp, fontWeight = FontWeight.Bold) }
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    if (paket == "LIFETIME") {
+                        "Lifetime Rp75.000/TV dan mendukung Client APK. User dapat menambah maksimal $jumlahTv kartu TV."
+                    } else {
+                        "Bulanan Rp10.000/TV/bulan tanpa Client APK. User dapat menambah maksimal $jumlahTv kartu TV."
+                    },
+                    style = MaterialTheme.typography.bodySmall, color = TextDim,
+                )
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
         Button(onClick = {
             if (selectedUser == null) { msg = "Pilih user terlebih dahulu"; return@Button }
             msg = "Generating..."
             generatedCode = ""
-            vm.generateLicense(paket, selectedUser!!.username, selectedUser!!.email) { code ->
+            vm.generateLicense(paket, selectedUser!!.username, selectedUser!!.email, jumlahTv) { code ->
                 generatedCode = code; msg = ""
             }
         }, modifier = Modifier.fillMaxWidth().height(48.dp),
@@ -596,10 +665,257 @@ fun GenerateTab(vm: LicenseGenViewModel, ctx: Context) {
 }
 
 @Composable
+fun OnlineTab(vm: LicenseGenViewModel, ctx: Context) {
+    var plan by remember { mutableStateOf("monthly") }
+    var jumlah by remember { mutableStateOf(1) }
+    var batch by remember {
+        mutableStateOf(
+            java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                .format(java.util.Date())
+        )
+    }
+    var msg by remember { mutableStateOf("") }
+    var msgOk by remember { mutableStateOf(false) }
+    var keys by remember { mutableStateOf(listOf<LicenseGenViewModel.RrtvKey>()) }
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+        Text("LISENSI ONLINE (RRTV)", style = MaterialTheme.typography.titleMedium, color = NeonCyan)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Kode per-kartu TV untuk aplikasi RR Billing Online. " +
+            "Pelanggan memasukkan kode ini saat aktivasi TV mereka.",
+            style = MaterialTheme.typography.bodySmall, color = TextDim,
+        )
+        Spacer(Modifier.height(12.dp))
+
+        Card(
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = DarkSurface),
+            border = BorderStroke(1.dp, if (vm.rrtvAdminToken.isBlank()) NeonRed.copy(alpha = 0.5f) else DarkSurfaceV3),
+        ) {
+            Column(Modifier.padding(12.dp)) {
+                Text("KONEKSI GENERATOR", style = MaterialTheme.typography.labelSmall, color = NeonCyan, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (vm.rrtvAdminToken.isBlank())
+                        "❌ Admin token belum diisi — buka tab Settings → RR ONLINE."
+                    else
+                        "✅ Siap — ${vm.rrtvWorkerUrl}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (vm.rrtvAdminToken.isBlank()) NeonRed else NeonGreen,
+                )
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+        Text("Paket:", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(
+                "monthly" to "BULANAN Rp 10rb",
+                "lifetime" to "LIFETIME Rp 75rb",
+            ).forEach { (value, label) ->
+                FilterChip(
+                    selected = plan == value,
+                    onClick = { plan = value; msg = "" },
+                    label = {
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (plan == value) DarkBackground else TextPrimary,
+                        )
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = NeonGreen,
+                        selectedLabelColor = DarkBackground,
+                    ),
+                )
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp),
+            colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2),
+            border = BorderStroke(1.dp, NeonCyan.copy(alpha = 0.3f)),
+        ) {
+            Column(Modifier.padding(12.dp)) {
+                Text("JUMLAH KARTU TV", style = MaterialTheme.typography.labelSmall,
+                    color = NeonCyan, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = { if (jumlah > 1) jumlah-- },
+                        modifier = Modifier.width(48.dp).height(44.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(0.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan),
+                        border = BorderStroke(1.dp, NeonCyan),
+                    ) { Text("−", fontSize = 20.sp, fontWeight = FontWeight.Bold) }
+
+                    OutlinedTextField(
+                        value = jumlah.toString(),
+                        onValueChange = { s ->
+                            val n = s.filter { it.isDigit() }.toIntOrNull()
+                            if (n != null) jumlah = n.coerceIn(1, 200)
+                        },
+                        modifier = Modifier.weight(1f).height(56.dp).padding(horizontal = 8.dp),
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            textAlign = TextAlign.Center, fontSize = 18.sp,
+                            color = TextPrimary, fontWeight = FontWeight.Bold),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = NeonCyan, unfocusedBorderColor = DarkSurfaceV3,
+                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+                            cursorColor = NeonCyan,
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                    )
+
+                    OutlinedButton(
+                        onClick = { if (jumlah < 200) jumlah++ },
+                        modifier = Modifier.width(48.dp).height(44.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(0.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan),
+                        border = BorderStroke(1.dp, NeonCyan),
+                    ) { Text("+", fontSize = 20.sp, fontWeight = FontWeight.Bold) }
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "1 kode = 1 kartu TV. Batch dipakai untuk mengelompokkan " +
+                    "kode (mis. tanggal penjualan).",
+                    style = MaterialTheme.typography.bodySmall, color = TextDim,
+                )
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = batch,
+            onValueChange = { batch = it; msg = "" },
+            label = { Text("Batch (opsional)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = NeonCyan, unfocusedBorderColor = DarkSurfaceV3,
+                cursorColor = NeonCyan, unfocusedContainerColor = DarkSurfaceV2,
+                focusedContainerColor = DarkSurfaceV2,
+                focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
+            ),
+        )
+
+        Spacer(Modifier.height(16.dp))
+
+        Button(onClick = {
+            msg = ""
+            keys = emptyList()
+            vm.genRrtvKeys(plan, jumlah, batch.trim()) { ok, m, list ->
+                msgOk = ok
+                msg = m
+                keys = list
+            }
+        }, modifier = Modifier.fillMaxWidth().height(48.dp),
+            enabled = !vm.rrtvBusy,
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) {
+            if (vm.rrtvBusy) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), color = DarkBackground, strokeWidth = 2.dp)
+            } else {
+                Text("GENERATE KODE RRTV", fontWeight = FontWeight.Bold)
+            }
+        }
+
+        if (msg.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                msg,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (msgOk) NeonGreen else NeonRed,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        if (keys.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "${keys.size} KODE (${plan.uppercase()})",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = NeonGreen,
+                    modifier = Modifier.weight(1f),
+                )
+                Button(
+                    onClick = {
+                        val sendIntent = Intent().apply {
+                            action = Intent.ACTION_SEND
+                            putExtra(Intent.EXTRA_TEXT, keys.joinToString("\n") { it.key })
+                            type = "text/plain"
+                        }
+                        ctx.startActivity(Intent.createChooser(sendIntent, "Bagikan Kode RRTV"))
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = DarkBackground),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                ) {
+                    Icon(Icons.Filled.Share, contentDescription = "Share", modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Share Semua", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            keys.forEach { k ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    color = DarkSurfaceV2,
+                    border = BorderStroke(1.dp, NeonGreen.copy(alpha = 0.4f)),
+                ) {
+                    Row(
+                        Modifier.padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            k.key,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = NeonGreen,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(onClick = {
+                            val clip = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clip.setPrimaryClip(ClipData.newPlainText("Kode RRTV", k.key))
+                            Toast.makeText(ctx, "Kode tersalin!", Toast.LENGTH_SHORT).show()
+                        }) {
+                            Icon(Icons.Filled.ContentCopy, contentDescription = "Copy", tint = NeonCyan, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(30.dp))
+    }
+}
+
+@Composable
 fun HistoryTab(vm: LicenseGenViewModel, ctx: Context) {
     var search by remember { mutableStateOf("") }
     var revokeTarget by remember { mutableStateOf<LicenseRecord?>(null) }
     var revokeMsg by remember { mutableStateOf("") }
+    var revokeReason by remember { mutableStateOf("") }
+    var restoreTarget by remember { mutableStateOf<LicenseRecord?>(null) }
+    var restoreMsg by remember { mutableStateOf("") }
+
+    // Username yang status online-nya 'revoked'. Dipakai untuk membedakan
+    // "kode ini dicabut" dari "kode ini hanya dinonaktifkan".
+    val revokedUsernames = remember(vm.onlineLicenseStatus) {
+        vm.onlineLicenseStatus.filterValues { it.equals("revoked", ignoreCase = true) }.keys
+    }
 
     val filtered = remember(vm.historyList, search) {
         if (search.isBlank()) vm.historyList
@@ -637,7 +953,15 @@ fun HistoryTab(vm: LicenseGenViewModel, ctx: Context) {
                         val sdf = java.text.SimpleDateFormat("dd/MM/yy HH:mm", java.util.Locale.US)
                         sdf.format(java.util.Date(rec.generatedAt))
                     } else "-"
-                    val status = if (rec.revoked) "❌ Dinonaktifkan" else if (rec.activatedAt > 0) "✅ Terpakai" else "⏳ Belum"
+                    // Status memakai license_status (sumber kebenaran desktop) kalau ada,
+                    // baru jatuh ke penanda pada baris licenses.
+                    val online = revokedUsernames.contains(rec.username)
+                    val status = when {
+                        online -> "❌ Dicabut"
+                        rec.revoked -> "⚠️ Nonaktif (kode)"
+                        rec.activatedAt > 0 -> "✅ Terpakai"
+                        else -> "⏳ Belum"
+                    }
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(10.dp),
@@ -647,7 +971,9 @@ fun HistoryTab(vm: LicenseGenViewModel, ctx: Context) {
                         Column(Modifier.padding(12.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(rec.kode, style = MaterialTheme.typography.titleMedium, color = NeonGreen, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                                Text(status, style = MaterialTheme.typography.bodySmall, color = if (rec.revoked) NeonRed else if (rec.activatedAt > 0) NeonGreen else TextSecondary)
+                                Text(status, style = MaterialTheme.typography.bodySmall,
+                                color = if (online || rec.revoked) NeonRed
+                                else if (rec.activatedAt > 0) NeonGreen else TextSecondary)
                             }
                             Spacer(Modifier.height(6.dp))
                             HorizontalDivider(color = DarkSurfaceV3, thickness = 0.5.dp)
@@ -657,15 +983,28 @@ fun HistoryTab(vm: LicenseGenViewModel, ctx: Context) {
                             DetailRow("Paket", rec.paket)
                             DetailRow("Berlaku", rec.expiry)
                             DetailRow("Generate", time)
-                            if (!rec.revoked) {
+                            // Aksi dibedakan oleh sumber kebenarannya. Kalau status online-nya
+                            // revoked, yang diperlukan adalah memulihkan -- menulis ulang
+                            // license_status jadi 'active'. Menolak kode lagi hanya
+                            // menyentuh tabel licenses dan tidak akan mengunci apa pun.
+                            if (online) {
                                 Spacer(Modifier.height(6.dp))
                                 OutlinedButton(
-                                    onClick = { revokeTarget = rec; revokeMsg = "" },
+                                    onClick = { restoreTarget = rec; restoreMsg = "" },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
+                                    border = BorderStroke(1.dp, NeonGreen.copy(alpha = 0.5f)),
+                                ) { Text("✅ PULIHKAN LISENSI", fontWeight = FontWeight.Bold, fontSize = 11.sp) }
+                            } else if (!rec.revoked) {
+                                Spacer(Modifier.height(6.dp))
+                                OutlinedButton(
+                                    onClick = { revokeTarget = rec; revokeMsg = ""; revokeReason = "" },
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(8.dp),
                                     colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonRed),
                                     border = BorderStroke(1.dp, NeonRed.copy(alpha = 0.5f)),
-                                ) { Text("NONAKTIFKAN LISENSI", fontWeight = FontWeight.Bold, fontSize = 11.sp) }
+                                ) { Text("🛑 CABUT LISENSI", fontWeight = FontWeight.Bold, fontSize = 11.sp) }
                             }
                         }
                     }
@@ -678,27 +1017,90 @@ fun HistoryTab(vm: LicenseGenViewModel, ctx: Context) {
         AlertDialog(
             onDismissRequest = { revokeTarget = null },
             containerColor = DarkSurface,
-            title = { Text("⚠️ Nonaktifkan Lisensi?", color = NeonRed, fontWeight = FontWeight.Bold) },
+            title = { Text("🛑 Cabut Lisensi?", color = NeonRed, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
-                    Text("Lisensi ${revokeTarget!!.kode} untuk ${revokeTarget!!.username} akan dinonaktifkan.", color = TextPrimary)
-                    Text("User tidak bisa menggunakan kode ini lagi.", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                    Text("Lisensi untuk ${revokeTarget!!.username} akan dicabut.", color = TextPrimary)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Aplikasi di PC user mengunci dalam ≤60 detik (poller " +
+                        "Supabase). Semua tabnon-Aktivasi dinonaktifkan.",
+                        color = TextSecondary, style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text("Alasan (ditampilkan ke user):", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedTextField(
+                        value = revokeReason,
+                        onValueChange = { revokeReason = it },
+                        label = { Text("Alasan pencabutan", color = TextSecondary) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = NeonRed,
+                            unfocusedBorderColor = DarkSurfaceV3,
+                            focusedLabelColor = NeonRed,
+                            unfocusedLabelColor = TextSecondary,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            cursorColor = NeonRed,
+                            unfocusedContainerColor = DarkSurfaceV2,
+                            focusedContainerColor = DarkSurfaceV2,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2, maxLines = 4,
+                    )
                     if (revokeMsg.isNotEmpty()) {
                         Spacer(Modifier.height(8.dp))
-                        Text(revokeMsg, style = MaterialTheme.typography.bodySmall, color = if (revokeMsg.startsWith("Lisensi")) NeonGreen else NeonRed)
+                        Text(revokeMsg, style = MaterialTheme.typography.bodySmall,
+                            color = if (revokeMsg.startsWith("Lisensi")) NeonGreen else NeonRed)
                     }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    vm.revokeLicense(revokeTarget!!.id) { ok, msg ->
+                    vm.revokeUserLicense(
+                        revokeTarget!!.username, revokeTarget!!.id, revokeReason
+                    ) { ok, msg ->
                         revokeMsg = msg
-                        if (ok) revokeTarget = null
+                        if (ok) { revokeTarget = null; revokeReason = "" }
                     }
-                }) { Text("NONAKTIFKAN", color = NeonRed) }
+                }) { Text("CABUT", color = NeonRed) }
             },
             dismissButton = {
-                TextButton(onClick = { revokeTarget = null }) { Text("BATAL", color = NeonGreen) }
+                TextButton(onClick = { revokeTarget = null; revokeReason = "" }) { Text("BATAL", color = NeonGreen) }
+            },
+        )
+    }
+
+    if (restoreTarget != null) {
+        AlertDialog(
+            onDismissRequest = { restoreTarget = null },
+            containerColor = DarkSurface,
+            title = { Text("✅ Pulihkan Lisensi?", color = NeonGreen, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("Status online ${restoreTarget!!.username} diubah ke 'active'.", color = TextPrimary)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Hanya berlaku jika kode lama belum lewat tanggal. Kalau sudah kedaluwarsa, konfirmasi ulang invoice agar kode baru dibuat.",
+                        color = TextSecondary, style = MaterialTheme.typography.bodySmall
+                    )
+                    if (restoreMsg.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(restoreMsg, style = MaterialTheme.typography.bodySmall,
+                            color = if (restoreMsg.startsWith("Lisensi")) NeonGreen else NeonRed)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.restoreUserLicense(restoreTarget!!.username) { ok, msg ->
+                        restoreMsg = msg
+                        if (ok) restoreTarget = null
+                    }
+                }) { Text("PULIHKAN", color = NeonGreen) }
+            },
+            dismissButton = {
+                TextButton(onClick = { restoreTarget = null }) { Text("BATAL", color = NeonRed) }
             },
         )
     }
@@ -768,7 +1170,21 @@ fun InvoiceTab(vm: LicenseGenViewModel, ctx: Context) {
                             }
                             Spacer(Modifier.height(6.dp))
                             DetailRow("User", inv.username)
-                            DetailRow("Email", inv.email)
+                            DetailRow("Email", inv.email.ifEmpty { "(kosong)" })
+
+                            // Ringkasan permintaan dibuat utuh supaya admin
+                            // tidak perlu menyimpulkan paket + jumlah TV dari
+                            // dua angka terpisah (yang tampil sebagai "LIFETIME
+                            // Rp375.000" — berapa TV?).
+                            Text(
+                                inv.ringkas(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = NeonCyan, fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(vertical = 4.dp),
+                            )
+                            val perTv = inv.hargaPerTvEfektif()
+                            DetailRow("Jumlah TV", "${inv.jumlahTv.takeIf { it > 0 } ?: inv.maxTv}")
+                            DetailRow("Harga/TV", if (perTv > 0) "Rp${String.format("%,d", perTv)}" else "-")
                             DetailRow("Total", "Rp${String.format("%,d", inv.harga)}")
                             val dateStr = if (inv.dibayar > 0) {
                                 val sdf = java.text.SimpleDateFormat("dd/MM/yy HH:mm", java.util.Locale.US)
@@ -850,10 +1266,36 @@ fun InvoiceTab(vm: LicenseGenViewModel, ctx: Context) {
                             text = {
                                 Column {
                                     Text("Konfirmasi pembayaran dari:")
-                                    Text("${inv.username} (${inv.email})", fontWeight = FontWeight.Bold)
+                                    Text("${inv.username}", fontWeight = FontWeight.Bold)
+                                    if (inv.email.isNotBlank()) {
+                                        Text(inv.email, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(inv.ringkas(), fontWeight = FontWeight.Bold, color = NeonCyan)
                                     Spacer(Modifier.height(4.dp))
                                     Text("Paket: ${inv.paket}")
+                                    val perTvDlg = inv.hargaPerTvEfektif()
+                                    if (perTvDlg > 0) {
+                                        Text("Harga/TV: Rp${String.format("%,d", perTvDlg)}")
+                                    }
                                     Text("Total: Rp${String.format("%,d", inv.harga)}")
+
+                                    // Tampilkan status online SEBELUM konfirmasi.
+                                    // Batas TV akan dijumlahkan dengan yang sudah
+                                    // dimiliki, jadi admin perlu tahu angka
+                                    // akhirnya sebelum menyetujui, bukan sesudah.
+                                    Spacer(Modifier.height(8.dp))
+                                    val statusOnline = vm.onlineLicenseStatus[inv.username]
+                                    Text(
+                                        "Status lisensi online sekarang: ${statusOnline ?: "tidak ada"}",
+                                        color = TextSecondary, fontSize = 12.sp,
+                                    )
+                                    if (statusOnline != null && !statusOnline.equals("active", true)) {
+                                        Text(
+                                            "⚠️ Menyetujui akan mengaktifkan kembali lisensi ini.",
+                                            color = NeonYellow, fontSize = 12.sp,
+                                        )
+                                    }
                                     Spacer(Modifier.height(8.dp))
                                     Text("Lisensi akan digenerate otomatis dan dikaitkan ke invoice.", color = TextSecondary, fontSize = 13.sp)
                                 }
@@ -1397,6 +1839,10 @@ fun SettingsTab(vm: LicenseGenViewModel, ctx: Context) {
     var keyMsg by remember { mutableStateOf("") }
     var keyMsgOk by remember { mutableStateOf(false) }
     var showGenerateConfirm by remember { mutableStateOf(false) }
+    var rrtvUrlInput by remember { mutableStateOf(vm.rrtvWorkerUrl) }
+    var rrtvTokenInput by remember { mutableStateOf(vm.rrtvAdminToken) }
+    var rrtvMsg by remember { mutableStateOf("") }
+    var rrtvMsgOk by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
         Text("PENGATURAN", style = MaterialTheme.typography.titleMedium, color = NeonCyan)
@@ -1455,6 +1901,52 @@ fun SettingsTab(vm: LicenseGenViewModel, ctx: Context) {
                         Toast.makeText(ctx, "Key tersalin (RAHASIA!)", Toast.LENGTH_SHORT).show()
                     }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = NeonYellow, contentColor = DarkBackground)) { Text("📋 Copy Key (Backup!)", fontWeight = FontWeight.Bold) }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
+            Column(Modifier.padding(16.dp)) {
+                Text("RR ONLINE (RRTV)", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
+                Spacer(Modifier.height(4.dp))
+                Text("Dipakai tab Online untuk generate kode lisensi per-kartu TV RR Billing Online.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = rrtvUrlInput,
+                    onValueChange = { rrtvUrlInput = it; rrtvMsg = "" },
+                    label = { Text("Worker URL") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonGreen, unfocusedBorderColor = DarkSurfaceV3,
+                        cursorColor = NeonGreen, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                        focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = rrtvTokenInput,
+                    onValueChange = { rrtvTokenInput = it; rrtvMsg = "" },
+                    label = { Text("Admin Token") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = NeonGreen, unfocusedBorderColor = DarkSurfaceV3,
+                        cursorColor = NeonGreen, unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
+                        focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary),
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = {
+                        vm.saveRrtvConfig(rrtvUrlInput, rrtvTokenInput)
+                        rrtvMsgOk = true
+                        rrtvMsg = "Konfigurasi RRTV tersimpan!"
+                    },
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
+                ) { Text("Simpan Konfigurasi RRTV") }
+                if (rrtvMsg.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(rrtvMsg, style = MaterialTheme.typography.bodySmall, color = if (rrtvMsgOk) NeonGreen else NeonRed)
                 }
             }
         }

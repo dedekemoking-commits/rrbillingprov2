@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.animation.core.*
 import com.billingps.aptv.models.*
+import com.billingps.aptv.tv.TvHubManager
 import com.billingps.aptv.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -302,7 +303,11 @@ fun DashboardScreen(
                         onUpdate = { updates -> viewModel.updateTV(tv.id, updates) },
                         onPower = {
                             if (tv.certPem.isNotEmpty() && tv.keyPem.isNotEmpty()) {
-                                tvViewModel.sendPower(tv.ip, tv.certPem, tv.keyPem)
+                                tvViewModel.sendPower(tv.ip, tv.certPem, tv.keyPem) { result ->
+                                    if (result.ok && TvHubManager.connectionFor(tv)?.screenOn == true) {
+                                        viewModel.playCachedMediaOnTv(state.currentUser, tv.id)
+                                    }
+                                }
                             }
                         },
                         onVolUp = {
@@ -317,7 +322,7 @@ fun DashboardScreen(
                         },
                         onSelesai = {
                             if (tv.certPem.isNotEmpty() && tv.keyPem.isNotEmpty()) {
-                                tvViewModel.sendPower(tv.ip, tv.certPem, tv.keyPem)
+                                tvViewModel.sendPower(tv.ip, tv.certPem, tv.keyPem, false)
                             }
                             selesaiSummaryTV = tv
                             showSelesaiSummary = true
@@ -384,7 +389,7 @@ fun DashboardScreen(
                 if (tv.paketAktif == "WAKTU HABIS" && tv.sisaDetik == 0L && !tv.sudahBayar) {
                     if (autoPowerSentSessions[tv.id] != tv.timerStart) {
                         if (tv.certPem.isNotEmpty() && tv.keyPem.isNotEmpty()) {
-                            tvViewModel.sendPower(tv.ip, tv.certPem, tv.keyPem)
+                            tvViewModel.sendPower(tv.ip, tv.certPem, tv.keyPem, false)
                             autoPowerSentSessions[tv.id] = tv.timerStart
                         }
                     }
@@ -903,7 +908,12 @@ if (paketNm != null && paketNm != "Main Bebas") {
                                 showPindahTvDialog = false
                                 viewModel.pindahTV(pindahTvSource!!.id, target.id)
                                 if (pindahTvSource!!.certPem.isNotEmpty() && pindahTvSource!!.keyPem.isNotEmpty()) {
-                                    tvViewModel.sendPower(pindahTvSource!!.ip, pindahTvSource!!.certPem, pindahTvSource!!.keyPem)
+                                    tvViewModel.sendPower(
+                                        pindahTvSource!!.ip,
+                                        pindahTvSource!!.certPem,
+                                        pindahTvSource!!.keyPem,
+                                        false,
+                                    )
                                 }
                                 pindahTvSource = null
                             },
@@ -1695,7 +1705,7 @@ fun HabisDialog(
 
     fun sendPowerOff() {
         if (!autoPowerSent && tv.certPem.isNotEmpty() && tv.keyPem.isNotEmpty()) {
-            tvViewModel.sendPower(tv.ip, tv.certPem, tv.keyPem)
+            tvViewModel.sendPower(tv.ip, tv.certPem, tv.keyPem, false)
         }
     }
 

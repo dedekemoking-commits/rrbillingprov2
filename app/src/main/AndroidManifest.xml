@@ -37,12 +37,18 @@
 
         <activity
             android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".WebAppActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false" />
 
         <service
             android:name=".MyFirebaseMessagingService"
@@ -54,6 +60,11 @@
 
         <service
             android:name=".TimerService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse" />
+
+        <service
+            android:name=".tv.TvHubService"
             android:exported="false"
             android:foregroundServiceType="specialUse" />
     </application>

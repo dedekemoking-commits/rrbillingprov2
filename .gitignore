@@ -9,6 +9,8 @@ local.properties
 *.iml
 .DS_Store
 Thumbs.db
+__pycache__/
+*.pyc
 
 # Firebase service account key
 app/src/main/res/raw/fcm_key.json

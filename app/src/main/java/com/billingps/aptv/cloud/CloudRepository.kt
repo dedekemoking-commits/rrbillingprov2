@@ -1,6 +1,7 @@
 package com.billingps.aptv.cloud
 
 import android.app.Application
+import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import com.billingps.aptv.models.*
@@ -8,6 +9,7 @@ import com.billingps.aptv.utils.ECDSAUtils
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import java.util.UUID
@@ -54,6 +56,126 @@ class CloudRepository(private val app: Application) {
     fun isFullyAuthenticated(): Boolean {
         val user = auth.currentUser ?: return false
         return !user.isAnonymous
+    }
+
+    fun currentDeviceId(): String = deviceId
+
+    fun currentDeviceName(): String = try {
+        listOf(Build.MANUFACTURER, Build.MODEL)
+            .filter { it.isNotBlank() }
+            .joinToString(" ")
+            .ifBlank { "perangkat lain" }
+    } catch (_: Throwable) {
+        "perangkat lain"
+    }
+
+    /**
+     * Atomically claim this account for the current device. Requires a live
+     * Firestore connection so two devices cannot silently share a session.
+     */
+    suspend fun claimDevice(username: String, force: Boolean = false): DeviceClaimResult {
+        if (username.isBlank()) return DeviceClaimResult(error = "Username kosong")
+        if (!ensureSignedIn()) {
+            return DeviceClaimResult(error = "Tidak dapat terhubung ke server. Login membutuhkan internet.")
+        }
+        val docRef = firestore.collection("billingps_users").document(username)
+        return suspendCancellableCoroutine { cont ->
+            firestore.runTransaction { transaction ->
+                val snap = transaction.get(docRef)
+                val activeId = snap.getString("activeDeviceId").orEmpty()
+                val activeName = snap.getString("activeDeviceName").orEmpty()
+                if (activeId.isNotBlank() && activeId != deviceId && !force) {
+                    DeviceClaimResult(
+                        success = false,
+                        conflict = DeviceConflict(
+                            activeDeviceId = activeId,
+                            activeDeviceName = activeName.ifBlank { "perangkat lain" },
+                        ),
+                        error = "Akun sedang digunakan di ${activeName.ifBlank { "perangkat lain" }}",
+                    )
+                } else {
+                    val sessionId = UUID.randomUUID().toString()
+                    transaction.set(
+                        docRef,
+                        mapOf(
+                            "activeDeviceId" to deviceId,
+                            "activeDeviceName" to currentDeviceName(),
+                            "activeSessionId" to sessionId,
+                            "lastActive" to System.currentTimeMillis(),
+                        ),
+                        SetOptions.merge(),
+                    )
+                    DeviceClaimResult(success = true, sessionId = sessionId)
+                }
+            }
+                .addOnSuccessListener { result ->
+                    Log.i("CloudRepo", "claimDevice success=${result.success} conflict=${result.conflict != null}")
+                    if (!cont.isCompleted) cont.resume(result)
+                }
+                .addOnFailureListener { ex ->
+                    Log.i("CloudRepo", "claimDevice failed: ${ex.message}")
+                    if (!cont.isCompleted) {
+                        cont.resume(DeviceClaimResult(error = "Gagal memverifikasi perangkat. Periksa internet."))
+                    }
+                }
+        }
+    }
+
+    fun listenDeviceSession(
+        username: String,
+        sessionId: String,
+        onConflict: (DeviceConflict) -> Unit,
+    ): ListenerRegistration? {
+        if (username.isBlank() || sessionId.isBlank()) return null
+        if (auth.currentUser == null) return null
+        return firestore.collection("billingps_users").document(username)
+            .addSnapshotListener { snap, error ->
+                if (error != null || snap == null || !snap.exists()) return@addSnapshotListener
+                val activeId = snap.getString("activeDeviceId").orEmpty()
+                val activeSession = snap.getString("activeSessionId").orEmpty()
+                val activeName = snap.getString("activeDeviceName").orEmpty()
+                val replaced = (activeSession.isNotBlank() && activeSession != sessionId) ||
+                    (activeId.isNotBlank() && activeId != deviceId)
+                if (replaced) {
+                    onConflict(
+                        DeviceConflict(
+                            activeDeviceId = activeId,
+                            activeDeviceName = activeName.ifBlank { "perangkat lain" },
+                        )
+                    )
+                }
+            }
+    }
+
+    suspend fun releaseDeviceSession(username: String, sessionId: String): Boolean {
+        if (username.isBlank() || sessionId.isBlank()) return false
+        if (auth.currentUser == null) return false
+        val docRef = firestore.collection("billingps_users").document(username)
+        return suspendCancellableCoroutine { cont ->
+            firestore.runTransaction { transaction ->
+                val snap = transaction.get(docRef)
+                val activeSession = snap.getString("activeSessionId").orEmpty()
+                if (activeSession.isNotBlank() && activeSession != sessionId) {
+                    false
+                } else {
+                    transaction.update(
+                        docRef,
+                        mapOf(
+                            "activeDeviceId" to "",
+                            "activeDeviceName" to "",
+                            "activeSessionId" to "",
+                            "lastActive" to System.currentTimeMillis(),
+                        ),
+                    )
+                    true
+                }
+            }
+                .addOnSuccessListener { ok -> if (!cont.isCompleted) cont.resume(ok) }
+                .addOnFailureListener { ex ->
+                    Log.i("CloudRepo", "releaseDeviceSession failed: ${ex.message}")
+                    if (!cont.isCompleted) cont.resume(false)
+                }
+        }
     }
 
     /**
@@ -104,7 +226,27 @@ class CloudRepository(private val app: Application) {
                     "jenisPs" to tv.jenisPs,
                     "paketAktif" to tv.paketAktif,
                     "sisaDetik" to tv.sisaDetik,
+                    "timerStart" to tv.timerStart,
+                    "timerDurasi" to tv.timerDurasi,
                     "timerActive" to tv.timerActive,
+                    "bebas" to tv.bebas,
+                    "paketHarga" to tv.paketHarga,
+                    "totalPesanan" to tv.totalPesanan,
+                    "trxId" to tv.trxId,
+                    "pesanan" to tv.pesanan,
+                    "pesananHarga" to tv.pesananHarga,
+                    "bebasMulai" to tv.bebasMulai,
+                    "bebasHargaPerJam" to tv.bebasHargaPerJam,
+                    "bebasPesananTotal" to tv.bebasPesananTotal,
+                    "cancelBatas" to tv.cancelBatas,
+                    "sudahBayar" to tv.sudahBayar,
+                    "namaRental" to tv.namaRental,
+                    "popupMode" to tv.popupMode,
+                    "popupLastMinutes" to tv.popupLastMinutes,
+                    "bebasInterval" to tv.bebasInterval,
+                    "bebasDurasi" to tv.bebasDurasi,
+                    "hdmiPort" to tv.hdmiPort,
+                    "hdmiInputHint" to tv.hdmiInputHint,
                 )
             }
 
@@ -120,6 +262,8 @@ class CloudRepository(private val app: Application) {
                     "paketHarga" to t.paketHarga,
                     "pesananHarga" to t.pesananHarga,
                     "tvJenisPs" to t.tvJenisPs,
+                    "sudahBayar" to t.sudahBayar,
+                    "metode" to t.metode,
                 )
             }
 
@@ -139,6 +283,8 @@ class CloudRepository(private val app: Application) {
                     "expiresAt" to state.licenseStatus.expiresAt,
                     "maxTv" to state.licenseStatus.maxTv,
                     "promoAddTv" to state.licenseStatus.promoAddTv,
+                    "paket" to state.licenseStatus.paket,
+                    "clientEnabled" to state.licenseStatus.clientEnabled,
                 )
             }
 
@@ -188,7 +334,17 @@ class CloudRepository(private val app: Application) {
         }
     }
 
-        suspend fun fetchTransaksiForUser(username: String): List<Transaksi> {
+        suspend fun deleteUserDoc(key: String): Boolean {
+        if (key.isBlank()) return false
+        if (!ensureSignedIn()) return false
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("billingps_users").document("_user_$key").delete()
+                .addOnSuccessListener { Log.i("CloudRepo", "deleteUserDoc success: $key"); if (!cont.isCompleted) cont.resume(true) }
+                .addOnFailureListener { ex -> Log.i("CloudRepo", "deleteUserDoc failed: ${ex.message}"); if (!cont.isCompleted) cont.resume(false) }
+        }
+    }
+
+    suspend fun fetchTransaksiForUser(username: String): List<Transaksi> {
             if (username.isBlank()) return emptyList()
             Log.i("CloudRepo", "fetchTransaksiForUser start: $username")
             if (!ensureSignedIn()) { Log.i("CloudRepo", "ensureSignedIn failed for fetch"); return emptyList() }
@@ -218,7 +374,9 @@ class CloudRepository(private val app: Application) {
                                     list.add(Transaksi(id = id, waktu = waktu, kasir = kasir, kota = kota, paket = paket, pesanan = pesananMap, total = total,
                                         paketHarga = (item["paketHarga"] as? Number)?.toInt() ?: 0,
                                         pesananHarga = pesananHarga,
-                                        tvJenisPs = item["tvJenisPs"] as? String ?: ""))
+                                        tvJenisPs = item["tvJenisPs"] as? String ?: "",
+                                        sudahBayar = item["sudahBayar"] as? Boolean ?: false,
+                                        metode = item["metode"] as? String ?: ""))
                                 }
                             }
                             Log.i("CloudRepo", "fetchTransaksiForUser: got ${list.size} items for $username")
@@ -244,6 +402,14 @@ class CloudRepository(private val app: Application) {
                         val list = mutableListOf<TvData>()
                         raw?.forEach { item ->
                             if (item is Map<*, *>) {
+                                val tvPesanan = mutableMapOf<String, Int>()
+                                (item["pesanan"] as? Map<*, *>)?.forEach { (k, v) ->
+                                    if (k is String && v is Number) tvPesanan[k] = v.toInt()
+                                }
+                                val tvPesananHarga = mutableMapOf<String, Int>()
+                                (item["pesananHarga"] as? Map<*, *>)?.forEach { (k, v) ->
+                                    if (k is String && v is Number) tvPesananHarga[k] = v.toInt()
+                                }
                                 list.add(TvData(
                                     id = item["id"] as? String ?: "",
                                     nama = item["nama"] as? String ?: "",
@@ -252,6 +418,27 @@ class CloudRepository(private val app: Application) {
                                     jenisPs = item["jenisPs"] as? String ?: "PS3",
                                     paketAktif = item["paketAktif"] as? String ?: "",
                                     sisaDetik = (item["sisaDetik"] as? Number)?.toLong() ?: 0,
+                                    timerStart = (item["timerStart"] as? Number)?.toLong() ?: 0L,
+                                    timerDurasi = (item["timerDurasi"] as? Number)?.toLong() ?: 0L,
+                                    timerActive = item["timerActive"] as? Boolean ?: false,
+                                    bebas = item["bebas"] as? Boolean ?: false,
+                                    paketHarga = (item["paketHarga"] as? Number)?.toInt() ?: 0,
+                                    totalPesanan = (item["totalPesanan"] as? Number)?.toInt() ?: 0,
+                                    trxId = item["trxId"] as? String ?: "",
+                                    pesanan = tvPesanan,
+                                    pesananHarga = tvPesananHarga,
+                                    bebasMulai = (item["bebasMulai"] as? Number)?.toLong() ?: 0L,
+                                    bebasHargaPerJam = (item["bebasHargaPerJam"] as? Number)?.toInt() ?: 0,
+                                    bebasPesananTotal = (item["bebasPesananTotal"] as? Number)?.toInt() ?: 0,
+                                    cancelBatas = (item["cancelBatas"] as? Number)?.toLong() ?: 0L,
+                                    sudahBayar = item["sudahBayar"] as? Boolean ?: false,
+                                    namaRental = item["namaRental"] as? String ?: "",
+                                    popupMode = item["popupMode"] as? String ?: "always",
+                                    popupLastMinutes = (item["popupLastMinutes"] as? Number)?.toInt() ?: 5,
+                                    bebasInterval = (item["bebasInterval"] as? Number)?.toInt() ?: 60,
+                                    bebasDurasi = (item["bebasDurasi"] as? Number)?.toInt() ?: 30,
+                                    hdmiPort = (item["hdmiPort"] as? Number)?.toInt() ?: 0,
+                                    hdmiInputHint = item["hdmiInputHint"] as? String ?: "",
                                 ))
                             }
                         }
@@ -276,21 +463,22 @@ class CloudRepository(private val app: Application) {
                     val paket = data["paket"] as? String ?: ""
                     val expiry = data["expiry"] as? String ?: ""
                     Log.i("CloudRepo", "queryLicenseByField($field=$value): found paket='$paket' expiry=$expiry")
-                    val maxTv = when (paket.uppercase()) {
-                        "BULANAN", "1 BULAN" -> 5
-                        "3BULAN", "3 BULAN" -> 8
-                        "TAHUNAN", "1 TAHUN" -> 15
-                        "LIFETIME" -> 0
-                        else -> 2
-                    }
                     val promoAddTv = (data["promoMaxTv"] as? Number)?.toInt() ?: 0
-                    val effectiveMaxTv = if (promoAddTv > 0) promoAddTv else maxTv
+                    val storedMaxTv = (data["maxTv"] as? Number)?.toInt() ?: 0
+                    val effectiveMaxTv = when {
+                        storedMaxTv > 0 -> storedMaxTv
+                        promoAddTv > 0 -> promoAddTv
+                        else -> LicenseCatalog.legacyMaxTv(paket)
+                    }
                     cont.resume(LicenseStatus(
                         status = "active",
                         pesan = "✅ Lisensi $paket aktif hingga $expiry",
                         expiresAt = expiry,
                         maxTv = effectiveMaxTv,
                         promoAddTv = promoAddTv,
+                        paket = paket,
+                        clientEnabled = (data["clientEnabled"] as? Boolean)
+                            ?: LicenseCatalog.clientEnabled(paket),
                     ))
                 }
                 .addOnFailureListener { ex -> Log.i("CloudRepo", "queryLicenseByField($field=$value) failed: ${ex.message}"); cont.resume(null) }
@@ -312,6 +500,7 @@ class CloudRepository(private val app: Application) {
                     val storedMaxTv = (ls["maxTv"] as? Number)?.toInt() ?: 0
                     val pesan = ls["pesan"] as? String ?: "✅ Lisensi aktif hingga $expiry"
                     val promoAddTv = (ls["promoAddTv"] as? Number)?.toInt() ?: 0
+                    val paket = ls["paket"] as? String ?: ""
                     val maxTv = when {
                         promoAddTv > 0 -> promoAddTv
                         storedMaxTv > 0 -> storedMaxTv // trust stored value (was set by syncToCloud or aktivasiLisensi)
@@ -322,7 +511,16 @@ class CloudRepository(private val app: Application) {
                         else -> 2
                     }
                     Log.i("CloudRepo", "fetchUserLicenseStatus: found active license for $username, expiry=$expiry")
-                    cont.resume(LicenseStatus(status = "active", pesan = pesan, expiresAt = expiry, maxTv = maxTv, promoAddTv = promoAddTv))
+                    cont.resume(LicenseStatus(
+                        status = "active",
+                        pesan = pesan,
+                        expiresAt = expiry,
+                        maxTv = maxTv,
+                        promoAddTv = promoAddTv,
+                        paket = paket,
+                        clientEnabled = (ls["clientEnabled"] as? Boolean)
+                            ?: LicenseCatalog.clientEnabled(paket),
+                    ))
                 }
                 .addOnFailureListener { ex ->
                     Log.i("CloudRepo", "fetchUserLicenseStatus failed: ${ex.message}")
@@ -465,12 +663,15 @@ class CloudRepository(private val app: Application) {
                     val paket = data["paket"] as? String ?: ""
                     val expiry = data["expiry"] as? String ?: ""
                     if (kode.isEmpty() || paket.isEmpty()) { cont.resume(null); return@addOnSuccessListener }
-                    val baseMaxTv = when (paket.uppercase()) {
-                        "BULANAN", "1 BULAN" -> 5; "3BULAN", "3 BULAN" -> 8
-                        "TAHUNAN", "1 TAHUN" -> 15; "LIFETIME" -> 0; else -> 2
-                    }
                     val promoAddTv = (data["promoMaxTv"] as? Number)?.toInt() ?: 0
-                    val maxTv = if (promoAddTv > 0) promoAddTv else baseMaxTv
+                    val storedMaxTv = (data["maxTv"] as? Number)?.toInt() ?: 0
+                    val maxTv = when {
+                        storedMaxTv > 0 -> storedMaxTv
+                        promoAddTv > 0 -> promoAddTv
+                        else -> LicenseCatalog.legacyMaxTv(paket)
+                    }
+                    val clientEnabled = (data["clientEnabled"] as? Boolean)
+                        ?: LicenseCatalog.clientEnabled(paket)
                     Log.i("CloudRepo", "findConfirmedInvoiceLicense: found unactivated $kode for $username, expiry=$expiry")
                     
                     // Activate with multi-device support
@@ -507,6 +708,8 @@ class CloudRepository(private val app: Application) {
                         expiresAt = expiry,
                         maxTv = maxTv,
                         promoAddTv = promoAddTv,
+                        paket = paket,
+                        clientEnabled = clientEnabled,
                     ))
                 }
                 .addOnFailureListener { ex ->
@@ -548,8 +751,11 @@ class CloudRepository(private val app: Application) {
                         activatedAt = data["activatedAt"] as? Long ?: 0,
                         activatedDeviceId = data["activatedDeviceId"] as? String ?: "",
                         revoked = data["revoked"] as? Boolean ?: false,
-                        maxActivations = (data["maxActivations"] as? Number)?.toInt() ?: 2,
+                        maxActivations = (data["maxActivations"] as? Number)?.toInt() ?: 1,
                         promoMaxTv = (data["promoMaxTv"] as? Number)?.toInt() ?: 0,
+                        maxTv = (data["maxTv"] as? Number)?.toInt() ?: 0,
+                        clientEnabled = (data["clientEnabled"] as? Boolean)
+                            ?: LicenseCatalog.clientEnabled(data["paket"] as? String),
                         activatedDevices = activatedDevices,
                     ))
                 }
@@ -573,6 +779,9 @@ class CloudRepository(private val app: Application) {
                 "confirmedBy" to inv.confirmedBy,
                 "kodeLisensi" to inv.kodeLisensi,
                 "buktiBase64" to inv.buktiBase64,
+                "jumlahTv" to inv.jumlahTv,
+                "mode" to inv.mode,
+                "baseMaxTv" to inv.baseMaxTv,
             )
             firestore.collection("invoices").document(inv.id)
                 .set(data)
@@ -610,6 +819,9 @@ class CloudRepository(private val app: Application) {
                             confirmedBy = d["confirmedBy"] as? String ?: "",
                             kodeLisensi = kodeLisensi,
                             buktiBase64 = d["buktiBase64"] as? String ?: "",
+                            jumlahTv = (d["jumlahTv"] as? Number)?.toInt() ?: 0,
+                            mode = d["mode"] as? String ?: "",
+                            baseMaxTv = (d["baseMaxTv"] as? Number)?.toInt() ?: 0,
                         )
                         Log.i("CloudRepo", "listenUserInvoices: CONFIRMED invoice ${inv.id}")
                         onUpdate(inv)
@@ -808,6 +1020,7 @@ class CloudRepository(private val app: Application) {
                 val storedMaxTv = (ls["maxTv"] as? Number)?.toInt() ?: 0
                 val pesan = ls["pesan"] as? String ?: "✅ Lisensi aktif hingga $expiry"
                 val promoAddTv = (ls["promoAddTv"] as? Number)?.toInt() ?: 0
+                val paket = ls["paket"] as? String ?: ""
                 val maxTv = when {
                     promoAddTv > 0 -> promoAddTv
                     storedMaxTv > 0 -> storedMaxTv
@@ -818,7 +1031,16 @@ class CloudRepository(private val app: Application) {
                     else -> 2
                 }
                 Log.i("CloudRepo", "listenUserLicense: license updated for $username, expiry=$expiry")
-                onUpdate(LicenseStatus(status = "active", pesan = pesan, expiresAt = expiry, maxTv = maxTv, promoAddTv = promoAddTv))
+                onUpdate(LicenseStatus(
+                    status = "active",
+                    pesan = pesan,
+                    expiresAt = expiry,
+                    maxTv = maxTv,
+                    promoAddTv = promoAddTv,
+                    paket = paket,
+                    clientEnabled = (ls["clientEnabled"] as? Boolean)
+                        ?: LicenseCatalog.clientEnabled(paket),
+                ))
             }
     }
 
@@ -866,8 +1088,6 @@ class CloudRepository(private val app: Application) {
         if (auth.currentUser == null) return null
         return firestore.collection("notifications")
             .whereEqualTo("username", username)
-            .orderBy("sentAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
-            .limit(50)
             .addSnapshotListener { snap, error ->
                 if (error != null) { Log.e("CloudRepo", "listenNotifications error: ${error.message}"); return@addSnapshotListener }
                 if (snap == null) return@addSnapshotListener
@@ -881,7 +1101,7 @@ class CloudRepository(private val app: Application) {
                         sentAt = d["sentAt"] as? Long ?: 0L,
                     )
                 }
-                onUpdate(list)
+                onUpdate(list.sortedByDescending { it.sentAt }.take(50))
             }
     }
 
@@ -889,8 +1109,6 @@ class CloudRepository(private val app: Application) {
         if (auth.currentUser == null) return null
         return firestore.collection("notifications")
             .whereEqualTo("username", "__all__")
-            .orderBy("sentAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
-            .limit(50)
             .addSnapshotListener { snap, error ->
                 if (error != null) { Log.e("CloudRepo", "listenBroadcast error: ${error.message}"); return@addSnapshotListener }
                 if (snap == null) return@addSnapshotListener
@@ -904,7 +1122,7 @@ class CloudRepository(private val app: Application) {
                         sentAt = d["sentAt"] as? Long ?: 0L,
                     )
                 }
-                onUpdate(list)
+                onUpdate(list.sortedByDescending { it.sentAt }.take(50))
             }
     }
 
@@ -924,6 +1142,25 @@ class CloudRepository(private val app: Application) {
                 Log.i("CloudRepo", "listenClientStatus: tvId=$tvId exists=$exists online=$online version=$version lastSeen=$lastSeen fields=[$allFields]")
                 onUpdate(ClientStatus(online, version, lastSeen))
             }
+    }
+
+    suspend fun deleteTvCommandDoc(username: String, tvId: String): Boolean {
+        if (username.isBlank() || tvId.isBlank()) return false
+        if (!ensureSignedIn()) return false
+        return suspendCancellableCoroutine { cont ->
+            firestore
+                .collection("billingps_users").document(username)
+                .collection("tvCommands").document(tvId)
+                .delete()
+                .addOnSuccessListener {
+                    Log.i("CloudRepo", "deleteTvCommandDoc success: $username/$tvId")
+                    if (!cont.isCompleted) cont.resume(true)
+                }
+                .addOnFailureListener { ex ->
+                    Log.i("CloudRepo", "deleteTvCommandDoc failed: ${ex.message}")
+                    if (!cont.isCompleted) cont.resume(false)
+                }
+        }
     }
 
     fun sendPlayVideo(username: String, tvId: String, videoUrl: String) {
@@ -990,6 +1227,35 @@ class CloudRepository(private val app: Application) {
             .set(
                 mapOf(
                     "hdmiPort" to hdmiPort.toLong(),
+                ),
+                com.google.firebase.firestore.SetOptions.merge(),
+            )
+    }
+
+    fun sendPlayCachedMedia(username: String, tvId: String) {
+        if (username.isBlank() || tvId.isBlank()) return
+        firestore
+            .collection("billingps_users").document(username)
+            .collection("tvCommands").document(tvId)
+            .set(
+                mapOf(
+                    "playCachedMedia" to true,
+                    "timestamp" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+                ),
+                com.google.firebase.firestore.SetOptions.merge(),
+            )
+    }
+
+    fun sendWarning(username: String, tvId: String, message: String) {
+        if (username.isBlank() || tvId.isBlank()) return
+        firestore
+            .collection("billingps_users").document(username)
+            .collection("tvCommands").document(tvId)
+            .set(
+                mapOf(
+                    "showWarning" to true,
+                    "warningMessage" to message,
+                    "timestamp" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
                 ),
                 com.google.firebase.firestore.SetOptions.merge(),
             )

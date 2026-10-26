@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
@@ -110,7 +111,17 @@ class VideoPlayerActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         this.intent = intent
-        finish()
+        val mediaUri = getVideoUri()
+        if (mediaUri == Uri.EMPTY) return
+        Log.i("VideoPlayerActivity", "onNewIntent: re-preparing player with $mediaUri")
+        try {
+            player?.stop()
+            player?.setMediaItem(MediaItem.fromUri(mediaUri))
+            player?.prepare()
+            player?.playWhenReady = true
+        } catch (e: Exception) {
+            Log.e("VideoPlayerActivity", "onNewIntent re-prepare failed: ${e.message}")
+        }
     }
 
     override fun onDestroy() {

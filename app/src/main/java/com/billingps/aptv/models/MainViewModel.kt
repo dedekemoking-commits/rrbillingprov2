@@ -2914,9 +2914,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ── Transaksi ──────────────────────────────────────────
     fun tambahTransaksi(t: Transaksi) {
         val tx = if (t.id.isNotBlank()) t else t.copy(id = "tx_${System.currentTimeMillis()}")
+        val isNew = _state.value.transaksiList.none { it.id == tx.id }
         val list = (_state.value.transaksiList + tx)
         _state.value = _state.value.copy(transaksiList = list)
         StorageUtil.saveTransaksi(list)
+        if (isNew) deductStockForOrder(tx.pesanan)
         addActivityLog("Transaksi ${tx.paket} Rp${tx.total} di ${tx.kota}")
         refreshTimerService()
         // Auto-sync to cloud after new transaction
@@ -2937,6 +2939,7 @@ fun bersihkanTransaksi() {
         val tx = if (t.id.isNotBlank()) t else t.copy(id = "tx_${System.currentTimeMillis()}")
         val list = _state.value.transaksiList.toMutableList()
         val idx = list.indexOfFirst { it.id == tx.id }
+        val previousPesanan = if (idx >= 0) list[idx].pesanan else emptyMap()
         if (idx >= 0) {
             list[idx] = tx
         } else {
@@ -2944,6 +2947,12 @@ fun bersihkanTransaksi() {
         }
         _state.value = _state.value.copy(transaksiList = list)
         StorageUtil.saveTransaksi(list)
+        val stockDelta = mutableMapOf<String, Int>()
+        tx.pesanan.forEach { (name, qty) ->
+            val diff = qty - (previousPesanan[name] ?: 0)
+            if (diff > 0) stockDelta[name] = diff
+        }
+        if (stockDelta.isNotEmpty()) deductStockForOrder(stockDelta)
         addActivityLog("Transaksi ${tx.paket} Rp${tx.total} di ${tx.kota}")
         refreshTimerService()
         try {
@@ -3028,6 +3037,27 @@ fun bersihkanTransaksi() {
         StorageUtil.saveStok(makanan, minuman)
     }
 
+    private fun deductStockForOrder(items: Map<String, Int>) {
+        if (items.isEmpty()) return
+        val makanan = _state.value.stokMakanan.toMutableMap()
+        val minuman = _state.value.stokMinuman.toMutableMap()
+        var changed = false
+        items.forEach { (name, qty) ->
+            if (qty <= 0) return@forEach
+            when {
+                makanan.containsKey(name) -> {
+                    makanan[name] = ((makanan[name] ?: 0) - qty).coerceAtLeast(0)
+                    changed = true
+                }
+                minuman.containsKey(name) -> {
+                    minuman[name] = ((minuman[name] ?: 0) - qty).coerceAtLeast(0)
+                    changed = true
+                }
+            }
+        }
+        if (changed) saveStok(makanan, minuman)
+    }
+
     fun jualFnb(
         itemsMakanan: Map<String, Int>,
         itemsMinuman: Map<String, Int>,
@@ -3067,20 +3097,6 @@ fun bersihkanTransaksi() {
             pesananHarga[name] = price
             total += price * qty
         }
-
-        val newMakanan = _state.value.stokMakanan.toMutableMap()
-        makanan.forEach { (name, qty) ->
-            if (newMakanan.containsKey(name)) {
-                newMakanan[name] = (newMakanan[name] ?: 0) - qty
-            }
-        }
-        val newMinuman = _state.value.stokMinuman.toMutableMap()
-        minuman.forEach { (name, qty) ->
-            if (newMinuman.containsKey(name)) {
-                newMinuman[name] = (newMinuman[name] ?: 0) - qty
-            }
-        }
-        saveStok(newMakanan, newMinuman)
 
         val txId = "TRX-${System.currentTimeMillis()}"
         val transaction = Transaksi(
@@ -3288,75 +3304,6 @@ fun bersihkanTransaksi() {
         }
     }
 
-    private fun generateKode(paket: String): String {
-        val paketChar = when (paket) { "BULANAN" -> "B"; "3BULAN" -> "T"; "TAHUNAN" -> "S"; "LIFETIME" -> "L"; else -> "X" }
-        val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-        val random = (1..13).map { chars.random() }.joinToString("")
-        return "RR$paketChar$random"
-    }
-
-    fun generateLicenseKode(
-        paket: String,
-        username: String,
-        email: String = "",
-        promoMaxTv: Int = 0,
-        maxTv: Int = 0,
-        clientEnabled: Boolean = LicenseCatalog.clientEnabled(paket),
-        mode: String = LicenseCatalog.MODE_NEW,
-        expiryOverride: String = "",
-        onDone: (String) -> Unit,
-    ) {
-        val kode = generateKode(paket)
-        val nonce = java.util.UUID.randomUUID().toString().take(8)
-        val expiry = expiryOverride.ifBlank {
-            val cal = java.util.Calendar.getInstance()
-            cal.add(java.util.Calendar.DAY_OF_YEAR, LicenseCatalog.durationDays(paket))
-            java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
-        }
-        val payload = """{"p":"$paket","u":"$username","e":"$expiry","n":"$nonce","m":"$email","q":$maxTv,"c":$clientEnabled,"o":"$mode"}"""
-        val signature = ECDSAUtils.sign(payload) ?: run {
-            onDone("GAGAL: Private key tidak dikonfigurasi. Gunakan License Generator app.")
-            return
-        }
-        val record = KodeGenerasi(
-            waktu = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).format(java.util.Date()),
-            username = _state.value.currentUser,
-            paket = paket,
-            kode = kode,
-        )
-        val newList = _state.value.kodeGenerasiList + record
-        _state.value = _state.value.copy(kodeGenerasiList = newList)
-        StorageUtil.saveKodeGenerasiList(newList)
-        // Write to Firestore
-        viewModelScope.launch {
-            try {
-                if (cloudRepo.ensureSignedIn()) {
-                    val doc = HashMap<String, Any>()
-                    doc["kode"] = kode
-                    doc["payload"] = payload
-                    doc["signature"] = signature
-                    doc["paket"] = paket
-                    doc["username"] = username
-                    doc["email"] = email
-                    doc["expiry"] = expiry
-                    doc["generatedBy"] = _state.value.currentUser
-                    doc["generatedAt"] = System.currentTimeMillis()
-                    doc["activatedAt"] = 0L
-                    doc["activatedDeviceId"] = ""
-                    doc["revoked"] = false
-                    doc["maxActivations"] = 1
-                    doc["maxTv"] = maxTv
-                    doc["clientEnabled"] = clientEnabled
-                    doc["mode"] = mode
-                    if (promoMaxTv > 0) doc["promoMaxTv"] = promoMaxTv
-                    com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                        .collection("licenses").add(doc)
-                }
-            } catch (e: Exception) { Log.e("MainVM", "save license doc to Firestore in generateLicenseKode: ${e.message}") }
-            onDone(kode)
-        }
-    }
-
     // ── Invoices ────────────────────────────────────────────
     private fun generateInvoiceId(): String {
         val sdf = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US)
@@ -3416,7 +3363,7 @@ fun bersihkanTransaksi() {
                 try {
                     cloudRepo.saveInvoiceToCloud(updated)
                     cloudRepo.saveLicenseRequestNotification(updated.username, updated.paket, updated.harga, updated.id)
-                    _state.value = _state.value.copy(statusMessage = "Bukti terkirim! Menunggu konfirmasi admin.")
+                    _state.value = _state.value.copy(statusMessage = "Bukti terkirim! Menunggu konfirmasi RR License Generator.")
                 } catch (e: Exception) {
                     Log.e("MainVM", "saveInvoiceToCloud in uploadBukti: ${e.message}")
                     _state.value = _state.value.copy(
@@ -3428,118 +3375,6 @@ fun bersihkanTransaksi() {
                     }
                     _state.value = _state.value.copy(invoices = revertList)
                     StorageUtil.saveInvoices(revertList)
-                }
-            }
-        }
-    }
-
-    fun konfirmasiPembayaran(invoiceId: String) {
-        // Only admin can confirm payments
-        if (_state.value.currentRole != "admin") return
-        val inv = _state.value.invoices.firstOrNull { it.id == invoiceId } ?: return
-        viewModelScope.launch {
-            _state.value = _state.value.copy(isBusy = true, statusMessage = "Memproses pembayaran...")
-            val isNewPlan = LicenseCatalog.find(inv.paket) != null && inv.jumlahTv > 0
-            val mode = if (inv.mode.isBlank()) "" else LicenseCatalog.normalizeMode(inv.mode)
-            val qty = inv.jumlahTv.coerceAtLeast(1)
-            val cloudLic = try {
-                withContext(Dispatchers.IO) { cloudRepo.fetchUserLicenseStatus(inv.username) }
-            } catch (e: Exception) {
-                Log.e("MainVM", "konfirmasiPembayaran fetch buyer license: ${e.message}")
-                null
-            }
-            val buyerActive = cloudLic?.status == "active"
-            val buyerUnlimited = buyerActive && cloudLic?.maxTv == 0 && (cloudLic?.promoAddTv ?: 0) == 0
-            val cloudMaxTv = cloudLic?.maxTv ?: 0
-            val baseMaxTv = when {
-                buyerUnlimited -> 0
-                buyerActive && cloudMaxTv > 0 -> maxOf(cloudMaxTv, inv.baseMaxTv)
-                inv.baseMaxTv > 0 -> inv.baseMaxTv
-                else -> 0
-            }
-            val targetMaxTv = when {
-                !isNewPlan -> maxOf(
-                    LicenseCatalog.legacyMaxTv(inv.paket),
-                    getAddTvOverride(inv.paket) ?: 0,
-                )
-                buyerUnlimited -> 0
-                mode == LicenseCatalog.MODE_ADD -> if (baseMaxTv > 0) baseMaxTv + qty else qty
-                mode == LicenseCatalog.MODE_RENEW -> if (baseMaxTv > 0) baseMaxTv else qty
-                else -> qty
-            }
-            val clientEnabled = if (isNewPlan) LicenseCatalog.clientEnabled(inv.paket) else true
-            val durasiHari = LicenseCatalog.durationDays(inv.paket)
-            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
-            val now = java.util.Date()
-            val buyerExpiry = if (buyerActive) {
-                try { sdf.parse(cloudLic?.expiresAt ?: "") } catch (e: Exception) { null }
-            } else null
-            val cal = java.util.Calendar.getInstance()
-            if (buyerExpiry != null && buyerExpiry.after(now)) cal.time = buyerExpiry
-            cal.add(java.util.Calendar.DAY_OF_YEAR, durasiHari)
-            val expiry = sdf.format(cal.time)
-
-            generateLicenseKode(
-                paket = inv.paket,
-                username = inv.username,
-                email = inv.email,
-                promoMaxTv = if (isNewPlan) 0 else (getAddTvOverride(inv.paket) ?: 0),
-                maxTv = targetMaxTv,
-                clientEnabled = clientEnabled,
-                mode = mode.ifBlank { LicenseCatalog.MODE_NEW },
-                expiryOverride = expiry,
-            ) { kode ->
-                viewModelScope.launch {
-                    if (kode.startsWith("GAGAL")) {
-                        _state.value = _state.value.copy(isBusy = false, statusMessage = kode)
-                        return@launch
-                    }
-                    if (isNewPlan && inv.username.equals(_state.value.currentUser, ignoreCase = true)) {
-                        val ls = LicenseStatus(
-                            status = "active",
-                            pesan = "✅ Lisensi ${inv.paket} aktif hingga $expiry",
-                            expiresAt = expiry,
-                            maxTv = targetMaxTv,
-                            promoAddTv = 0,
-                            paket = inv.paket,
-                            clientEnabled = clientEnabled,
-                        )
-                        _state.value = _state.value.copy(licenseStatus = ls, trialBatas = 0L, maxTv = targetMaxTv)
-                        StorageUtil.saveLicense(ls)
-                        refreshHubConfig()
-                    }
-                    // Write ke user doc pembeli, bukan memakai lisensi lokal admin
-                    try {
-                        if (cloudRepo.ensureSignedIn()) {
-                            val userLs = mapOf(
-                                "status" to "active",
-                                "pesan" to "✅ Lisensi ${inv.paket} aktif hingga $expiry",
-                                "expiresAt" to expiry,
-                                "paket" to inv.paket,
-                                "maxTv" to targetMaxTv,
-                                "maxPc" to targetMaxTv,
-                                "promoAddTv" to 0,
-                                "clientEnabled" to clientEnabled,
-                                "mode" to mode.ifBlank { LicenseCatalog.MODE_NEW },
-                                "cloud_restored" to true,
-                            )
-                            cloudRepo.writeLicenseStatusToUserDoc(inv.username, userLs)
-                        }
-                    } catch (e: Exception) { Log.e("MainVM", "writeLicenseStatusToUserDoc in konfirmasiPembayaran: ${e.message}") }
-                    val confirmedInv = _state.value.invoices.firstOrNull { it.id == invoiceId }?.copy(
-                        status = "CONFIRMED", dibayar = System.currentTimeMillis(),
-                        confirmedBy = _state.value.currentUser, kodeLisensi = kode,
-                    )
-                    val newInvoices = _state.value.invoices.map {
-                        if (it.id == invoiceId) confirmedInv!! else it
-                    }
-                    _state.value = _state.value.copy(invoices = newInvoices, pendingInvoiceCount = newInvoices.count { it.status == "WAITING_CONFIRMATION" })
-                    StorageUtil.saveInvoices(newInvoices)
-                    if (confirmedInv != null) { try { cloudRepo.saveInvoiceToCloud(confirmedInv) } catch (e: Exception) { Log.e("MainVM", "saveInvoiceToCloud in konfirmasiPembayaran: ${e.message}") } }
-                    addActivityLog("Pembayaran ${inv.paket} dikonfirmasi (kode: $kode)")
-                    sendPushNotification("💰 Pembayaran Dikonfirmasi", "${inv.paket} - Kode: $kode")
-                    try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after konfirmasiPembayaran: ${e.message}") }
-                    _state.value = _state.value.copy(isBusy = false, statusMessage = "Pembayaran dikonfirmasi!")
                 }
             }
         }

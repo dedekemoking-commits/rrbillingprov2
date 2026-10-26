@@ -691,8 +691,11 @@ class RRBridge(
                 }
 
                 "license.confirmPayment" -> {
-                    mainViewModel.konfirmasiPembayaran(payload.optString("invoiceId"))
-                    sendResult(id, true)
+                    sendResult(
+                        id,
+                        false,
+                        error = "Konfirmasi pembayaran hanya dapat dilakukan melalui RR License Generator.",
+                    )
                 }
 
                 "history.sync" -> {

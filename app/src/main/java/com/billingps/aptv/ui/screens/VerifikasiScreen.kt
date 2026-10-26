@@ -191,7 +191,7 @@ fun VerifikasiScreen(viewModel: MainViewModel) {
                     viewModel.uploadBukti(_inv.id, base64)
                     showUploadDialog = false
                     lastInvoice = null
-                    Toast.makeText(ctx, "Bukti terkirim! Menunggu konfirmasi admin.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(ctx, "Bukti terkirim! Menunggu konfirmasi RR License Generator.", Toast.LENGTH_LONG).show()
                 },
                 onDismiss = { showUploadDialog = false },
             )
@@ -728,7 +728,7 @@ private fun InvoiceDetailDialog(invoice: Invoice, viewModel: MainViewModel, onDi
                     onClick = {
                         if (selectedBase64.isNotEmpty()) {
                             viewModel.uploadBukti(invoice.id, selectedBase64)
-                            Toast.makeText(ctx, "Bukti terkirim! Menunggu konfirmasi admin.", Toast.LENGTH_LONG).show()
+                            Toast.makeText(ctx, "Bukti terkirim! Menunggu konfirmasi RR License Generator.", Toast.LENGTH_LONG).show()
                             onDismiss()
                         }
                     },

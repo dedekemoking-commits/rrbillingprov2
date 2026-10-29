@@ -36,6 +36,16 @@ data class TvData(
     val bebasDurasi: Int = 30,
     val hdmiPort: Int = 0,
     val hdmiInputHint: String = "",
+    val hdmiCommand: String = "",
+    val hdmiRemoteCommand: String = "",
+    val sesiMulai: Long = 0L,
+    val sesiSelesai: Long = 0L,
+    val sesiPaused: Boolean = false,
+    val bebasTertundaMs: Long = 0L,
+    val paketSudahBayar: Boolean = false,
+    val fnbSudahBayar: Boolean = false,
+    val cashDiterima: Int = 0,
+    val kembalian: Int = 0,
 ) : Serializable
 
 data class Transaksi(
@@ -51,6 +61,13 @@ data class Transaksi(
     val tvJenisPs: String = "",
     val sudahBayar: Boolean = false,
     val metode: String = "",
+    val tvId: String = "",
+    val kategori: String = "",
+    val jumlah: Int = 1,
+    val sesiMulai: Long = 0L,
+    val sesiSelesai: Long = 0L,
+    val cash: Int = 0,
+    val kembalian: Int = 0,
 )
 
 fun Transaksi.fnbTotal(): Int =
@@ -59,11 +76,26 @@ fun Transaksi.fnbTotal(): Int =
 fun Transaksi.paketTotal(): Int =
     (total - fnbTotal()).coerceAtLeast(0)
 
+fun Transaksi.isPaketTx(): Boolean =
+    kategori == "PAKET" || (kategori.isBlank() && paketHarga != 0 && paket != "BATAL")
+
+fun Transaksi.isFnbTx(): Boolean =
+    kategori == "FNB" || (kategori.isBlank() && paketHarga == 0 && pesanan.isNotEmpty())
+
+val TvData.totalFnb: Int get() = totalPesanan + bebasPesananTotal
+val TvData.totalBelanja: Int get() = paketHarga + totalFnb
+val TvData.semuaLunas: Boolean get() = paketSudahBayar && fnbSudahBayar
+val TvData.adaTagihan: Boolean get() = totalBelanja > 0 && !semuaLunas
+
+fun Transaksi.namaPaketBersih(): String =
+    paket.removePrefix("Tambah Waktu: ").trim()
+
 data class UserData(
     val username: String = "",
     val passwordHash: String = "",
     val salt: String = "",
     val role: String = "kasir",
+    val adminUtama: String = "",
     val email: String = "",
     val noHp: String = "",
     val dibuat: String = "",
@@ -78,6 +110,16 @@ data class UserData(
     val registeredAt: Long = 0L,
 )
 
+data class PrayerConfig(
+    val enabled: Boolean = false,
+    val message: String = "Waktu sholat {sholat} telah masuk. Mohon jeda sejenak.",
+    val durationSec: Int = 15,
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
+    val locationSet: Boolean = false,
+    val locationLabel: String = "",
+)
+
 data class AuthResult(
     val success: Boolean,
     val message: String,
@@ -87,6 +129,10 @@ data class FnbSaleResult(
     val success: Boolean,
     val message: String = "",
     val transactionId: String = "",
+    val total: Int = 0,
+    val cash: Int = 0,
+    val kembalian: Int = 0,
+    val metode: String = "Tunai",
 )
 
 data class LicenseStatus(
@@ -206,6 +252,8 @@ data class ClientStatus(
     val online: Boolean = false,
     val version: String = "",
     val lastSeen: Long = 0L,
+    val hdmiTestId: String = "",
+    val hdmiTestResult: String = "",
 )
 
 data class DeviceConflict(

@@ -103,14 +103,20 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private var lastSupabaseError = ""
-    // Kolom yang diketahui tidak ada di database. PostgREST menolak SELURUH
-    // request dengan PGRST204 kalau satu saja kolom tak dikenal, jadi tanpa
-    // penanganan ini satu kolom baru bisa mematikan seluruh generate lisensi
-    // (terjadi nyata: licenses.maxTv belum ada -> konfirmasi invoice gagal).
+    // Kolom yang diketahui tidak ada di database, DISIMPAN PER TABEL.
+    // PostgREST menolak SELURUH request dengan PGRST204 kalau satu saja kolom
+    // tak dikenal, jadi tanpa penanganan ini satu kolom baru bisa mematikan
+    // seluruh generate lisensi (terjadi nyata: licenses.maxTv belum ada ->
+    // konfirmasi invoice gagal). Cache ini tidak boleh global: `maxTv` tidak
+    // ada di tabel `licenses`, tetapi ADA di `license_status`; cache global
+    // pernah membuang maxTv dari upsert license_status sehingga kuota user
+    // tertulis 0 walau sudah dibayar.
     private val kolomTidakAda = mutableSetOf<String>()
 
+    private fun cacheKey(table: String, kolom: String) = "$table.$kolom"
+
     /**
-     * Kirih request, buang kolom yang tidak dikenal, lalu coba lagi.
+     * Kirim request, buang kolom yang tidak dikenal, lalu coba lagi.
      * Maksimal 6 percobaan karena tiap percobaan hanya menghapus satu kolom.
      */
     private fun reqToleranKolom(
@@ -120,7 +126,9 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
         for (percobaan in 1..6) {
             val kirim = if (body == null) null else {
                 JSONObject(body.toString()).also { c ->
-                    kolomTidakAda.forEach { c.remove(it) }
+                    kolomTidakAda
+                        .filter { it.startsWith("$table.") }
+                        .forEach { c.remove(it.substringAfter('.')) }
                 }
             }
             if (supabaseRequest(path, method, kirim?.toString(), prefer)) return true
@@ -128,7 +136,7 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
             if (kolom == null) return false
             Log.w("LicenseGen", "Kolom $table.$kolom belum ada di database -- dilewati. " +
                 "Jalankan supabase_harga_setup.sql agar field ini tersimpan.")
-            kolomTidakAda.add(kolom)
+            kolomTidakAda.add(cacheKey(table, kolom))
         }
         return false
     }
@@ -842,6 +850,114 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
         startSupabasePolling()
     }
 
+    private fun quotaFromPesan(pesan: String?): Pair<Int, Boolean> {
+        if (pesan.isNullOrBlank()) return 0 to false
+        val total = Regex("total\\s+(\\d+)\\s*TV", RegexOption.IGNORE_CASE)
+            .find(pesan)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+        val unlimited = pesan.contains("unlimited", ignoreCase = true) ||
+            (pesan.contains("LIFETIME", ignoreCase = true) && total <= 0)
+        return total to unlimited
+    }
+
+    private fun legacyQuotaFor(paket: String?): Int = when (paket?.trim()?.uppercase()) {
+        "1 BULAN", "BULANAN" -> 5
+        "3 BULAN", "3BULAN" -> 8
+        "1 TAHUN", "TAHUNAN" -> 15
+        "LIFETIME" -> 999999
+        else -> 0
+    }
+
+    private fun expiryIsFuture(value: String?): Boolean {
+        if (value.isNullOrBlank()) return true
+        return try {
+            val date = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(value)
+            date != null && !date.before(java.util.Date())
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Cari kuota TV yang SUDAH dimiliki user dari semua sumber yang masuk akal.
+     * Jangan pernah mengandalkan satu kolom saja: data lama menyimpan kuota di
+     * maxPc, pesan, invoice.baseMaxTv, atau dokumen Firestore, sementara
+     * license_status.maxTv bisa 0 karena bug/cache kolom.
+     */
+    private suspend fun resolveExistingMaxTv(invoice: Invoice, statusRow: JSONObject?): Int {
+        var best = 0
+        var activeWithoutQuota = false
+
+        fun consider(value: Int?) {
+            if (value != null && value > best) best = value
+        }
+        fun considerPesan(pesan: String?) {
+            val (total, unlimited) = quotaFromPesan(pesan)
+            if (total > best) best = total
+            if (unlimited) activeWithoutQuota = true
+        }
+
+        val status = statusRow?.optString("status", "") ?: ""
+        if (status.equals("revoked", true)) return 0
+        if (status.equals("active", true) &&
+            expiryIsFuture(statusRow?.optString("expiresAt", ""))) {
+            consider(statusRow?.optInt("maxTv", 0))
+            consider(statusRow?.optInt("maxPc", 0))
+            consider(statusRow?.optInt("promoAddTv", 0))
+            considerPesan(statusRow?.optString("pesan", ""))
+            if (best <= 0) {
+                consider(legacyQuotaFor(statusRow?.optString("paket", "")))
+            }
+        }
+        consider(invoice.baseMaxTv)
+
+        // Fallback: dokumen user di Firestore (dulu sumber kuota utama app).
+        try {
+            val userDoc = firestore.collection("billingps_users")
+                .document(invoice.username).get().awaitResult()
+            val ls = userDoc.get("licenseStatus") as? Map<*, *>
+            if (ls != null) {
+                val fsStatus = ls["status"] as? String ?: ""
+                if (fsStatus.equals("revoked", true)) return 0
+                if (fsStatus.equals("active", true) &&
+                    expiryIsFuture(ls["expiresAt"] as? String)) {
+                    consider((ls["maxTv"] as? Number)?.toInt())
+                    consider((ls["maxPc"] as? Number)?.toInt())
+                    consider((ls["promoAddTv"] as? Number)?.toInt())
+                    considerPesan(ls["pesan"] as? String)
+                    if (best <= 0) {
+                        consider(legacyQuotaFor(ls["paket"] as? String))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("LicenseGen", "resolve quota user doc: ${e.message}")
+        }
+
+        // Fallback: riwayat lisensi bertanda tangan yang masih berlaku.
+        try {
+            val snap = firestore.collection("licenses")
+                .whereEqualTo("username", invoice.username)
+                .limit(50)
+                .get().awaitResult()
+            for (doc in snap.documents) {
+                if (doc.getBoolean("revoked") == true) continue
+                if (!expiryIsFuture(doc.getString("expiry"))) continue
+                consider((doc.get("maxTv") as? Number)?.toInt())
+                val payload = doc.getString("payload")
+                if (!payload.isNullOrBlank()) {
+                    try {
+                        consider(JSONObject(payload).optInt("q", 0))
+                    } catch (_: Exception) { }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("LicenseGen", "resolve quota licenses: ${e.message}")
+        }
+
+        if (best <= 0 && activeWithoutQuota) best = 999999
+        return best
+    }
+
     fun konfirmasiInvoice(invoice: Invoice, onDone: (Boolean, String) -> Unit) {
         if (!ECDSAUtils.hasPrivateKey()) {
             onDone(false, "Private key belum dikonfigurasi! Buka tab Settings.")
@@ -864,15 +980,15 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                 // unit TV dan membayar invoice 1 TV. Hasilnya harus 6 TV,
                 // bukan turun menjadi 1 TV.
                 val cal = java.util.Calendar.getInstance()
-                var existingMaxTv = 0
+                var existingRow: JSONObject? = null
                 try {
                     val encUser = URLEncoder.encode(invoice.username, "UTF-8")
                     val existingJson = supabaseFetch(
-                        "license_status?select=expiresAt,maxTv&id=eq.$encUser&limit=1")
-                    val row = try {
+                        "license_status?select=*&id=eq.$encUser&limit=1")
+                    existingRow = try {
                         existingJson?.let { org.json.JSONArray(it) }?.optJSONObject(0)
                     } catch (_: Exception) { null }
-                    val existingExpires = row?.optString("expiresAt", "")
+                    val existingExpires = existingRow?.optString("expiresAt", "")
                     if (!existingExpires.isNullOrEmpty()) {
                         val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
                         val existingDate = sdf.parse(existingExpires)
@@ -880,7 +996,6 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                             cal.time = existingDate
                         }
                     }
-                    existingMaxTv = row?.optInt("maxTv", 0) ?: 0
                 } catch (_: Exception) { }
                 cal.add(java.util.Calendar.DAY_OF_YEAR, paketDays)
                 val expiry = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
@@ -891,17 +1006,31 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                         "1 Bulan", "BULANAN" -> 5; "3 Bulan", "3BULAN" -> 8
                         "1 Tahun", "TAHUNAN" -> 15; "LIFETIME" -> 0; else -> 2
                     }).coerceAtLeast(0)
+                // Kuota lama bisa tersimpan di maxTv, maxPc, promoAddTv,
+                // teks pesan, invoice.baseMaxTv, atau dokumen Firestore.
+                // Jangan hanya percaya license_status.maxTv: data lama
+                // (dan bug cache kolom sebelumnya) membuat maxTv = 0
+                // walaupun user sebenarnya punya 10 TV.
+                val existingMaxTv = resolveExistingMaxTv(invoice, existingRow)
                 val requestedMode = invoice.mode.trim().uppercase()
                 val mode = when (requestedMode) {
-                    "NEW", "ADD", "RENEW" -> requestedMode
+                    "ADD", "RENEW" -> requestedMode
+                    "NEW" -> if (existingMaxTv > 0) "ADD" else "NEW"
                     else -> if (existingMaxTv > 0) "ADD" else "NEW"
                 }
                 val targetMaxTv = when {
                     existingMaxTv >= 999999 -> 999999
                     mode == "RENEW" -> if (existingMaxTv > 0) existingMaxTv else qty.coerceAtLeast(1)
-                    mode == "ADD" -> if (existingMaxTv > 0) existingMaxTv + qty else qty
+                    mode == "ADD" -> if (existingMaxTv > 0) {
+                        (existingMaxTv + qty).coerceAtMost(999999)
+                    } else qty
                     invoice.paket == "LIFETIME" && qty <= 0 -> 999999
                     else -> qty
+                }.let { target ->
+                    // Jangan pernah menurunkan kuota yang sudah dibayar.
+                    if (existingMaxTv in 1..999998 && target in 1..999998 && target < existingMaxTv) {
+                        existingMaxTv
+                    } else target
                 }
                 val clientEnabled = when (invoice.paket.uppercase()) {
                     "BULANAN" -> false
@@ -1017,7 +1146,7 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                     "jumlahTv" to qty,
                     "maxTv" to targetMaxTv,
                     "mode" to mode,
-                    "baseMaxTv" to invoice.baseMaxTv,
+                    "baseMaxTv" to existingMaxTv,
                     "clientEnabled" to clientEnabled,
                     "permintaan" to licenseDoc.optString("permintaan"),
                 )
@@ -1134,18 +1263,48 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
         isBusy = true
         val kode = generateKode(paket)
         val nonce = java.util.UUID.randomUUID().toString().take(8)
-        val cal = java.util.Calendar.getInstance()
-        cal.add(java.util.Calendar.DAY_OF_YEAR, when (paket) {
+        val paketDays = when (paket) {
             "1 Bulan", "BULANAN" -> 30; "3 Bulan", "3BULAN" -> 90
             "1 Tahun", "TAHUNAN" -> 360; "LIFETIME" -> 99999; else -> 30
-        })
-        val expiry = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
-        val clientEnabled = paket.uppercase() != "BULANAN"
-        val payload = """{"p":"$paket","u":"$username","e":"$expiry","n":"$nonce","m":"$email","q":$tv,"c":$clientEnabled,"o":"NEW"}"""
-        val signature = try { ECDSAUtils.sign(payload) } catch (e: Exception) { onDone("ERROR: Signing gagal: ${e.message}"); return }
+        }
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                // Jangan memendekkan masa aktif lisensi yang sudah berjalan.
+                // Kode q=11 untuk user yang status-nya sudah 2574-05-25 harus
+                // ditandatangani dengan expiry yang tidak lebih awal, kalau
+                // tidak aplikasi akan menolaknya sebagai tidak valid.
+                val cal = java.util.Calendar.getInstance()
+                try {
+                    val encUser = URLEncoder.encode(username, "UTF-8")
+                    val existingJson = supabaseFetch(
+                        "license_status?select=expiresAt&id=eq.$encUser&limit=1")
+                    val row = try {
+                        existingJson?.let { JSONArray(it) }?.optJSONObject(0)
+                    } catch (_: Exception) { null }
+                    val existingExpires = row?.optString("expiresAt", "")
+                    if (!existingExpires.isNullOrEmpty()) {
+                        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                        val existingDate = sdf.parse(existingExpires)
+                        if (existingDate != null && existingDate.after(java.util.Date())) {
+                            cal.time = existingDate
+                        }
+                    }
+                } catch (_: Exception) { }
+                cal.add(java.util.Calendar.DAY_OF_YEAR, paketDays)
+                val expiry = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
+                val clientEnabled = paket.uppercase() != "BULANAN"
+                val payload = """{"p":"$paket","u":"$username","e":"$expiry","n":"$nonce","m":"$email","q":$tv,"c":$clientEnabled,"o":"NEW"}"""
+                val signature = try {
+                    ECDSAUtils.sign(payload)
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        isBusy = false
+                        onDone("ERROR: Signing gagal: ${e.message}")
+                    }
+                    return@launch
+                }
+
                 val doc = JSONObject()
                 doc.put("id", kode)
                 doc.put("kode", kode)
@@ -1347,12 +1506,19 @@ class LicenseGenViewModel(application: Application) : AndroidViewModel(applicati
                     }
                     return@launch
                 }
+                val existingQuota = maxOf(
+                    obj.optInt("maxTv", 0),
+                    obj.optInt("maxPc", 0),
+                    obj.optInt("promoAddTv", 0),
+                    quotaFromPesan(obj.optString("pesan", "")).first,
+                )
                 val row = JSONObject()
                 row.put("id", username)
                 row.put("status", "active")
                 row.put("pesan", "Lisensi dipulihkan oleh admin.")
                 row.put("expiresAt", obj.optString("expiresAt", ""))
-                row.put("maxTv", obj.optInt("maxTv", 0))
+                row.put("maxTv", existingQuota)
+                if (existingQuota > 0) row.put("maxPc", existingQuota)
                 row.put("promoAddTv", obj.optInt("promoAddTv", 0))
                 row.put("cloud_restored", true)
                 row.put("updatedAt", isoNow())

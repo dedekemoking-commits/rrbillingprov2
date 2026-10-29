@@ -178,6 +178,25 @@ class TvController:
             except Exception:
                 pass
 
+    @classmethod
+    async def _do_send_keys(cls, cert_path, key_path, ip, keys):
+        remote = AndroidTVRemote("RR BILLING PRO", cert_path, key_path, ip)
+        try:
+            await asyncio.wait_for(
+                remote.async_connect(), timeout=cls.CONNECT_TIMEOUT
+            )
+            await asyncio.sleep(cls.KEY_SETTLE_DELAY)
+            for key in keys:
+                remote.send_key_command(key)
+                await asyncio.sleep(0.25)
+            await asyncio.sleep(0.4)
+        finally:
+            cls._cancel_idle_task(remote)
+            try:
+                remote.disconnect()
+            except Exception:
+                pass
+
     CONNECT_TIMEOUT = 3.0
     CONNECT_ATTEMPTS = 3
     CONNECT_RETRY_DELAY = 0.4
@@ -368,6 +387,46 @@ class TvController:
                         return {"sent": False, "error": f"Connection closed: {e}"}
                     except Exception as e:
                         print(f"[BillingPS] send_key exception: {type(e).__name__}: {e}", flush=True)
+                        return {"sent": False, "error": str(e)}
+                return {"sent": False, "error": "Tidak dapat terhubung ke TV"}
+            finally:
+                loop.close()
+                try:
+                    for f in os.listdir(cert_dir):
+                        os.unlink(os.path.join(cert_dir, f))
+                    os.rmdir(cert_dir)
+                except OSError:
+                    pass
+
+    @classmethod
+    def send_keys(cls, ip, cert_pem, key_pem, keys_csv):
+        keys = [k.strip() for k in str(keys_csv or "").split(",") if k.strip()]
+        print(f"[BillingPS] send_keys ip={ip} keys={keys}", flush=True)
+        if not keys:
+            return {"sent": False, "error": "Key sequence kosong"}
+        with cls._lock_for(ip):
+            cert_dir = tempfile.mkdtemp()
+            cert_path, key_path = cls._write_cert_files(cert_dir, cert_pem, key_pem)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                for attempt in range(2):
+                    try:
+                        loop.run_until_complete(
+                            cls._do_send_keys(cert_path, key_path, ip, keys)
+                        )
+                        return {"sent": True, "count": len(keys)}
+                    except (CannotConnect, asyncio.TimeoutError):
+                        if attempt == 0:
+                            time.sleep(0.4)
+                            continue
+                        return {"sent": False, "error": f"Cannot connect to {ip}:6466"}
+                    except InvalidAuth:
+                        return {"sent": False, "error": "Invalid auth - need to pair first"}
+                    except ConnectionClosed as e:
+                        return {"sent": False, "error": f"Connection closed: {e}"}
+                    except Exception as e:
+                        print(f"[BillingPS] send_keys exception: {type(e).__name__}: {e}", flush=True)
                         return {"sent": False, "error": str(e)}
                 return {"sent": False, "error": "Tidak dapat terhubung ke TV"}
             finally:

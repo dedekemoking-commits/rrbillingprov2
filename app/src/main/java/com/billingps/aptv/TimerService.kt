@@ -116,6 +116,7 @@ class TimerService : Service() {
                     updatedList[index] = tv.copy(
                         timerActive = false, sisaDetik = 0L,
                         paketAktif = if (tv.sudahBayar) "" else "WAKTU HABIS",
+                        sesiSelesai = if (tv.sesiSelesai > 0L) tv.sesiSelesai else now,
                     )
                     expiredIds.add(tv.id)
                     forcePersist = true

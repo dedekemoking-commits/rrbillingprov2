@@ -109,6 +109,41 @@
   transition: background-color 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
 }
 
+.rr-tv-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.rr-tv-grid {
+  min-width: 0;
+  flex: 1 1 0%;
+}
+
+.rr-tv-controls {
+  display: flex;
+  gap: 0.5rem;
+  order: -1;
+}
+
+.rr-tv-controls > button {
+  width: 100%;
+}
+
+@media (min-width: 1024px) {
+  .rr-tv-layout {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+
+  .rr-tv-controls {
+    order: 0;
+    width: 10rem;
+    flex: none;
+    flex-direction: column;
+  }
+}
+
 .rr-tv-card.rr-tv-empty {
   background-color: rgb(var(--rr-slate-500) / 0.1) !important;
   border-color: rgb(var(--rr-slate-500) / 0.45) !important;
@@ -139,6 +174,17 @@
   background-color: rgb(var(--rr-danger) / 0.1) !important;
   border-color: rgb(var(--rr-danger) / 0.6) !important;
   box-shadow: 0 14px 34px -24px rgb(var(--rr-danger) / 0.7) !important;
+}
+
+.rr-tv-card.rr-tv-paused {
+  background-color: rgb(var(--rr-warning) / 0.08) !important;
+  border-color: rgb(var(--rr-warning) / 0.55) !important;
+  box-shadow: 0 14px 34px -24px rgb(var(--rr-warning) / 0.65) !important;
+}
+
+.rr-tv-card.rr-tv-paused .text-emerald-300,
+.rr-tv-card.rr-tv-paused .text-emerald-400 {
+  color: rgb(var(--rr-warning)) !important;
 }
 
 [data-background=white] .rr-tv-card.rr-tv-empty {

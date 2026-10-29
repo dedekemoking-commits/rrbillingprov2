@@ -33,7 +33,7 @@ object TvMediaUploader {
                 if (!file.exists() || file.length() <= 0L) {
                     return@execute finish(callback, false, "File media tidak valid")
                 }
-                val name = if (kind == "lockscreen") "lockscreen.mp4" else "promo.mp4"
+                val name = TvMediaStore.remoteName(kind, file)
                 val url = URL("http://$host:8089/upload?name=$name")
                 val conn = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"

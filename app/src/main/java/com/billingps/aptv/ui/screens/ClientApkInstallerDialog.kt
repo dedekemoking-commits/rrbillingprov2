@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -14,6 +15,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.billingps.aptv.utils.ClientApkManager
@@ -46,9 +48,95 @@ fun ClientApkInstallerDialog(
     var apkExtractedPath by remember { mutableStateOf("") }
     var fallbackUrl by remember { mutableStateOf("") }
     var apkCopiedToDownloads by remember { mutableStateOf(false) }
+    var pairingPort by remember { mutableStateOf("") }
+    var pairingCode by remember { mutableStateOf("") }
+    var connectPort by remember { mutableStateOf("") }
+    var pairingStatus by remember { mutableStateOf("") }
+    var pairingBusy by remember { mutableStateOf(false) }
+    var pairedOnce by remember { mutableStateOf(false) }
 
     fun addLog(msg: String) {
         logLines = logLines + msg
+    }
+
+    fun startPairingInstall() {
+        val pairPort = pairingPort.toIntOrNull()
+        val code = pairingCode.filter(Char::isDigit)
+        if (!pairedOnce) {
+            if (pairPort == null || pairPort !in 1..65535) {
+                pairingStatus = "Isi port pairing yang tampil di TV."
+                return
+            }
+            if (code.length < 4) {
+                pairingStatus = "Isi kode pairing yang tampil di TV."
+                return
+            }
+        }
+        if (pairingBusy || isBusy) return
+
+        scope.launch {
+            pairingBusy = true
+            pairingStatus = ""
+            currentStep = InstallStep.INSTALLING
+            val apk = apkExtractedPath
+                .takeIf { it.isNotBlank() && File(it).exists() }
+                ?.let { File(it) }
+                ?: manager.extractClientApk()
+            if (apk == null) {
+                pairingBusy = false
+                currentStep = InstallStep.INSTALL_OPTIONS
+                pairingStatus = "Gagal mengekstrak APK client"
+                return@launch
+            }
+
+            if (!pairedOnce) {
+                val targetPairPort = pairPort ?: run {
+                    pairingBusy = false
+                    currentStep = InstallStep.INSTALL_OPTIONS
+                    pairingStatus = "Port pairing tidak valid."
+                    return@launch
+                }
+                addLog("Pairing ADB ke $tvIp:$targetPairPort...")
+                val pairResult = manager.pairDevice(tvIp, targetPairPort, code)
+                addLog(pairResult.message)
+                if (!pairResult.success) {
+                    pairingBusy = false
+                    currentStep = InstallStep.INSTALL_OPTIONS
+                    pairingStatus = pairResult.message
+                    return@launch
+                }
+                pairedOnce = true
+                pairingStatus = "Pairing berhasil. Mencari port koneksi..."
+            } else {
+                pairingStatus = "Sudah pairing. Mencari port koneksi..."
+                addLog("Melewati pairing; key ADB sudah terdaftar di TV.")
+            }
+
+            var port = connectPort.toIntOrNull()
+            if (port == null || port !in 1..65535) {
+                pairingStatus = "Mencari port koneksi ADB via mDNS..."
+                addLog("Mencari service _adb-tls-connect._tcp...")
+                port = manager.discoverConnectPort(tvIp)
+            }
+            if (port == null) {
+                pairingBusy = false
+                currentStep = InstallStep.INSTALL_OPTIONS
+                pairingStatus = "Pairing berhasil, tetapi port koneksi tidak ditemukan. Isi port koneksi dari layar Wireless Debugging TV, lalu tekan lagi."
+                return@launch
+            }
+
+            addLog("Install via ADB TLS port $port...")
+            val installResult = manager.installAfterPairing(tvIp, port, apk.absolutePath)
+            addLog(installResult.message)
+            pairingBusy = false
+            if (installResult.success) {
+                currentStep = InstallStep.COMPLETE
+                statusMessage = "Instalasi berhasil!"
+            } else {
+                currentStep = InstallStep.INSTALL_OPTIONS
+                pairingStatus = installResult.message
+            }
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -125,6 +213,119 @@ fun ClientApkInstallerDialog(
                         Spacer(Modifier.height(8.dp))
                         Text("ADB tidak bisa terhubung otomatis. Gunakan salah satu metode di bawah:", color = TextSecondary, fontSize = 13.sp)
                         Spacer(Modifier.height(12.dp))
+
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = DarkSurfaceV2),
+                            shape = RoundedCornerShape(8.dp),
+                        ) {
+                            Column(Modifier.padding(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Filled.Wifi, contentDescription = null, tint = NeonGreen, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("METODE D: Android 11+ Wireless Debugging", color = NeonGreen, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Text("Di TV buka Settings > System > Developer options > Wireless debugging > Pair device with pairing code.", color = TextSecondary, fontSize = 12.sp)
+                                Text("Masukkan port pairing dan kode yang tampil di TV. Port koneksi boleh dikosongkan agar dicari otomatis lewat mDNS.", color = TextSecondary, fontSize = 12.sp)
+                                Spacer(Modifier.height(8.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedTextField(
+                                        value = pairingPort,
+                                        onValueChange = { pairingPort = it.filter(Char::isDigit).take(5) },
+                                        label = { Text("Port pairing", fontSize = 11.sp) },
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        colors = fieldColors(),
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    OutlinedTextField(
+                                        value = pairingCode,
+                                        onValueChange = { pairingCode = it.filter(Char::isDigit).take(8) },
+                                        label = { Text("Kode pairing", fontSize = 11.sp) },
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        colors = fieldColors(),
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                OutlinedTextField(
+                                    value = connectPort,
+                                    onValueChange = { connectPort = it.filter(Char::isDigit).take(5) },
+                                    label = { Text("Port koneksi (opsional)", fontSize = 11.sp) },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    colors = fieldColors(),
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                TextButton(
+                                    onClick = {
+                                        if (pairingBusy) return@TextButton
+                                        scope.launch {
+                                            pairingBusy = true
+                                            pairingStatus = "Mencari port pairing lewat mDNS..."
+                                            val discovered = manager.discoverPairingPort(tvIp)
+                                            pairingBusy = false
+                                            if (discovered != null) {
+                                                pairingPort = discovered.toString()
+                                                pairingStatus = "Port pairing ditemukan: $discovered"
+                                            } else {
+                                                pairingStatus = "Port pairing tidak ditemukan. Isi manual dari layar TV."
+                                            }
+                                        }
+                                    },
+                                    enabled = !pairingBusy && !isBusy,
+                                ) {
+                                    Text("Cari port pairing otomatis", color = NeonCyan, fontSize = 11.sp)
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Button(
+                                    onClick = { startPairingInstall() },
+                                    enabled = !pairingBusy && !isBusy,
+                                    colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
+                                ) {
+                                    Text(
+                                        when {
+                                            pairingBusy -> "Memproses..."
+                                            pairedOnce -> "Install via ADB TLS"
+                                            else -> "Pairing & Install"
+                                        },
+                                        fontSize = 12.sp,
+                                    )
+                                }
+                                Text(
+                                    "Port koneksi berubah setiap TV reboot atau Wireless Debugging dimatikan. Pairing hanya perlu sekali.",
+                                    color = TextDim,
+                                    fontSize = 11.sp,
+                                )
+                                if (pairedOnce) {
+                                    TextButton(
+                                        onClick = {
+                                            pairedOnce = false
+                                            pairingStatus = "Isi kode pairing baru dari TV untuk pairing ulang."
+                                        },
+                                        enabled = !pairingBusy && !isBusy,
+                                    ) {
+                                        Text("Pairing ulang", color = NeonYellow, fontSize = 11.sp)
+                                    }
+                                }
+                                if (pairingStatus.isNotBlank()) {
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        pairingStatus,
+                                        color = when {
+                                            pairingStatus.contains("berhasil", ignoreCase = true) -> NeonGreen
+                                            pairingStatus.contains("gagal", ignoreCase = true) -> NeonRed
+                                            else -> NeonYellow
+                                        },
+                                        fontSize = 12.sp,
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(8.dp))
 
                         // Method A: PC ADB
                         Card(
@@ -220,7 +421,7 @@ fun ClientApkInstallerDialog(
                                 strokeWidth = 2.dp
                             )
                             Spacer(Modifier.width(8.dp))
-                            Text("Menginstall APK ke TV...", color = NeonYellow)
+                            Text(pairingStatus.ifBlank { "Memproses pairing dan install..." }, color = NeonYellow)
                         }
                     }
 

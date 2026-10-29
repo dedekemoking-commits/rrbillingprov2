@@ -17,12 +17,15 @@ import androidx.appcompat.app.AlertDialog
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.webkit.WebViewAssetLoader
 import com.billingps.aptv.models.MainViewModel
+import com.billingps.aptv.models.TvData
+import com.billingps.aptv.ui.screens.ClientApkInstallerDialog
 import com.billingps.aptv.utils.ApkServer
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -33,7 +36,12 @@ fun WebUiScreen(
 ) {
     val context = LocalContext.current
     val activity = context as MainActivity
-    val bridge = remember { RRBridge(activity, mainViewModel, tvViewModel) }
+    val installTarget = remember { mutableStateOf<TvData?>(null) }
+    val bridge = remember {
+        RRBridge(activity, mainViewModel, tvViewModel) { tv ->
+            installTarget.value = tv
+        }
+    }
     val assetLoader = remember {
         WebViewAssetLoader.Builder()
             .setDomain("localhost")
@@ -152,6 +160,14 @@ fun WebUiScreen(
         factory = { webView },
         modifier = Modifier.fillMaxSize(),
     )
+
+    installTarget.value?.let { tv ->
+        ClientApkInstallerDialog(
+            tvIp = tv.ip,
+            tvNama = tv.nama,
+            onDismiss = { installTarget.value = null },
+        )
+    }
 }
 
 private class LocalWebAssetPathHandler(

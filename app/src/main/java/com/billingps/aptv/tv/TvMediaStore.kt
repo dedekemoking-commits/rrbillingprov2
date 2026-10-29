@@ -2,6 +2,7 @@ package com.billingps.aptv.tv
 
 import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Log
 import java.io.File
 
@@ -13,11 +14,12 @@ object TvMediaStore {
         .replace(Regex("[^A-Za-z0-9_-]"), "_")
         .take(48)
 
-    fun saveVideo(context: Context, tvId: String, kind: String, uri: Uri): File {
+    fun saveMedia(context: Context, tvId: String, kind: String, uri: Uri): File {
         val safe = safeId(tvId)
         val safeKind = if (kind == "lockscreen") "lockscreen" else "promo"
         val dir = File(context.filesDir, DIR).apply { mkdirs() }
-        val target = File(dir, "${safe}_${safeKind}.mp4")
+        val ext = extensionFor(context, uri, kind)
+        val target = File(dir, "${safe}_${safeKind}.$ext")
         val input = context.contentResolver.openInputStream(uri)
             ?: throw IllegalStateException("File tidak bisa dibaca")
         input.use { source ->
@@ -27,6 +29,50 @@ object TvMediaStore {
         }
         Log.i(TAG, "Media disimpan: ${target.absolutePath} (${target.length()} byte)")
         return target
+    }
+
+    /** Nama file yang diterima TV untuk media ini (lockscreen.jpg/png/mp4). */
+    fun remoteName(kind: String, file: File): String {
+        if (kind != "lockscreen") return "promo.mp4"
+        return "lockscreen.${extensionForFile(file)}"
+    }
+
+    fun isImage(file: File): Boolean =
+        extensionForFile(file).let { it == "jpg" || it == "png" }
+
+    private fun extensionForFile(file: File): String = when (file.extension.lowercase()) {
+        "jpg", "jpeg" -> "jpg"
+        "png" -> "png"
+        else -> "mp4"
+    }
+
+    private fun extensionFor(context: Context, uri: Uri, kind: String): String {
+        if (kind != "lockscreen") return "mp4"
+        val mime = try { context.contentResolver.getType(uri)?.lowercase() } catch (_: Exception) { null }
+        when (mime) {
+            "image/jpeg", "image/jpg" -> return "jpg"
+            "image/png" -> return "png"
+            "video/mp4" -> return "mp4"
+        }
+        val name = displayName(context, uri)?.lowercase().orEmpty()
+        val fromName = name.substringAfterLast('.', "")
+        return when (fromName) {
+            "jpg", "jpeg" -> "jpg"
+            "png" -> "png"
+            "mp4" -> "mp4"
+            else -> if (mime?.startsWith("video/") == true) "mp4"
+            else throw IllegalArgumentException("Format lockscreen harus JPG, PNG, atau MP4")
+        }
+    }
+
+    private fun displayName(context: Context, uri: Uri): String? = try {
+        context.contentResolver.query(
+            uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    } catch (_: Exception) {
+        null
     }
 
     fun deleteForTv(context: Context, tvId: String, paths: List<String> = emptyList()) {
@@ -41,6 +87,8 @@ object TvMediaStore {
         val targets = linkedSetOf(
             File(root, "${safe}_promo.mp4"),
             File(root, "${safe}_lockscreen.mp4"),
+            File(root, "${safe}_lockscreen.jpg"),
+            File(root, "${safe}_lockscreen.png"),
         )
         paths.forEach { path ->
             if (path.isBlank()) return@forEach

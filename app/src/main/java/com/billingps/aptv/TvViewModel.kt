@@ -40,6 +40,8 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
         return Pair(cert, key)
     }
 
+    fun hasPairing(): Boolean = getCert() != null
+
     fun updateIp(ip: String) {
         _uiState.value = _uiState.value.copy(ip = ip)
     }
@@ -202,6 +204,49 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
                 status = if (sent) "$label sent" else "Failed: $err",
                 isBusy = false,
             )
+        }
+    }
+
+    fun sendKeys(
+        ip: String,
+        keys: List<String>,
+        label: String,
+        onResult: (Boolean, String) -> Unit,
+    ) {
+        val cert = getCert()
+        if (cert == null) {
+            onResult(false, "Remote belum dipairing")
+            return
+        }
+        if (ip.isBlank() || keys.isEmpty()) {
+            onResult(false, "IP TV atau key kosong")
+            return
+        }
+        _uiState.value = _uiState.value.copy(status = "Mengirim $label...", isBusy = true)
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                try {
+                    Python.getInstance()
+                        .getModule("tv_mesin")
+                        .callAttr("TvController")
+                        .callAttr("send_keys", ip, cert.first, cert.second, keys.joinToString(","))
+                } catch (e: Exception) {
+                    Log.e("BillingPS", "send_keys threw", e)
+                    null
+                }
+            }
+            if (result == null) {
+                _uiState.value = _uiState.value.copy(status = "Error: gagal mengirim key", isBusy = false)
+                onResult(false, "Gagal mengirim key")
+                return@launch
+            }
+            val sent = result.callAttr("get", "sent")?.toBoolean() ?: false
+            val err = result.callAttr("get", "error")?.toString() ?: ""
+            _uiState.value = _uiState.value.copy(
+                status = if (sent) "$label terkirim" else "Gagal: $err",
+                isBusy = false,
+            )
+            onResult(sent, if (sent) "$label terkirim" else err.ifBlank { "Gagal mengirim key" })
         }
     }
 

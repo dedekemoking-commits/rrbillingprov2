@@ -21,6 +21,9 @@ data class TvCommand(
     val hdmiPort: Int = -1,
     val playCachedMedia: Boolean = false,
     val hideWarning: Boolean = false,
+    val hdmiTestId: String = "",
+    val hdmiTestPort: Int = 0,
+    val hdmiTestCommand: String = "",
 )
 
 data class TvStatus(
@@ -28,6 +31,9 @@ data class TvStatus(
     val timerActive: Boolean = false,
     val paketAktif: String = "",
     val ip: String = "",
+    val hdmiPort: Int = 0,
+    val hdmiInputHint: String = "",
+    val hdmiCommand: String = "",
 )
 
 class CloudHelper {
@@ -67,8 +73,29 @@ class CloudHelper {
                 val hdmiPort = snap.getLong("hdmiPort")?.toInt() ?: -1
                 val playCachedMedia = snap.getBoolean("playCachedMedia") ?: false
                 val hideWarning = snap.getBoolean("hideWarning") ?: false
-                if (showWarning || hideWarning || playVideo || stopVideo || cacheMedia || warningImageUrl.isNotEmpty() || warningVideoUrl.isNotEmpty() || hdmiPort > 0 || playCachedMedia) {
-                    onCommand(TvCommand(showWarning, warningMessage, playVideo, videoUrl, stopVideo, cacheMedia, mediaUrl, warningImageUrl, warningVideoUrl, hdmiPort, playCachedMedia, hideWarning))
+                val hdmiTestId = snap.getString("hdmiTestId") ?: ""
+                val hdmiTestPort = snap.getLong("hdmiTestPort")?.toInt() ?: 0
+                val hdmiTestCommand = snap.getString("hdmiTestCommand") ?: ""
+                if (showWarning || hideWarning || playVideo || stopVideo || cacheMedia || warningImageUrl.isNotEmpty() || warningVideoUrl.isNotEmpty() || hdmiPort > 0 || playCachedMedia || hdmiTestId.isNotEmpty()) {
+                    onCommand(
+                        TvCommand(
+                            showWarning = showWarning,
+                            warningMessage = warningMessage,
+                            playVideo = playVideo,
+                            videoUrl = videoUrl,
+                            stopVideo = stopVideo,
+                            cacheMedia = cacheMedia,
+                            mediaUrl = mediaUrl,
+                            warningImageUrl = warningImageUrl,
+                            warningVideoUrl = warningVideoUrl,
+                            hdmiPort = hdmiPort,
+                            playCachedMedia = playCachedMedia,
+                            hideWarning = hideWarning,
+                            hdmiTestId = hdmiTestId,
+                            hdmiTestPort = hdmiTestPort,
+                            hdmiTestCommand = hdmiTestCommand,
+                        )
+                    )
                     if (showWarning) {
                         firestore.collection("billingps_users").document(username)
                             .collection("tvCommands").document(tvId)
@@ -106,11 +133,27 @@ class CloudHelper {
                     val timerActive = match["timerActive"] as? Boolean ?: false
                     val paketAktif = match["paketAktif"] as? String ?: ""
                     val ip = match["ip"] as? String ?: ""
-                    onStatus(TvStatus(sisaDetik, timerActive, paketAktif, ip))
+                    val hdmiPort = (match["hdmiPort"] as? Number)?.toInt() ?: 0
+                    val hdmiInputHint = match["hdmiInputHint"] as? String ?: ""
+                    val hdmiCommand = match["hdmiCommand"] as? String ?: ""
+                    onStatus(TvStatus(sisaDetik, timerActive, paketAktif, ip, hdmiPort, hdmiInputHint, hdmiCommand))
                 } catch (e: Exception) {
                     Log.e("CloudHelper", "listenTvStatus parse error: ${e.message}")
                 }
             }
+    }
+
+    fun reportHdmiTest(username: String, tvId: String, testId: String, result: String) {
+        firestore.collection("billingps_users").document(username)
+            .collection("tvCommands").document(tvId)
+            .set(
+                mapOf(
+                    "hdmiTestId" to testId,
+                    "hdmiTestResult" to result,
+                    "hdmiTestAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+                ),
+                com.google.firebase.firestore.SetOptions.merge(),
+            )
     }
 
     fun reportVideoPlaying(username: String, tvId: String, playing: Boolean) {

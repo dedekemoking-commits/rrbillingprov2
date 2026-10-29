@@ -63,6 +63,7 @@ class MainActivity : AppCompatActivity() {
     private var pendingDocumentPick: ((Uri?) -> Unit)? = null
     private var pendingCreateDocument: ((Uri?) -> Unit)? = null
     private var pendingBluetoothPermission: ((Boolean) -> Unit)? = null
+    private var pendingLocationPermission: ((Boolean) -> Unit)? = null
 
     private val documentPicker = registerForActivityResult(
         ActivityResultContracts.OpenDocument(),
@@ -87,6 +88,16 @@ class MainActivity : AppCompatActivity() {
             result[Manifest.permission.BLUETOOTH_SCAN] == true
         val callback = pendingBluetoothPermission
         pendingBluetoothPermission = null
+        callback?.invoke(granted)
+    }
+
+    private val locationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        val granted = result[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        val callback = pendingLocationPermission
+        pendingLocationPermission = null
         callback?.invoke(granted)
     }
 
@@ -139,6 +150,30 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Log.e("MainActivity", "requestBluetoothPermissions gagal: ${e.message}")
             pendingBluetoothPermission = null
+            onResult(false)
+        }
+    }
+
+    fun requestLocationPermissions(onResult: (Boolean) -> Unit) {
+        val permissions = arrayOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        )
+        val missing = permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) {
+            onResult(true)
+            return
+        }
+
+        pendingLocationPermission?.invoke(false)
+        pendingLocationPermission = onResult
+        try {
+            locationPermissionLauncher.launch(missing.toTypedArray())
+        } catch (e: Exception) {
+            Log.e("MainActivity", "requestLocationPermissions gagal: ${e.message}")
+            pendingLocationPermission = null
             onResult(false)
         }
     }
@@ -466,6 +501,7 @@ fun NotificationPermissionDialog(onDismiss: () -> Unit) {
 
 enum class BottomTab(val title: String, val icon: ImageVector) {
     TV("TV", Icons.Filled.Tv),
+    KASIR("Kasir", Icons.Filled.PointOfSale),
     RIWAYAT("Riwayat", Icons.Filled.History),
     HARGA("Harga", Icons.Filled.AttachMoney),
     CLIENT("Client", Icons.Filled.Android),
@@ -493,7 +529,7 @@ fun MainScreen(
     DisposableEffect(Unit) { onDispose { connectivityObserver.stop() } }
     val tabList = remember(role) {
         when (role) {
-            "kasir" -> listOf(BottomTab.TV, BottomTab.RIWAYAT, BottomTab.LISENSI)
+            "kasir" -> listOf(BottomTab.TV, BottomTab.KASIR, BottomTab.RIWAYAT, BottomTab.LISENSI)
             else -> BottomTab.entries.toList()
         }
     }
@@ -592,9 +628,10 @@ fun MainScreen(
             }
             when (selectedTab) {
                 BottomTab.TV -> DashboardScreen(mainViewModel, tvViewModel)
+                BottomTab.KASIR -> PosScreen(mainViewModel)
                 BottomTab.RIWAYAT -> RiwayatScreen(mainViewModel)
                 BottomTab.HARGA -> KontrolHargaScreen(mainViewModel)
-                BottomTab.CLIENT -> ClientScreen(mainViewModel)
+                BottomTab.CLIENT -> ClientScreen(mainViewModel, tvViewModel)
                 BottomTab.LISENSI -> VerifikasiScreen(mainViewModel)
                 BottomTab.PROFILE -> ProfileScreen(mainViewModel, onLogout = { mainViewModel.logout() })
             }

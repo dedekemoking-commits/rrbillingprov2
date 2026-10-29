@@ -222,7 +222,12 @@ fun ProfileScreen(
                                     Spacer(Modifier.width(8.dp))
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(kasir.username, style = MaterialTheme.typography.bodySmall, color = TextPrimary, fontWeight = FontWeight.Bold)
-                                        Text(if (isSelf) "Akun Anda" else "Dibuat: ${kasir.dibuat.take(10)}", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                                        Text(
+                                            if (isSelf) "Akun Anda"
+                                            else "Dibuat: ${kasir.dibuat.take(10)} • Lisensi: ${kasir.adminUtama.ifBlank { "admin utama" }}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = TextDim,
+                                        )
                                     }
                                     TextButton(onClick = { resetTarget = kasir.username }, enabled = !isSelf, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Reset", color = NeonYellow, style = MaterialTheme.typography.labelSmall) }
                                     TextButton(onClick = { hapusTarget = kasir.username }, enabled = !isSelf, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Hapus", color = NeonRed, style = MaterialTheme.typography.labelSmall) }

@@ -4,6 +4,7 @@ import android.util.Log
 import com.billingps.aptv.models.Invoice
 import com.billingps.aptv.models.LicenseStatus
 import com.billingps.aptv.models.Transaksi
+import com.billingps.aptv.utils.TimeUtils
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -41,7 +42,7 @@ class SupabaseRepository {
                     put("id", t.id)
                     put("username", username)
                     put("email", email)
-                    put("waktu", t.waktu)
+                    put("waktu", TimeUtils.normalizeTransactionTime(t.id, t.waktu))
                     put("kasir", t.kasir)
                     put("kota", t.kota)
                     put("paket", t.paket)

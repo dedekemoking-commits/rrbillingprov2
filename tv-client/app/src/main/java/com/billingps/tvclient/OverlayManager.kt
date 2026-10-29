@@ -29,7 +29,8 @@ import java.io.File
  */
 object OverlayManager {
 
-    var onVideoEnded: (() -> Unit)? = null
+    var onVideoCompleted: (() -> Unit)? = null
+    var onVideoUnavailable: (() -> Unit)? = null
 
     private var warningContainer: FrameLayout? = null
     private var warningPlayer: ExoPlayer? = null
@@ -159,13 +160,13 @@ object OverlayManager {
                 stopVideoInternal()
                 if (!canDrawOverlays(context)) {
                     Log.w("OverlayManager", "playCachedVideo skipped: SYSTEM_ALERT_WINDOW not granted")
-                    onVideoEnded?.invoke()
+                    onVideoUnavailable?.invoke()
                     return@post
                 }
                 val file = File(cachedPath)
                 if (!file.exists()) {
                     Log.w("OverlayManager", "playCachedVideo skipped: cache missing $cachedPath")
-                    onVideoEnded?.invoke()
+                    onVideoUnavailable?.invoke()
                     return@post
                 }
 
@@ -181,7 +182,8 @@ object OverlayManager {
                         override fun onPlaybackStateChanged(state: Int) {
                             if (state == Player.STATE_ENDED) {
                                 Log.i("OverlayManager", "Video ended, closing overlay")
-                                stopVideo()
+                                stopVideoInternal()
+                                onVideoCompleted?.invoke()
                             }
                         }
                     })
@@ -200,7 +202,7 @@ object OverlayManager {
                 Log.i("OverlayManager", "Video overlay playing: $cachedPath")
             } catch (e: Exception) {
                 Log.e("OverlayManager", "playCachedVideo failed: ${e.message}")
-                onVideoEnded?.invoke()
+                onVideoUnavailable?.invoke()
             }
         }
     }
@@ -208,7 +210,6 @@ object OverlayManager {
     fun stopVideo() {
         mainHandler.post {
             stopVideoInternal()
-            onVideoEnded?.invoke()
         }
     }
 
@@ -229,7 +230,8 @@ object OverlayManager {
         mainHandler.post {
             hideWarningInternal()
             stopVideoInternal()
-            onVideoEnded = null
+            onVideoCompleted = null
+            onVideoUnavailable = null
         }
     }
 

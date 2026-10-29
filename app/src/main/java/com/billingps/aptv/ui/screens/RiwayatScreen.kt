@@ -34,6 +34,7 @@ import com.billingps.aptv.models.fnbTotal
 import com.billingps.aptv.models.paketTotal
 import com.billingps.aptv.ui.charts.*
 import com.billingps.aptv.ui.theme.*
+import com.billingps.aptv.utils.TimeUtils
 
 @Composable
 fun RiwayatScreen(viewModel: MainViewModel) {
@@ -46,62 +47,31 @@ fun RiwayatScreen(viewModel: MainViewModel) {
     var filterDate by remember { mutableStateOf("") }
     var searchQuery by remember { mutableStateOf("") }
     var filterBayar by remember { mutableStateOf("ALL") } // ALL, PAID, UNPAID
-    val allList = state.transaksiList.sortedByDescending { it.waktu }
-    // compute filtered list
-    val now = java.util.Date()
-    fun inDay(waktuIso: String): Boolean {
-        return try {
-            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
-            val d = sdf.parse(waktuIso)
-            val calNow = java.util.Calendar.getInstance()
-            val calD = java.util.Calendar.getInstance()
-            calD.time = d
-            calNow.get(java.util.Calendar.YEAR) == calD.get(java.util.Calendar.YEAR)
-                    && calNow.get(java.util.Calendar.DAY_OF_YEAR) == calD.get(java.util.Calendar.DAY_OF_YEAR)
-        } catch (e: Exception) { Log.e("RiwayatScreen", "inDay: ${e.message}"); false }
+    val allList = state.transaksiList.sortedByDescending {
+        TimeUtils.transactionInstant(it.id, it.waktu) ?: java.time.Instant.EPOCH
     }
-    fun inWeek(waktuIso: String): Boolean {
-        return try {
-            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
-            val d = sdf.parse(waktuIso)
-            val calNow = java.util.Calendar.getInstance()
-            val calD = java.util.Calendar.getInstance()
-            calD.time = d
-            // compare week of year and year
-            calNow.get(java.util.Calendar.YEAR) == calD.get(java.util.Calendar.YEAR)
-                    && calNow.get(java.util.Calendar.WEEK_OF_YEAR) == calD.get(java.util.Calendar.WEEK_OF_YEAR)
-        } catch (e: Exception) { Log.e("RiwayatScreen", "inWeek: ${e.message}"); false }
+    val nowWib = java.time.ZonedDateTime.now(TimeUtils.WIB)
+    fun inDay(tx: Transaksi): Boolean =
+        TimeUtils.transactionZoned(tx.id, tx.waktu)?.toLocalDate() == nowWib.toLocalDate()
+    fun inWeek(tx: Transaksi): Boolean {
+        val d = TimeUtils.transactionZoned(tx.id, tx.waktu) ?: return false
+        val start = nowWib.toLocalDate().minusDays((nowWib.dayOfWeek.value - 1).toLong())
+        return !d.toLocalDate().isBefore(start)
     }
-    fun inMonth(waktuIso: String): Boolean {
-        return try {
-            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
-            val d = sdf.parse(waktuIso)
-            val calNow = java.util.Calendar.getInstance()
-            val calD = java.util.Calendar.getInstance()
-            calD.time = d
-            calNow.get(java.util.Calendar.YEAR) == calD.get(java.util.Calendar.YEAR)
-                    && calNow.get(java.util.Calendar.MONTH) == calD.get(java.util.Calendar.MONTH)
-        } catch (e: Exception) { Log.e("RiwayatScreen", "inMonth: ${e.message}"); false }
+    fun inMonth(tx: Transaksi): Boolean {
+        val d = TimeUtils.transactionZoned(tx.id, tx.waktu) ?: return false
+        return d.year == nowWib.year && d.monthValue == nowWib.monthValue
     }
-    fun inDate(waktuIso: String, dateYmd: String): Boolean {
-        return try {
-            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
-            val d = sdf.parse(waktuIso)
-            val calD = java.util.Calendar.getInstance()
-            calD.time = d
-            val parts = dateYmd.split("-")
-            if (parts.size != 3) return@inDate false
-            calD.get(java.util.Calendar.YEAR) == parts[0].toInt() &&
-            (calD.get(java.util.Calendar.MONTH) + 1) == parts[1].toInt() &&
-            calD.get(java.util.Calendar.DAY_OF_MONTH) == parts[2].toInt()
-        } catch (e: Exception) { false }
+    fun inDate(tx: Transaksi, dateYmd: String): Boolean {
+        val d = TimeUtils.transactionZoned(tx.id, tx.waktu) ?: return false
+        return d.toLocalDate().toString() == dateYmd
     }
     val txList = remember(allList, filterMode, searchQuery, filterDate, filterBayar) {
         val timeFiltered = when (filterMode) {
-            "DAY" -> allList.filter { inDay(it.waktu) }
-            "WEEK" -> allList.filter { inWeek(it.waktu) }
-            "MONTH" -> allList.filter { inMonth(it.waktu) }
-            "DATE" -> allList.filter { filterDate.isNotEmpty() && inDate(it.waktu, filterDate) }
+            "DAY" -> allList.filter { inDay(it) }
+            "WEEK" -> allList.filter { inWeek(it) }
+            "MONTH" -> allList.filter { inMonth(it) }
+            "DATE" -> allList.filter { filterDate.isNotEmpty() && inDate(it, filterDate) }
             else -> allList
         }
         val bayarFiltered = when (filterBayar) {
@@ -227,13 +197,10 @@ fun RiwayatScreen(viewModel: MainViewModel) {
             ) {
                 // Daily revenue bar chart (last 7 days from filtered data)
                 val dailyRevenue = remember(txList) {
-                    val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
                     val dayTotal = mutableMapOf<String, Int>()
                     txList.forEach { tx ->
-                        try {
-                            val day = dateFormat.format(java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).parse(tx.waktu)!!)
-                            dayTotal[day] = (dayTotal[day] ?: 0) + tx.total
-                        } catch (_: Exception) {}
+                        val day = TimeUtils.wibDayKey(tx.id, tx.waktu) ?: return@forEach
+                        dayTotal[day] = (dayTotal[day] ?: 0) + tx.total
                     }
                     dayTotal.entries.sortedBy { it.key }.takeLast(7).map { BarData(it.key.takeLast(5), it.value.toFloat()) }
                 }
@@ -483,7 +450,7 @@ fun RiwayatScreen(viewModel: MainViewModel) {
                 border = BorderStroke(1.dp, NeonYellow),
             ) { Icon(Icons.Filled.Print, contentDescription = "Cetak") }
             if (showCetakDialog && cetakDate.isNotEmpty()) {
-                val cetakList = allList.filter { inDate(it.waktu, cetakDate) }
+                val cetakList = allList.filter { inDate(it, cetakDate) }
                 AlertDialog(
                     onDismissRequest = { showCetakDialog = false },
                     containerColor = DarkSurface,
@@ -547,7 +514,7 @@ fun RiwayatScreen(viewModel: MainViewModel) {
                         modifier = Modifier.fillMaxWidth().background(if (idx % 2 == 0) DarkBackground else DarkSurfaceV2).clickable { detailTransaksi = tx }.padding(horizontal = 14.dp, vertical = 10.dp),
                     ) {
                         Column(modifier = Modifier.weight(2f)) {
-                            Text(formatWaktu(tx.waktu), style = MaterialTheme.typography.bodySmall, color = TextDim)
+                            Text(formatWaktu(tx.id, tx.waktu), style = MaterialTheme.typography.bodySmall, color = TextDim)
                             Text(tx.kota, style = MaterialTheme.typography.bodyMedium, color = NeonGreen, fontWeight = FontWeight.Bold)
                             Text(tx.paket, style = MaterialTheme.typography.bodySmall, color = NeonYellow)
                             tx.pesanan.forEach { (nm, q) ->
@@ -575,11 +542,7 @@ fun RiwayatScreen(viewModel: MainViewModel) {
         }
 
         detailTransaksi?.let { tx ->
-            val sdf = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", java.util.Locale("id", "ID"))
-            val tglStr = try {
-                val p = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
-                sdf.format(p.parse(tx.waktu) ?: java.util.Date())
-            } catch (_: Exception) { tx.waktu }
+            val tglStr = TimeUtils.formatWibFull(tx.id, tx.waktu)
             val tvData = state.tvList.find { it.nama == tx.kota }
             AlertDialog(
                 onDismissRequest = { detailTransaksi = null; cetakMsg = "" },
@@ -667,13 +630,7 @@ fun RiwayatScreen(viewModel: MainViewModel) {
     }
 }
 
-private fun formatWaktu(iso: String): String {
-    return try {
-        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
-        val out = java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale("id", "ID"))
-        out.format(sdf.parse(iso) ?: return iso)
-    } catch (e: Exception) { Log.e("RiwayatScreen", "formatWaktu: ${e.message}"); iso }
-}
+private fun formatWaktu(id: String, iso: String): String = TimeUtils.formatWib(id, iso)
 
 private val chartColorsList = listOf(
     Color(0xFF39FF14), Color(0xFF00E5FF), Color(0xFFBB00FF),

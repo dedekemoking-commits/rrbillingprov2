@@ -17,15 +17,18 @@ import com.billingps.aptv.models.Invoice
 import com.billingps.aptv.models.LicenseCatalog
 import com.billingps.aptv.models.LicenseRecord
 import com.billingps.aptv.models.MainViewModel
+import com.billingps.aptv.models.PrayerConfig
 import com.billingps.aptv.models.Transaksi
 import com.billingps.aptv.models.TvData
 import com.billingps.aptv.models.UserData
 import com.billingps.aptv.models.fnbTotal
+import com.billingps.aptv.models.isPaketTx
 import com.billingps.aptv.models.paketTotal
 import com.billingps.aptv.tv.TvConnection
 import com.billingps.aptv.tv.TvHubManager
 import com.billingps.aptv.ui.theme.BackgroundOption
 import com.billingps.aptv.ui.theme.ThemeOption
+import com.billingps.aptv.utils.PrayerTimes
 import com.billingps.aptv.utils.ThermalPrinter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
@@ -41,6 +44,7 @@ class RRBridge(
     private val activity: MainActivity,
     private val mainViewModel: MainViewModel,
     private val tvViewModel: TvViewModel,
+    private val onInstallClientApk: (TvData) -> Unit = {},
 ) {
     private var webView: WebView? = null
     private var observing = false
@@ -315,6 +319,22 @@ class RRBridge(
                 }
 
                 "tv.start" -> sendResult(id, mainViewModel.tvStart(payload.optString("id")))
+                "tv.pauseAll" -> {
+                    val changed = mainViewModel.pauseAllSessions()
+                    sendResult(id, true, JSONObject().put("changed", changed))
+                }
+                "tv.resumeAll" -> {
+                    val changed = mainViewModel.resumeAllSessions()
+                    sendResult(id, true, JSONObject().put("changed", changed))
+                }
+                "tv.resume" -> {
+                    val resumed = mainViewModel.resumeSession(payload.optString("id"))
+                    sendResult(
+                        id,
+                        resumed,
+                        error = if (resumed) null else "Sesi tidak bisa dilanjutkan",
+                    )
+                }
                 "tv.stop" -> sendResult(
                     id,
                     mainViewModel.tvStop(
@@ -337,6 +357,76 @@ class RRBridge(
                         payload.optInt("durasi", 5),
                     ),
                 )
+                "client.apk.install" -> {
+                    if (!mainViewModel.isClientFeatureEnabled()) {
+                        sendResult(id, false, error = "Fitur Client APK tidak aktif pada paket ini.")
+                        return
+                    }
+                    val tv = mainViewModel.state.value.tvList.firstOrNull {
+                        it.id == payload.optString("id")
+                    }
+                    if (tv == null) {
+                        sendResult(id, false, error = "TV tidak ditemukan.")
+                        return
+                    }
+                    if (tv.ip.isBlank()) {
+                        sendResult(id, false, error = "IP TV belum diatur.")
+                        return
+                    }
+                    onInstallClientApk(tv)
+                    sendResult(id, true)
+                }
+                "prayer.get" -> sendResult(id, true, prayerJson())
+
+                "prayer.save" -> {
+                    val current = mainViewModel.state.value.prayerConfig
+                    val config = PrayerConfig(
+                        enabled = payload.optBoolean("enabled", current.enabled),
+                        message = payload.optString("message", current.message),
+                        durationSec = payload.optInt("durationSec", current.durationSec),
+                        latitude = payload.optDouble("latitude", current.latitude),
+                        longitude = payload.optDouble("longitude", current.longitude),
+                        locationSet = payload.optBoolean("locationSet", current.locationSet),
+                        locationLabel = payload.optString("locationLabel", current.locationLabel),
+                    )
+                    mainViewModel.savePrayerConfig(config)
+                    sendResult(id, true, prayerJson())
+                }
+
+                "prayer.detect" -> activity.requestLocationPermissions { granted ->
+                    if (!granted) {
+                        sendResult(id, false, error = "Izin lokasi ditolak")
+                        return@requestLocationPermissions
+                    }
+                    mainViewModel.detectPrayerLocation { ok, message ->
+                        if (ok) {
+                            sendResult(
+                                id,
+                                true,
+                                prayerJson().put("message", message),
+                            )
+                        } else {
+                            sendResult(id, false, error = message)
+                        }
+                    }
+                }
+
+                "prayer.test" -> {
+                    val count = mainViewModel.testPrayerPopup(
+                        payload.optString("message"),
+                        payload.optInt(
+                            "durationSec",
+                            mainViewModel.state.value.prayerConfig.durationSec,
+                        ),
+                    )
+                    sendResult(
+                        id,
+                        count > 0,
+                        data = JSONObject().put("count", count),
+                        error = if (count > 0) null else "Tidak ada TV yang terhubung",
+                    )
+                }
+
                 "tv.sleep" -> {
                     val tv = findTv(payload.optString("id"))
                     if (tv == null) {
@@ -477,7 +567,7 @@ class RRBridge(
                 }
 
                 "trx.add" -> {
-                    val transaction = Transaksi(
+                    val base = Transaksi(
                         id = payload.optString("id"),
                         waktu = payload.optString("waktu"),
                         kasir = payload.optString("kasir"),
@@ -490,13 +580,27 @@ class RRBridge(
                         tvJenisPs = payload.optString("tvJenisPs"),
                         sudahBayar = payload.optBoolean("sudahBayar", false),
                         metode = payload.optString("metode"),
-                    )
+                        cash = payload.optInt("cash"),
+                        kembalian = payload.optInt("kembalian"),
+                    ).withSession(payload)
+                    val transaction = if (base.kategori.isBlank()) {
+                        base.copy(
+                            kategori = when {
+                                base.paketHarga > 0 && base.pesanan.isEmpty() -> "PAKET"
+                                base.paketHarga <= 0 && base.pesanan.isNotEmpty() -> "FNB"
+                                else -> ""
+                            },
+                        )
+                    } else base
                     mainViewModel.tambahTransaksi(transaction)
                     sendResult(id, true)
                 }
 
                 "trx.upsert" -> {
-                    val transaction = Transaksi(
+                    val existing = mainViewModel.state.value.transaksiList.firstOrNull {
+                        it.id == payload.optString("id")
+                    }
+                    val base = Transaksi(
                         id = payload.optString("id"),
                         waktu = payload.optString("waktu"),
                         kasir = payload.optString("kasir"),
@@ -509,8 +613,55 @@ class RRBridge(
                         tvJenisPs = payload.optString("tvJenisPs"),
                         sudahBayar = payload.optBoolean("sudahBayar", false),
                         metode = payload.optString("metode"),
-                    )
-                    mainViewModel.upsertTransaksi(transaction)
+                        cash = payload.optInt("cash"),
+                        kembalian = payload.optInt("kembalian"),
+                    ).withSession(payload, existing)
+                    val tv = tvForPayload(payload)
+                    val sessionTxs = mainViewModel.state.value.transaksiList.filter {
+                        it.id == existing?.id ||
+                            (base.sesiMulai > 0L && it.sesiMulai == base.sesiMulai &&
+                                (base.tvId.isBlank() || it.tvId == base.tvId || it.kota == base.kota))
+                    }
+                    val sessionPaketTotal = sessionTxs.filter { it.isPaketTx() }.sumOf { it.paketHarga }
+                    val addAmount = (base.paketHarga - sessionPaketTotal).coerceAtLeast(0)
+                    val canSplit = existing != null && tv != null && tv.timerActive && !tv.bebas &&
+                        existing.paketHarga > 0 && !existing.paket.contains("Bebas", ignoreCase = true) &&
+                        base.paketHarga > 0 && base.paket != "Pesanan" && base.paket != "Main Bebas" &&
+                        base.sesiMulai > 0L && addAmount > 0
+                    if (canSplit) {
+                        val anchor = existing!!
+                        val original = anchor.copy(
+                            total = (base.total - addAmount).coerceAtLeast(0),
+                            paketHarga = anchor.paketHarga,
+                            pesanan = base.pesanan,
+                            pesananHarga = base.pesananHarga,
+                            sudahBayar = if (base.sudahBayar) true else anchor.sudahBayar,
+                            metode = if (base.sudahBayar) base.metode else anchor.metode,
+                            kasir = base.kasir.ifBlank { anchor.kasir },
+                            tvId = anchor.tvId.ifBlank { base.tvId },
+                            sesiMulai = anchor.sesiMulai.takeIf { it > 0L } ?: base.sesiMulai,
+                            sesiSelesai = anchor.sesiSelesai,
+                            waktu = anchor.waktu.ifBlank { base.waktu },
+                        )
+                        val addTx = base.copy(
+                            id = "${anchor.id}-ADD-${System.currentTimeMillis()}",
+                            paket = "Tambah Waktu: ${base.paket}",
+                            total = addAmount,
+                            paketHarga = addAmount,
+                            pesanan = emptyMap(),
+                            pesananHarga = emptyMap(),
+                            kategori = "PAKET",
+                            jumlah = 1,
+                            sesiMulai = original.sesiMulai,
+                            sesiSelesai = 0L,
+                            cash = 0,
+                            kembalian = 0,
+                        )
+                        mainViewModel.upsertTransaksi(original)
+                        mainViewModel.tambahTransaksi(addTx)
+                    } else {
+                        mainViewModel.upsertTransaksi(base)
+                    }
                     sendResult(id, true)
                 }
 
@@ -524,6 +675,49 @@ class RRBridge(
                     sendResult(id, true)
                 }
 
+                "trx.edit" -> {
+                    val state = mainViewModel.state.value
+                    val existing = state.transaksiList.firstOrNull { it.id == payload.optString("id") }
+                    if (existing == null) {
+                        sendResult(id, false, error = "Transaksi tidak ditemukan")
+                    } else if (state.currentRole == "kasir" && existing.kasir != state.currentUser) {
+                        sendResult(id, false, error = "Hanya laporan Anda yang dapat diedit")
+                    } else {
+                        val pesananBaru = if (payload.has("pesanan")) jsonToIntMap(payload.optJSONObject("pesanan")) else existing.pesanan
+                        val pesananHargaBaru = if (payload.has("pesananHarga")) jsonToIntMap(payload.optJSONObject("pesananHarga")) else existing.pesananHarga
+                        val notEnough = mutableListOf<String>()
+                        pesananBaru.forEach { (name, qty) ->
+                            val diff = qty - (existing.pesanan[name] ?: 0)
+                            if (diff > 0) {
+                                val available = when {
+                                    state.stokMakanan.containsKey(name) -> state.stokMakanan[name] ?: 0
+                                    state.stokMinuman.containsKey(name) -> state.stokMinuman[name] ?: 0
+                                    else -> Int.MAX_VALUE
+                                }
+                                if (diff > available) notEnough.add(name)
+                            }
+                        }
+                        if (notEnough.isNotEmpty()) {
+                            sendResult(id, false, error = "Stok tidak cukup untuk: ${notEnough.joinToString(", ")}")
+                        } else {
+                            val totalBaru = payload.optInt("total", existing.total)
+                            val updated = existing.copy(
+                                paket = payload.optString("paket", existing.paket),
+                                paketHarga = payload.optInt("paketHarga", existing.paketHarga),
+                                pesanan = pesananBaru,
+                                pesananHarga = pesananHargaBaru,
+                                total = totalBaru,
+                                metode = if (payload.has("metode")) payload.optString("metode") else existing.metode,
+                                sudahBayar = if (payload.has("sudahBayar")) payload.optBoolean("sudahBayar", existing.sudahBayar) else existing.sudahBayar,
+                                cash = payload.optInt("cash", existing.cash),
+                                kembalian = payload.optInt("kembalian", existing.kembalian),
+                            )
+                            mainViewModel.upsertTransaksi(updated)
+                            sendResult(id, true)
+                        }
+                    }
+                }
+
                 "trx.settle" -> {
                     mainViewModel.settleTransaksi(
                         kota = payload.optString("kota"),
@@ -535,6 +729,8 @@ class RRBridge(
                         tvId = payload.optString("tvId"),
                         pesanan = payload.optJSONObject("pesanan")?.let { jsonToIntMap(it) },
                         pesananHarga = payload.optJSONObject("pesananHarga")?.let { jsonToIntMap(it) },
+                        cash = payload.optInt("cash"),
+                        kembalian = payload.optInt("kembalian"),
                     )
                     sendResult(id, true)
                 }
@@ -586,6 +782,8 @@ class RRBridge(
                         jsonToIntMap(payload.optJSONObject("itemsMakanan")),
                         jsonToIntMap(payload.optJSONObject("itemsMinuman")),
                         payload.optString("metode", "Tunai"),
+                        payload.optInt("cash", 0),
+                        payload.optInt("kembalian", 0),
                     )
                     val data = if (result.success) {
                         val tx = mainViewModel.state.value.transaksiList.firstOrNull {
@@ -601,6 +799,8 @@ class RRBridge(
                             .put("pesanan", intMapToJson(tx?.pesanan ?: emptyMap()))
                             .put("pesananHarga", intMapToJson(tx?.pesananHarga ?: emptyMap()))
                             .put("metode", tx?.metode ?: "Tunai")
+                            .put("cash", tx?.cash ?: result.cash)
+                            .put("kembalian", tx?.kembalian ?: result.kembalian)
                             .put("kasir", tx?.kasir ?: "")
                             .put("waktu", tx?.waktu ?: "")
                     } else {
@@ -709,7 +909,11 @@ class RRBridge(
                 }
 
                 "history.export" -> {
-                    val rows = buildCsv()
+                    val rows = buildCsv(
+                        payload.optString("kasir"),
+                        payload.optString("from"),
+                        payload.optString("to"),
+                    )
                     activity.createDocument(
                         "riwayat_${SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())}.csv",
                     ) { uri ->
@@ -805,12 +1009,16 @@ class RRBridge(
                 }
 
                 "profile.rental.save" -> {
-                    mainViewModel.updateDataRental(
-                        payload.optString("nama"),
-                        payload.optString("alamat"),
-                        payload.optString("wa"),
-                    )
-                    sendResult(id, true)
+                    if (mainViewModel.state.value.currentRole == "kasir") {
+                        sendResult(id, false, error = "Hanya admin yang dapat mengubah data rental")
+                    } else {
+                        mainViewModel.updateDataRental(
+                            payload.optString("nama"),
+                            payload.optString("alamat"),
+                            payload.optString("wa"),
+                        )
+                        sendResult(id, true)
+                    }
                 }
 
                 "profile.printer.scan" -> {
@@ -894,6 +1102,45 @@ class RRBridge(
         }
     }
 
+    private fun prayerJson(): JSONObject {
+        val state = mainViewModel.state.value
+        val config = state.prayerConfig
+        val schedule = PrayerTimes.scheduleForToday(config)
+        val scheduleArray = JSONArray()
+        schedule?.all()?.forEach { prayer ->
+            scheduleArray.put(
+                JSONObject()
+                    .put("name", prayer.name)
+                    .put("label", prayer.label)
+                    .put("atMillis", prayer.atMillis),
+            )
+        }
+        val next = PrayerTimes.nextPrayer(config)
+        return JSONObject()
+            .put(
+                "config",
+                JSONObject()
+                    .put("enabled", config.enabled)
+                    .put("message", config.message)
+                    .put("durationSec", config.durationSec)
+                    .put("latitude", config.latitude)
+                    .put("longitude", config.longitude)
+                    .put("locationSet", config.locationSet)
+                    .put("locationLabel", config.locationLabel),
+            )
+            .put("schedule", scheduleArray)
+            .put(
+                "next",
+                next?.let {
+                    JSONObject()
+                        .put("name", it.name)
+                        .put("label", it.label)
+                        .put("atMillis", it.atMillis)
+                } ?: JSONObject.NULL,
+            )
+            .put("locationStatus", state.prayerLocationStatus)
+    }
+
     private fun findTv(id: String): TvData? =
         mainViewModel.state.value.tvList.firstOrNull { it.id == id }
 
@@ -905,7 +1152,7 @@ class RRBridge(
         val isLocked = state.licenseStatus.status != "active" && !hasTrial
 
         val baseTabs = if (state.currentRole == "kasir") {
-            listOf("TV", "KASIR", "RIWAYAT", "LISENSI")
+            listOf("TV", "KASIR", "RIWAYAT", "LISENSI", "PROFILE")
         } else {
             listOf("TV", "KASIR", "STOK", "RIWAYAT", "HARGA", "CLIENT", "LISENSI", "PROFILE")
         }
@@ -1040,6 +1287,10 @@ class RRBridge(
                     .put("timerStart", tv.timerStart)
                     .put("timerDurasi", tv.timerDurasi)
                     .put("timerActive", tv.timerActive)
+                    .put("sesiMulai", tv.sesiMulai)
+                    .put("sesiSelesai", tv.sesiSelesai)
+                    .put("sesiPaused", tv.sesiPaused)
+                    .put("bebasTertundaMs", tv.bebasTertundaMs)
                     .put("bebas", tv.bebas)
                     .put("paketHarga", tv.paketHarga)
                     .put("totalPesanan", tv.totalPesanan)
@@ -1052,6 +1303,10 @@ class RRBridge(
                     .put("paired", tv.paired)
                     .put("cancelBatas", tv.cancelBatas)
                     .put("sudahBayar", tv.sudahBayar)
+                    .put("paketSudahBayar", tv.paketSudahBayar)
+                    .put("fnbSudahBayar", tv.fnbSudahBayar)
+                    .put("cashDiterima", tv.cashDiterima)
+                    .put("kembalian", tv.kembalian)
                     .put("namaRental", tv.namaRental)
                     .put("popupMode", tv.popupMode)
                     .put("popupLastMinutes", tv.popupLastMinutes)
@@ -1059,6 +1314,8 @@ class RRBridge(
                     .put("bebasDurasi", tv.bebasDurasi)
                     .put("hdmiPort", tv.hdmiPort)
                     .put("hdmiInputHint", tv.hdmiInputHint)
+                    .put("hdmiCommand", tv.hdmiCommand)
+                    .put("hdmiRemoteCommand", tv.hdmiRemoteCommand)
                     .put("hasPromoVideo", tv.promoVideoPath.isNotBlank())
                     .put("hasLockscreenVideo", tv.lockscreenVideoPath.isNotBlank())
                     .put("online", connection?.online == true)
@@ -1088,6 +1345,40 @@ class RRBridge(
         return obj
     }
 
+    private fun tvForPayload(payload: JSONObject): TvData? {
+        val tvId = payload.optString("tvId")
+        if (tvId.isNotBlank()) {
+            mainViewModel.state.value.tvList.firstOrNull { it.id == tvId }?.let { return it }
+        }
+        val kota = payload.optString("kota")
+        return mainViewModel.state.value.tvList.firstOrNull { it.nama == kota }
+    }
+
+    private fun Transaksi.withSession(
+        payload: JSONObject,
+        existing: Transaksi? = null,
+    ): Transaksi {
+        val tv = tvForPayload(payload)
+        val tvStart = when {
+            tv == null -> 0L
+            tv.sesiMulai > 0L -> tv.sesiMulai
+            tv.timerActive && tv.timerStart > 0L -> tv.timerStart
+            tv.bebas && tv.bebasMulai > 0L -> tv.bebasMulai
+            else -> 0L
+        }
+        val sesiMulai = payload.optLong("sesiMulai", 0L).takeIf { it > 0L } ?: tvStart
+        val sesiSelesai = payload.optLong("sesiSelesai", 0L).takeIf { it > 0L }
+            ?: tv?.sesiSelesai?.takeIf { it > 0L }
+            ?: 0L
+        return copy(
+            tvId = tvId.ifBlank { tv?.id.orEmpty() },
+            kategori = payload.optString("kategori").ifBlank { existing?.kategori.orEmpty() },
+            jumlah = payload.optInt("jumlah", existing?.jumlah ?: 1).coerceAtLeast(1),
+            sesiMulai = sesiMulai,
+            sesiSelesai = sesiSelesai,
+        )
+    }
+
     private fun transactionsJson(items: List<Transaksi>): JSONArray {
         val array = JSONArray()
         items.forEach { item ->
@@ -1104,7 +1395,14 @@ class RRBridge(
                     .put("pesananHarga", intMapToJson(item.pesananHarga))
                     .put("tvJenisPs", item.tvJenisPs)
                     .put("sudahBayar", item.sudahBayar)
-                    .put("metode", item.metode),
+                    .put("metode", item.metode)
+                    .put("tvId", item.tvId)
+                    .put("kategori", item.kategori)
+                    .put("jumlah", item.jumlah)
+                    .put("sesiMulai", item.sesiMulai)
+                    .put("sesiSelesai", item.sesiSelesai)
+                    .put("cash", item.cash)
+                    .put("kembalian", item.kembalian),
             )
         }
         return array
@@ -1217,9 +1515,31 @@ class RRBridge(
         return array
     }
 
-    private fun buildCsv(): String {
+    private fun buildCsv(kasirFilter: String = "", fromDate: String = "", toDate: String = ""): String {
         val header = "ID,Waktu,Kasir,TV,Paket,PaketHarga,FnbHarga,Total,Status,Metode"
-        val rows = mainViewModel.state.value.transaksiList
+        val state = mainViewModel.state.value
+        val scoped = if (state.currentRole == "kasir") {
+            state.transaksiList.filter { it.kasir.equals(state.currentUser, ignoreCase = true) }
+        } else {
+            state.transaksiList
+        }
+        val selectedKasir = kasirFilter.trim()
+        val byKasir = if (selectedKasir.isNotBlank() && !selectedKasir.equals("all", ignoreCase = true)) {
+            scoped.filter { it.kasir.equals(selectedKasir, ignoreCase = true) }
+        } else {
+            scoped
+        }
+        val from = fromDate.trim().takeIf { it.length >= 10 }?.take(10)
+        val to = toDate.trim().takeIf { it.length >= 10 }?.take(10)
+        val items = if (from != null || to != null) {
+            byKasir.filter { item ->
+                val day = item.waktu.take(10)
+                (from == null || day >= from) && (to == null || day <= to)
+            }
+        } else {
+            byKasir
+        }
+        val rows = items
             .sortedWith(compareByDescending<Transaksi> { it.waktu }.thenByDescending { it.id })
             .joinToString("\n") { item ->
             listOf(

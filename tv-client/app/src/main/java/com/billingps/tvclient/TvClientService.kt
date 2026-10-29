@@ -8,8 +8,12 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.media.tv.TvContract
+import android.media.tv.TvInputInfo
+import android.media.tv.TvInputManager
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.billingps.tvclient.firestore.CloudHelper
@@ -18,9 +22,16 @@ import com.billingps.tvclient.firestore.TvStatus
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import org.java_websocket.client.WebSocketClient
+import org.java_websocket.handshake.ServerHandshake
 import java.io.File
 import java.net.HttpURLConnection
+import java.net.Inet4Address
+import java.net.NetworkInterface
+import java.net.URI
 import java.net.URL
+import java.util.Collections
+import java.util.concurrent.TimeUnit
 
 class TvClientService : Service() {
 
@@ -38,11 +49,12 @@ class TvClientService : Service() {
         const val PREF_CACHED_WARNING_IMAGE = "cached_warning_image_path"
         const val PREF_CACHED_WARNING_VIDEO = "cached_warning_video_path"
         const val PREF_HDMI_PORT = "hdmi_port"
+        const val PREF_HDMI_HINT = "hdmi_input_hint"
+        const val PREF_HDMI_COMMAND = "hdmi_command"
 
         private var running = false
         private var currentWarningShown = false
         private var lastSisaDetik = 0L
-        private var lastPaketAktif = ""
         private var isPlayingMedia = false
         fun isRunning() = running
         fun isMediaPlaying() = isPlayingMedia
@@ -56,8 +68,12 @@ class TvClientService : Service() {
     val warningTriggered: StateFlow<Boolean> = _warningTriggered
     private var heartbeatJob: Job? = null
     private var powerPollJob: Job? = null
+    private var hdmiSwitchJob: Job? = null
     private var mediaStoppedReceiver: BroadcastReceiver? = null
     private var screenOnReceiver: BroadcastReceiver? = null
+    @Volatile private var sessionActive = false
+    private var lastWakeElapsed = 0L
+    private var lastHdmiTestId = ""
 
     override fun onCreate() {
         super.onCreate()
@@ -75,16 +91,21 @@ class TvClientService : Service() {
         } else {
             registerReceiver(mediaStoppedReceiver, IntentFilter(ACTION_MEDIA_STOPPED))
         }
-        OverlayManager.onVideoEnded = {
+        OverlayManager.onVideoCompleted = {
             isPlayingMedia = false
-            Log.i("TvClientService", "Overlay video ended, flag reset")
+            Log.i("TvClientService", "Overlay video completed")
+            scheduleHdmiAfterPromo(500L)
+        }
+        OverlayManager.onVideoUnavailable = {
+            isPlayingMedia = false
+            Log.w("TvClientService", "Overlay video unavailable")
+            scheduleHdmiAfterPromo(1500L)
         }
         screenOnReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 if (intent.action == Intent.ACTION_SCREEN_ON || intent.action == Intent.ACTION_USER_PRESENT) {
-                    Log.i("TvClientService", "Screen on (dynamic receiver), playing cached media")
-                    isPlayingMedia = false
-                    playCachedMedia()
+                    Log.i("TvClientService", "Screen on (dynamic receiver)")
+                    handleWake("screen-on")
                 }
             }
         }
@@ -104,31 +125,73 @@ class TvClientService : Service() {
         isPlayingMedia = false
         heartbeatJob?.cancel()
         powerPollJob?.cancel()
+        hdmiSwitchJob?.cancel()
+        sessionActive = false
         mediaStoppedReceiver?.let { unregisterReceiver(it) }
         screenOnReceiver?.let { unregisterReceiver(it) }
+        OverlayManager.cleanup()
         cloudHelper.cleanup()
         scope.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 
-    private fun playCachedMedia() {
+    private fun playCachedMedia(): Boolean {
         if (isPlayingMedia) {
             Log.i("TvClientService", "playCachedMedia skipped: already playing")
-            return
+            return true
         }
-        try {
+        return try {
             val prefs = getSharedPreferences("tvclient_prefs", Context.MODE_PRIVATE)
             val cachedPath = prefs.getString(PREF_CACHED_MEDIA, null)
             if (cachedPath != null && File(cachedPath).exists()) {
+                hdmiSwitchJob?.cancel()
                 isPlayingMedia = true
                 OverlayManager.playCachedVideo(this, cachedPath)
                 Log.i("TvClientService", "Playing cached media via overlay: $cachedPath")
+                true
             } else {
                 Log.w("TvClientService", "playCachedMedia skipped: cache missing ($cachedPath)")
+                false
             }
         } catch (e: Exception) {
             Log.e("TvClientService", "playCachedMedia failed: ${e.message}")
+            false
+        }
+    }
+
+    private fun handleWake(reason: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastWakeElapsed < 8_000L) {
+            Log.i("TvClientService", "Wake ignored ($reason): debounce")
+            return
+        }
+        lastWakeElapsed = now
+        if (isPlayingMedia) {
+            Log.i("TvClientService", "Wake ignored ($reason): media already playing")
+            return
+        }
+        if (sessionActive) {
+            if (!playCachedMedia()) scheduleHdmiAfterPromo(3_000L)
+        } else {
+            playCachedMedia()
+        }
+    }
+
+    private fun onSessionStarted() {
+        if (isPlayingMedia) return
+        if (!playCachedMedia()) scheduleHdmiAfterPromo(3_000L)
+    }
+
+    private fun scheduleHdmiAfterPromo(delayMs: Long) {
+        if (!sessionActive) return
+        val prefs = getSharedPreferences("tvclient_prefs", Context.MODE_PRIVATE)
+        if (prefs.getInt(PREF_HDMI_PORT, 0) < 0) return
+        hdmiSwitchJob?.cancel()
+        hdmiSwitchJob = scope.launch {
+            delay(delayMs)
+            if (!sessionActive) return@launch
+            switchToHdmiSmart()
         }
     }
 
@@ -152,10 +215,10 @@ class TvClientService : Service() {
                 }
             }
             if (action == ACTION_START) {
-                isPlayingMedia = false
-                playCachedMedia()
+                handleWake("start")
             } else {
                 Log.i("TvClientService", "onStartCommand restart (no intent), re-attaching listeners")
+                handleWake("restart")
             }
             if (username.isNotEmpty() && tvId.isNotEmpty()) {
                 startListening(username, tvId)
@@ -194,9 +257,8 @@ class TvClientService : Service() {
                 try {
                     val now = pm.isInteractive
                     if (lastInteractive == false && now == true) {
-                        Log.i("TvClientService", "Power polling: screen wake detected, playing cached media")
-                        isPlayingMedia = false
-                        playCachedMedia()
+                        Log.i("TvClientService", "Power polling: screen wake detected")
+                        handleWake("power-poll")
                     }
                     lastInteractive = now
                 } catch (e: Exception) {
@@ -227,7 +289,7 @@ class TvClientService : Service() {
                 downloadAndCacheMedia(cmd.videoUrl)
             }
         }
-        if (cmd.hdmiPort > 0) {
+        if (cmd.hdmiPort >= 0) {
             getSharedPreferences("tvclient_prefs", Context.MODE_PRIVATE)
                 .edit().putInt(PREF_HDMI_PORT, cmd.hdmiPort).apply()
         }
@@ -252,11 +314,34 @@ class TvClientService : Service() {
         }
         if (cmd.stopVideo) {
             isPlayingMedia = false
+            hdmiSwitchJob?.cancel()
             OverlayManager.stopVideo()
             Log.i("TvClientService", "Stop video command, overlay closed")
         }
         if (cmd.playCachedMedia) {
-            playCachedMedia()
+            if (!playCachedMedia() && sessionActive) scheduleHdmiAfterPromo(3_000L)
+        }
+        if (cmd.hdmiTestId.isNotEmpty() && cmd.hdmiTestId != lastHdmiTestId) {
+            lastHdmiTestId = cmd.hdmiTestId
+            scope.launch {
+                val result = runHdmiTest(cmd.hdmiTestPort, cmd.hdmiTestCommand)
+                cloudHelper.reportHdmiTest(username, tvId, cmd.hdmiTestId, result)
+                Log.i("TvClientService", "HDMI test ${cmd.hdmiTestId}: $result")
+            }
+        }
+    }
+
+    private fun runHdmiTest(port: Int, command: String): String {
+        if (command.startsWith("ws:")) {
+            val ok = sendWsPayload(command.removePrefix("ws:"))
+            return if (ok) "OK: WebSocket payload terkirim" else "FAIL: WebSocket tidak terhubung"
+        }
+        val input = findHdmiInput(port, "")
+            ?: return "FAIL: input HDMI $port tidak ditemukan"
+        return if (executeClientStrategy(input, port, command)) {
+            "OK: ${command} diterima"
+        } else {
+            "FAIL: ${command} tidak didukung/ditolak"
         }
     }
 
@@ -336,7 +421,7 @@ class TvClientService : Service() {
                         delay(30_000)
                         continue
                     }
-                    val ok = cloudHelper.sendHeartbeat(username, tvId, "4.1")
+                    val ok = cloudHelper.sendHeartbeat(username, tvId, "4.3")
                     if (ok) Log.i("TvClientService", "Heartbeat sent for $tvId")
                     else Log.w("TvClientService", "Heartbeat FAILED for $tvId")
                 } catch (e: Exception) {
@@ -349,17 +434,33 @@ class TvClientService : Service() {
 
     private fun handleTvStatus(username: String, tvId: String, status: TvStatus) {
         lastSisaDetik = status.sisaDetik
-        // Play cached media when a new session starts (paketAktif becomes non-empty)
-        if (status.paketAktif.isNotEmpty() && lastPaketAktif.isEmpty()) {
-            currentWarningShown = false
-            playCachedMedia()
+        val prefs = getSharedPreferences("tvclient_prefs", Context.MODE_PRIVATE)
+        if (prefs.getInt(PREF_HDMI_PORT, 0) != status.hdmiPort ||
+            (prefs.getString(PREF_HDMI_HINT, "") ?: "") != status.hdmiInputHint ||
+            (prefs.getString(PREF_HDMI_COMMAND, "") ?: "") != status.hdmiCommand
+        ) {
+            prefs.edit()
+                .putInt(PREF_HDMI_PORT, status.hdmiPort)
+                .putString(PREF_HDMI_HINT, status.hdmiInputHint)
+                .putString(PREF_HDMI_COMMAND, status.hdmiCommand)
+                .apply()
+            Log.i("TvClientService", "HDMI config: port=${status.hdmiPort} hint=${status.hdmiInputHint} command=${status.hdmiCommand}")
         }
-        // Reset media playing flag and warning flag when session ends
-        if (status.paketAktif.isEmpty() && lastPaketAktif.isNotEmpty()) {
+
+        val nowActive = status.paketAktif.isNotEmpty() || status.timerActive
+        if (nowActive && !sessionActive) {
+            sessionActive = true
+            currentWarningShown = false
+            Log.i("TvClientService", "Session started, promo then HDMI")
+            onSessionStarted()
+        } else if (!nowActive && sessionActive) {
+            sessionActive = false
+            hdmiSwitchJob?.cancel()
             isPlayingMedia = false
             currentWarningShown = false
+            Log.i("TvClientService", "Session ended, HDMI switch cancelled")
         }
-        lastPaketAktif = status.paketAktif
+
         val isAlmostHabis = status.timerActive && status.sisaDetik in 1..300
         if (isAlmostHabis && !currentWarningShown) {
             val menit = status.sisaDetik / 60
@@ -368,28 +469,189 @@ class TvClientService : Service() {
             currentWarningShown = true
             _warningTriggered.value = true
             showWarningOverlay(message)
-            val prefs = getSharedPreferences("tvclient_prefs", Context.MODE_PRIVATE)
-            val hdmiPort = prefs.getInt(PREF_HDMI_PORT, -1)
-            if (hdmiPort > 0) {
-                switchToHdmi(hdmiPort)
-            }
         }
         if (!isAlmostHabis) {
             currentWarningShown = false
         }
     }
 
-    private fun switchToHdmi(port: Int) {
-        try {
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                data = android.net.Uri.parse("hdmi://input")
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    private fun switchToHdmiSmart() {
+        val prefs = getSharedPreferences("tvclient_prefs", Context.MODE_PRIVATE)
+        val port = prefs.getInt(PREF_HDMI_PORT, 0)
+        if (port < 0) {
+            Log.i("TvClientService", "HDMI switch disabled")
+            return
+        }
+        val hint = prefs.getString(PREF_HDMI_HINT, "") ?: ""
+        val command = prefs.getString(PREF_HDMI_COMMAND, "") ?: ""
+        if (command.startsWith("ws:")) {
+            if (sendWsPayload(command.removePrefix("ws:"))) {
+                prefs.edit()
+                    .putString("hdmi_last_strategy", "websocket")
+                    .apply()
+                Log.i("TvClientService", "HDMI switch OK via WebSocket payload")
+                return
             }
+            Log.w("TvClientService", "WebSocket HDMI failed, fallback ke TIF")
+        }
+        val input = findHdmiInput(port, hint)
+        if (input == null) {
+            Log.w("TvClientService", "HDMI input not found (port=$port hint=$hint)")
+            return
+        }
+        if (command.isNotBlank() && !command.startsWith("ws:")) {
+            if (executeClientStrategy(input, port, command)) {
+                Log.i("TvClientService", "HDMI switch OK: ${input.id} via $command")
+                return
+            }
+            Log.w("TvClientService", "Custom HDMI command failed: $command, fallback TIF")
+        }
+        val channelUri = TvContract.buildChannelUriForPassthroughInput(input.id)
+        val intents = listOf(
+            Intent(Intent.ACTION_VIEW).setData(channelUri),
+            Intent("android.media.tv.action.VIEW").setData(channelUri).putExtra("inputId", input.id),
+            Intent("android.tv.action.SWITCH_INPUT")
+                .putExtra("inputId", input.id)
+                .putExtra("hdmiPort", port),
+        )
+        intents.forEach { intent ->
+            if (launchHdmiIntent(intent, input.id)) return
+        }
+        Log.w("TvClientService", "HDMI switch failed for ${input.id}")
+    }
+
+    private fun executeClientStrategy(input: TvInputInfo, port: Int, command: String): Boolean {
+        val channelUri = TvContract.buildChannelUriForPassthroughInput(input.id)
+        val intent = when (command) {
+            "tif_view" -> Intent(Intent.ACTION_VIEW).setData(channelUri)
+            "tif_view_id" -> Intent(Intent.ACTION_VIEW)
+                .setData(channelUri)
+                .putExtra("inputId", input.id)
+            "tif_media_view" -> Intent("android.media.tv.action.VIEW")
+                .setData(channelUri)
+                .putExtra("inputId", input.id)
+            "tif_switch_input" -> Intent("android.tv.action.SWITCH_INPUT")
+                .putExtra("inputId", input.id)
+                .putExtra("hdmiPort", port)
+            "vendor_tcl" -> vendorHdmiIntent("com.tcl.tv.action.SWITCH_INPUT", input, port)
+            "vendor_hisense" -> vendorHdmiIntent("com.hisense.tv.action.SWITCH_INPUT", input, port)
+            "vendor_skyworth" -> vendorHdmiIntent("com.skyworth.tv.action.SWITCH_INPUT", input, port)
+            "vendor_mstar" -> vendorHdmiIntent("com.mstar.android.tv.action.SWITCH_INPUT", input, port)
+            "vendor_mediatek" -> vendorHdmiIntent("com.mediatek.tv.action.SWITCH_INPUT", input, port)
+            "vendor_philips" -> vendorHdmiIntent("com.philips.tv.action.SWITCH_INPUT", input, port)
+            "vendor_sony" -> vendorHdmiIntent("com.sony.tv.action.SWITCH_INPUT", input, port)
+            "vendor_lg" -> vendorHdmiIntent("com.lg.app.tv.action.SWITCH_INPUT", input, port)
+            "vendor_samsung" -> vendorHdmiIntent("com.samsung.android.tv.action.SWITCH_INPUT", input, port)
+            else -> null
+        } ?: return false
+        return launchHdmiIntent(intent, input.id, command)
+    }
+
+    private fun vendorHdmiIntent(action: String, input: TvInputInfo, port: Int): Intent =
+        Intent(action)
+            .putExtra("inputId", input.id)
+            .putExtra("tv_input_id", input.id)
+            .putExtra("hdmiPort", port)
+            .putExtra("port", port)
+
+    private fun launchHdmiIntent(intent: Intent, inputId: String, strategy: String = ""): Boolean {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return try {
             startActivity(intent)
+            getSharedPreferences("tvclient_prefs", Context.MODE_PRIVATE)
+                .edit()
+                .putString("hdmi_last_input", inputId)
+                .putString("hdmi_last_strategy", strategy.ifBlank { intent.action ?: "" })
+                .apply()
+            true
         } catch (e: Exception) {
-            Log.e("TvClientService", "HDMI switch failed: ${e.message}")
+            Log.w("TvClientService", "HDMI intent failed (${intent.action}): ${e.message}")
+            false
         }
     }
+
+    private fun sendWsPayload(payload: String): Boolean {
+        val targets = linkedSetOf("127.0.0.1")
+        localIpv4()?.let { targets.add(it) }
+        for (host in targets) {
+            val client = object : WebSocketClient(URI("ws://$host:8080")) {
+                override fun onOpen(handshakedata: ServerHandshake?) = Unit
+                override fun onMessage(message: String?) = Unit
+                override fun onClose(code: Int, reason: String?, remote: Boolean) = Unit
+                override fun onError(ex: Exception?) {
+                    Log.w("TvClientService", "WS HDMI error $host: ${ex?.message}")
+                }
+            }
+            try {
+                if (client.connectBlocking(2, TimeUnit.SECONDS) && client.isOpen) {
+                    client.send(payload)
+                    Thread.sleep(300)
+                    client.close()
+                    Log.i("TvClientService", "WS HDMI sent to $host:8080")
+                    return true
+                }
+            } catch (e: Exception) {
+                Log.w("TvClientService", "WS HDMI failed $host: ${e.message}")
+            } finally {
+                try {
+                    client.close()
+                } catch (_: Exception) {
+                }
+            }
+        }
+        return false
+    }
+
+    private fun localIpv4(): String? = try {
+        Collections.list(NetworkInterface.getNetworkInterfaces())
+            .flatMap { Collections.list(it.inetAddresses) }
+            .firstOrNull { !it.isLoopbackAddress && it is Inet4Address }
+            ?.hostAddress
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun findHdmiInput(port: Int, hint: String): TvInputInfo? {
+        val manager = getSystemService(Context.TV_INPUT_SERVICE) as? TvInputManager ?: return null
+        val hdmi = try {
+            manager.tvInputList.filter { it.type == TvInputInfo.TYPE_HDMI && it.isPassthroughInput }
+        } catch (e: Exception) {
+            Log.e("TvClientService", "Enumerate HDMI inputs failed: ${e.message}")
+            return null
+        }
+        if (hdmi.isEmpty()) return null
+        val labeled = hdmi.map { info ->
+            val label = try {
+                info.loadLabel(this)?.toString() ?: ""
+            } catch (_: Exception) {
+                ""
+            }
+            Triple(info, label, portFromLabel(label))
+        }.sortedWith(compareBy({ it.third ?: 99 }, { it.second }, { it.first.id }))
+
+        val wantedHint = hint.trim()
+        if (wantedHint.isNotEmpty()) {
+            labeled.firstOrNull { (info, label, _) ->
+                label.contains(wantedHint, ignoreCase = true) ||
+                    info.id.contains(wantedHint, ignoreCase = true)
+            }?.let { return it.first }
+            portFromLabel(wantedHint)?.let { hintedPort ->
+                labeled.firstOrNull { it.third == hintedPort }?.let { return it.first }
+            }
+        }
+        if (port > 0) {
+            labeled.firstOrNull { it.third == port }?.let { return it.first }
+            labeled.getOrNull(port - 1)?.let { return it.first }
+        }
+        return labeled.firstOrNull()?.first
+    }
+
+    private fun portFromLabel(text: String): Int? =
+        Regex("(?i)(?:hdmi|input)\\s*([0-9]{1,2})")
+            .find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
 
     private fun buildNotification(): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)

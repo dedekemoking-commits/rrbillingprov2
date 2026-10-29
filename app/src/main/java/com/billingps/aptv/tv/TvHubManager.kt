@@ -182,6 +182,16 @@ object TvHubManager {
     fun sendMessage(tv: TvData, pesan: String, durasi: Int = 5): Boolean =
         send(tv, TvHubProtocol.showMessage(mejaIdOf(tv), pesan, durasi))
 
+    fun broadcastMessage(pesan: String, durasi: Int = 5): Int {
+        val srv = server ?: return 0
+        return try {
+            srv.broadcast(TvHubProtocol.showMessage("", pesan, durasi))
+        } catch (e: Exception) {
+            Log.w(TAG, "broadcast SHOW_MESSAGE gagal: ${e.message}")
+            0
+        }
+    }
+
     fun applyTvConfig(tv: TvData): Boolean {
         var ok = sendUpdateRental(tv)
         ok = sendOverlaySettings(tv) || ok

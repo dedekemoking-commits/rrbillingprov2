@@ -1,21 +1,34 @@
 package com.billingps.aptv.models
 
+import android.Manifest
 import android.app.Application
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.util.Patterns
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.billingps.aptv.utils.ConnectivityObserver
 import com.billingps.aptv.utils.ECDSAUtils
 import com.billingps.aptv.utils.FcmSender
+import com.billingps.aptv.utils.PrayerAlarmScheduler
+import com.billingps.aptv.utils.PrayerSchedule
+import com.billingps.aptv.utils.PrayerTimes
 import com.billingps.aptv.utils.StorageUtil
+import com.billingps.aptv.utils.TimeUtils
 import com.billingps.aptv.cloud.CloudRepository
 import com.billingps.aptv.cloud.SupabaseRepository
 import com.billingps.aptv.tv.TvHubManager
@@ -128,6 +141,8 @@ data class AppUiState(
     val quotaPopupTitle: String = "",
     val quotaPopupBody: String = "",
     val sessionNotice: String = "",
+    val prayerConfig: PrayerConfig = PrayerConfig(),
+    val prayerLocationStatus: String = "",
 )
 
 fun defaultPaketMain(groups: List<String> = listOf("PS3", "PS4", "PS5")): Map<String, Map<String, Int>> {
@@ -188,6 +203,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(appVersionName = currentVersion)
         loadAll()
         adoptDeviceSessionIfNeeded()
+        repairTransactionTimestamps()
         repairLegacyTransactions()
         registerTimerReceiver()
         refreshTimerService()
@@ -347,6 +363,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                         val expiredTv = tv.copy(
                                             timerActive = false, sisaDetik = sisaDetik.coerceAtLeast(0),
                                             paketAktif = finalPaket,
+                                            sesiSelesai = if (tv.sesiSelesai > 0L) tv.sesiSelesai else System.currentTimeMillis(),
                                         )
                                         TvHubManager.sendLockScreen(expiredTv)
                                         if (expiredTv.sudahBayar) {
@@ -453,6 +470,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             tvPasswordHash = StorageUtil.loadTvPassword(),
             promo = StorageUtil.loadPromo(),
             deviceSessionId = StorageUtil.loadDeviceSessionId(),
+            prayerConfig = StorageUtil.loadPrayerConfig(),
         )
         val savedNotifications = StorageUtil.loadNotifications()
         _state.value = _state.value.copy(
@@ -493,6 +511,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         refreshHubConfig()
+        if (_state.value.isLoggedIn) {
+            PrayerAlarmScheduler.reschedule(getApplication(), _state.value.prayerConfig)
+        }
     }
 
     private fun currentRentalName(): String {
@@ -1250,6 +1271,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         com.billingps.aptv.utils.ApkServer.clientAllowed = false
         TvHubManager.updateConfig(emptyList(), "RR Billing Pro", clientEnabled = false)
+        PrayerAlarmScheduler.cancel(getApplication())
     }
 
     private fun restoreLocalDataAfterLogin() {
@@ -1261,11 +1283,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             trialBatas = StorageUtil.loadTrialBatas(),
             maxTv = if (lic.status == "active") (if (lic.promoAddTv > 0) lic.promoAddTv else lic.maxTv) else 0,
             habisDismissedIds = StorageUtil.loadHabisDismissedIds(),
+            prayerConfig = StorageUtil.loadPrayerConfig(),
         )
         refreshHubConfig()
+        PrayerAlarmScheduler.reschedule(getApplication(), _state.value.prayerConfig)
+    }
+
+    /**
+     * Kasir memakai lisensi milik admin/owner yang membuatnya. Data transaksi,
+     * trial, invoice, FCM, dan status client tetap memakai akun yang login.
+     */
+    private fun resolveLicenseUsername(username: String): String {
+        val key = username.lowercase().trim()
+        val user = _state.value.users[key] ?: return key
+        if (user.role != "kasir") return key
+        val owner = user.adminUtama.lowercase().trim()
+        if (owner.isNotBlank()) return owner
+        val fallback = _state.value.users.values
+            .firstOrNull { it.role == "admin" && it.username.lowercase() != key }
+            ?.username
+            ?.lowercase()
+        return fallback ?: key
     }
 
     private suspend fun restoreLicenseAndTrial(username: String) {
+        val licenseUser = resolveLicenseUsername(username)
+        Log.i("MainVM", "restoreLicenseAndTrial: user=$username licenseUser=$licenseUser")
         // 1) Cek lisensi dari penyimpanan lokal dulu — dan cek masa kedaluwarsa
         var lic = StorageUtil.loadLicense()
         var trial = StorageUtil.loadTrialBatas()
@@ -1283,17 +1326,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) { Log.e("MainVM", "expiry check: ${e.message}") }
         }
 
-        if (lic.status == "active" && !enforceLicenseIntegrity(username, lic)) {
-            lic = LicenseStatus()
-            trial = 0L
-        }
+        // Integritas lisensi lokal TIDAK dicek di sini. Pemeriksaan dilakukan
+        // setelah cloud, dan dilewati kalau Supabase aktif (sumber kebenaran).
+        // Mengecek lebih awal membuat kuota yang sudah diperbaiki admin
+        // (mis. 11 TV) dianggap tidak valid sebelum data Supabase sempat dibaca.
 
         // 2) Coba ambil data terbaru dari cloud — PRIORITAS UTAMA
         supabaseLicenseActive = false
         var licenseFromSupabase = false
         var supabaseLic: LicenseStatus? = null
         try {
-            supabaseLic = withContext(Dispatchers.IO) { supabaseRepo.fetchLicenseStatus(username) }
+            supabaseLic = withContext(Dispatchers.IO) { supabaseRepo.fetchLicenseStatus(licenseUser) }
         } catch (e: Exception) {
             Log.e("MainVM", "supabase fetch license failed: ${e.message}")
         }
@@ -1315,7 +1358,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             StorageUtil.saveLicense(lic)
         } else {
             try {
-                val cloudLic = withContext(Dispatchers.IO) { cloudRepo.fetchLicenseForUser(username) }
+                val cloudLic = withContext(Dispatchers.IO) { cloudRepo.fetchLicenseForUser(licenseUser) }
                 if (cloudLic != null && cloudLic.status == "active") {
                     Log.i("MainVM", "restoreLicenseAndTrial: cloud FOUND status=${cloudLic.status} maxTv=${cloudLic.maxTv} promoAddTv=${cloudLic.promoAddTv} pesan='${cloudLic.pesan}'")
                     // Cloud adalah primary — tapi jika cloud tidak punya promoAddTv, pertahankan dari lokal
@@ -1324,7 +1367,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // Jika masih 0, coba langsung dari user doc (mungkin promo ada di sana)
                     if (mergedPromoAddTv == 0) {
                         try {
-                            val userDocLic = withContext(Dispatchers.IO) { cloudRepo.fetchUserLicenseStatus(username) }
+                            val userDocLic = withContext(Dispatchers.IO) { cloudRepo.fetchUserLicenseStatus(licenseUser) }
                             if (userDocLic != null && userDocLic.promoAddTv > 0) {
                                 mergedPromoAddTv = userDocLic.promoAddTv
                                 Log.i("MainVM", "restoreLicenseAndTrial: promoAddTv from userDoc=$mergedPromoAddTv")
@@ -1349,7 +1392,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) { Log.e("MainVM", "cloud fetch license failed: ${e.message}") }
         }
 
-        if (!licenseFromSupabase && lic.status == "active" && !enforceLicenseIntegrity(username, lic)) {
+        if (!licenseFromSupabase && lic.status == "active" && !enforceLicenseIntegrity(licenseUser, lic)) {
             lic = LicenseStatus()
         }
 
@@ -1597,18 +1640,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun startListeners(username: String) {
-        startLicenseListener(username)
-        startSupabaseLicensePolling(username)
+        val licenseUser = resolveLicenseUsername(username)
+        startLicenseListener(username, licenseUser)
+        startSupabaseLicensePolling(username, licenseUser)
         startPromoListener()
         startNotifListener(username)
         initFcmToken(username)
         startClientStatusListeners(username)
     }
 
-    private fun startLicenseListener(username: String) {
+    private fun startLicenseListener(username: String, licenseUser: String) {
         stopLicenseListener()
-        Log.i("MainVM", "startLicenseListener for $username")
-        userDocListener = cloudRepo.listenUserLicense(username) { cloudLic ->
+        Log.i("MainVM", "startLicenseListener for $username licenseUser=$licenseUser")
+        userDocListener = cloudRepo.listenUserLicense(licenseUser) { cloudLic ->
             if (cloudLic != null) {
                 if (cloudLic.status == "revoked") {
                     if (supabaseLicenseActive) {
@@ -1621,7 +1665,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     refreshHubConfig()
                 } else {
                     viewModelScope.launch {
-                        if (!supabaseLicenseActive && !enforceLicenseIntegrity(username, cloudLic)) return@launch
+                        if (!supabaseLicenseActive && !enforceLicenseIntegrity(licenseUser, cloudLic)) return@launch
                         val effectiveMaxTv = when {
                             cloudLic.promoAddTv > 0 -> cloudLic.promoAddTv
                             cloudLic.maxTv > 0 -> cloudLic.maxTv
@@ -1633,7 +1677,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         refreshHubConfig()
                         // Activate the unactivated license doc so License Generator history shows it as activated
                         withContext(Dispatchers.IO) {
-                            cloudRepo.findAndActivateLicenseByUsername(username, cloudLic.expiresAt, deviceType = "android")
+                            cloudRepo.findAndActivateLicenseByUsername(licenseUser, cloudLic.expiresAt, deviceType = "android")
                         }
                     }
                 }
@@ -1806,12 +1850,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         supabaseLicensePollerJob = null
     }
 
-    private fun startSupabaseLicensePolling(username: String) {
+    private fun startSupabaseLicensePolling(username: String, licenseUser: String) {
         supabaseLicensePollerJob?.cancel()
         supabaseLicensePollerJob = viewModelScope.launch(Dispatchers.IO) {
             while (isActive) {
                 try {
-                    val lic = supabaseRepo.fetchLicenseStatus(username)
+                    val lic = supabaseRepo.fetchLicenseStatus(licenseUser)
                     if (lic != null) {
                         withContext(Dispatchers.Main) { applySupabaseLicense(lic) }
                     }
@@ -2117,6 +2161,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val obj = org.json.JSONObject()
         obj.put("exportVersion", currentVersion)
         obj.put("exportedAt", System.currentTimeMillis())
+        obj.put("trxTimeRepairV1", StorageUtil.isTimeRepairV1Done())
         obj.put("users", org.json.JSONObject(StorageUtil.loadUsers().mapValues { (_, u) ->
             org.json.JSONObject().apply {
                 put("username", u.username); put("role", u.role); put("email", u.email); put("dibuat", u.dibuat)
@@ -2136,6 +2181,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 put("popupMode", tv.popupMode); put("popupLastMinutes", tv.popupLastMinutes)
                 put("bebasInterval", tv.bebasInterval); put("bebasDurasi", tv.bebasDurasi)
                 put("hdmiPort", tv.hdmiPort); put("hdmiInputHint", tv.hdmiInputHint)
+                put("hdmiCommand", tv.hdmiCommand); put("hdmiRemoteCommand", tv.hdmiRemoteCommand)
+                put("sesiMulai", tv.sesiMulai); put("sesiSelesai", tv.sesiSelesai)
+                put("sesiPaused", tv.sesiPaused); put("bebasTertundaMs", tv.bebasTertundaMs)
+                put("paketSudahBayar", tv.paketSudahBayar); put("fnbSudahBayar", tv.fnbSudahBayar)
+                put("cashDiterima", tv.cashDiterima); put("kembalian", tv.kembalian)
             }
         }))
         obj.put("transaksiList", org.json.JSONArray(StorageUtil.loadTransaksi().map { t ->
@@ -2146,18 +2196,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 put("paketHarga", t.paketHarga)
                 put("pesananHarga", org.json.JSONObject(t.pesananHarga.mapKeys { it.key }))
                 put("tvJenisPs", t.tvJenisPs); put("sudahBayar", t.sudahBayar)
+                put("metode", t.metode); put("tvId", t.tvId); put("kategori", t.kategori)
+                put("jumlah", t.jumlah); put("sesiMulai", t.sesiMulai); put("sesiSelesai", t.sesiSelesai)
+                put("cash", t.cash); put("kembalian", t.kembalian)
             }
         }))
         obj.put("paketMain", org.json.JSONObject(s.paketMain.mapValues { (_, v) -> org.json.JSONObject(v) }))
         obj.put("paketDurasi", org.json.JSONObject(s.paketDurasi))
         obj.put("menuMakanan", org.json.JSONObject(s.menuMakanan))
         obj.put("menuMinuman", org.json.JSONObject(s.menuMinuman))
+        obj.put("prayerConfig", org.json.JSONObject().apply {
+            put("enabled", s.prayerConfig.enabled)
+            put("message", s.prayerConfig.message)
+            put("durationSec", s.prayerConfig.durationSec)
+            put("latitude", s.prayerConfig.latitude)
+            put("longitude", s.prayerConfig.longitude)
+            put("locationSet", s.prayerConfig.locationSet)
+            put("locationLabel", s.prayerConfig.locationLabel)
+        })
         return obj.toString(2)
     }
 
     fun importBackupJson(jsonStr: String): String {
         return try {
             val obj = org.json.JSONObject(jsonStr)
+            val timeRepairDone = obj.optBoolean("trxTimeRepairV1", false)
             if (!obj.has("exportVersion")) return "File backup tidak valid"
 
             // Restore users
@@ -2170,6 +2233,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         username = u.optString("username"),
                         passwordHash = "",
                         role = u.optString("role", "kasir"),
+                        adminUtama = u.optString("adminUtama", u.optString("admin_utama", "")),
                         email = u.optString("email"),
                         dibuat = u.optString("dibuat"),
                     )
@@ -2208,6 +2272,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         bebasDurasi = o.optInt("bebasDurasi", 30),
                         hdmiPort = o.optInt("hdmiPort", 0),
                         hdmiInputHint = o.optString("hdmiInputHint"),
+                        hdmiCommand = o.optString("hdmiCommand"),
+                        hdmiRemoteCommand = o.optString("hdmiRemoteCommand"),
+                        sesiMulai = o.optLong("sesiMulai"),
+                        sesiSelesai = o.optLong("sesiSelesai"),
+                        sesiPaused = o.optBoolean("sesiPaused"),
+                        bebasTertundaMs = o.optLong("bebasTertundaMs"),
+                        paketSudahBayar = o.optBoolean("paketSudahBayar", o.optBoolean("sudahBayar")),
+                        fnbSudahBayar = o.optBoolean("fnbSudahBayar", o.optBoolean("sudahBayar")),
+                        cashDiterima = o.optInt("cashDiterima"),
+                        kembalian = o.optInt("kembalian"),
                     ))
                 }
                 StorageUtil.saveTvList(list)
@@ -2228,17 +2302,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     o.optJSONObject("pesananHarga")?.let { ph ->
                         ph.keys().forEach { key -> pesananHargaMap[key] = ph.optInt(key) }
                     }
+                    val txId = o.optString("id")
+                    val txWaktu = o.optString("waktu")
+                    val normalizedWaktu = if (timeRepairDone) {
+                        TimeUtils.normalizeTransactionTime(txId, txWaktu)
+                    } else {
+                        TimeUtils.migrateLegacyLocalTransactionTime(txId, txWaktu)
+                    }
                     list.add(Transaksi(
-                        id = o.optString("id"), waktu = o.optString("waktu"),
+                        id = txId, waktu = normalizedWaktu,
                         kasir = o.optString("kasir"), kota = o.optString("kota"),
                         paket = o.optString("paket"), total = o.optInt("total"),
                         pesanan = pesananMap, paketHarga = o.optInt("paketHarga"),
                         pesananHarga = pesananHargaMap, tvJenisPs = o.optString("tvJenisPs"),
                         sudahBayar = o.optBoolean("sudahBayar"),
+                        metode = o.optString("metode"),
+                        tvId = o.optString("tvId"),
+                        kategori = o.optString("kategori"),
+                        jumlah = o.optInt("jumlah", 1).coerceAtLeast(1),
+                        sesiMulai = o.optLong("sesiMulai"),
+                        sesiSelesai = o.optLong("sesiSelesai"),
+                        cash = o.optInt("cash"),
+                        kembalian = o.optInt("kembalian"),
                     ))
                 }
                 StorageUtil.saveTransaksi(list)
                 _state.value = _state.value.copy(transaksiList = list)
+            }
+
+            obj.optJSONObject("prayerConfig")?.let { o ->
+                savePrayerConfig(
+                    PrayerConfig(
+                        enabled = o.optBoolean("enabled", false),
+                        message = o.optString("message", PrayerConfig().message),
+                        durationSec = o.optInt("durationSec", 15),
+                        latitude = o.optDouble("latitude", 0.0),
+                        longitude = o.optDouble("longitude", 0.0),
+                        locationSet = o.optBoolean("locationSet", false),
+                        locationLabel = o.optString("locationLabel", ""),
+                    )
+                )
             }
 
             refreshHubConfig()
@@ -2310,6 +2413,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             passwordHash = hash,
             salt = salt,
             role = role,
+            adminUtama = if (role == "kasir") _state.value.currentUser.lowercase().trim() else "",
             email = normalizedEmail,
             noHp = normalizedHp,
             dibuat = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).format(java.util.Date()),
@@ -2651,12 +2755,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             "bebasDurasi" -> t.copy(bebasDurasi = (v as? Number)?.toInt() ?: return@forEach)
                             "hdmiPort" -> t.copy(hdmiPort = (v as? Number)?.toInt() ?: return@forEach)
                             "hdmiInputHint" -> t.copy(hdmiInputHint = v as? String ?: return@forEach)
+                            "hdmiCommand" -> t.copy(hdmiCommand = v as? String ?: return@forEach)
+                            "hdmiRemoteCommand" -> t.copy(hdmiRemoteCommand = v as? String ?: return@forEach)
+                            "sesiMulai" -> t.copy(sesiMulai = (v as? Number)?.toLong() ?: return@forEach)
+                            "sesiSelesai" -> t.copy(sesiSelesai = (v as? Number)?.toLong() ?: return@forEach)
+                            "sesiPaused" -> t.copy(sesiPaused = v as? Boolean ?: return@forEach)
+                            "bebasTertundaMs" -> t.copy(bebasTertundaMs = (v as? Number)?.toLong() ?: return@forEach)
+                            "paketSudahBayar" -> t.copy(paketSudahBayar = v as? Boolean ?: return@forEach)
+                            "fnbSudahBayar" -> t.copy(fnbSudahBayar = v as? Boolean ?: return@forEach)
+                            "cashDiterima" -> t.copy(cashDiterima = (v as? Number)?.toInt() ?: return@forEach)
+                            "kembalian" -> t.copy(kembalian = (v as? Number)?.toInt() ?: return@forEach)
                             else -> t
                         }
                     } catch (e: Exception) {
                         Log.w("MainVM", "updateTV: skip bad value for $k: ${v?.javaClass?.name} ($e)")
                         t
                     }
+                }
+                val wasActive = tv.timerActive || tv.bebas
+                val nowActive = t.timerActive || t.bebas
+                if (nowActive) {
+                    val sameSession = wasActive || (tv.sesiPaused && tv.sesiMulai > 0L)
+                    val start = when {
+                        sameSession && t.sesiMulai > 0L -> t.sesiMulai
+                        sameSession && tv.sesiMulai > 0L -> tv.sesiMulai
+                        sameSession && tv.timerStart > 0L -> tv.timerStart
+                        t.timerStart > 0L -> t.timerStart
+                        t.bebasMulai > 0L -> t.bebasMulai
+                        else -> System.currentTimeMillis()
+                    }
+                    t = t.copy(sesiMulai = start, sesiSelesai = 0L)
+                } else if (wasActive && !t.sesiPaused && t.sesiSelesai <= 0L) {
+                    val end = if (tv.timerStart > 0L && tv.timerDurasi > 0L) {
+                        tv.timerStart + tv.timerDurasi * 1000L
+                    } else System.currentTimeMillis()
+                    t = t.copy(sesiSelesai = end)
                 }
                 t
             }
@@ -2669,7 +2802,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val keys = updates.keys
             val configKeys = setOf(
                 "namaRental", "popupMode", "popupLastMinutes", "bebasInterval",
-                "bebasDurasi", "hdmiPort", "hdmiInputHint",
+                "bebasDurasi", "hdmiPort", "hdmiInputHint", "hdmiCommand", "hdmiRemoteCommand",
             )
             val wasActive = previousTv?.let { it.timerActive || it.bebas } == true
             val bebasChanged = updates.containsKey("bebas") &&
@@ -2730,6 +2863,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val result = TvRemotePower.send(tv.ip, tv.certPem, tv.keyPem, false)
         if (result.ok) TvHubManager.noteScreenState(tv, false)
         Log.i("MainVM", "$label ${tv.nama}: power sent=${result.ok} ${result.message}")
+    }
+
+    private fun repairTransactionTimestamps() {
+        if (StorageUtil.isTimeRepairV1Done()) return
+        val original = _state.value.transaksiList
+        if (original.isEmpty()) {
+            StorageUtil.markTimeRepairV1Done()
+            return
+        }
+        try {
+            StorageUtil.backupBeforeTimeRepair()
+            var changed = 0
+            val repaired = original.map { tx ->
+                val normalized = TimeUtils.migrateLegacyLocalTransactionTime(tx.id, tx.waktu)
+                if (normalized != tx.waktu) changed++
+                tx.copy(waktu = normalized)
+            }
+            _state.value = _state.value.copy(transaksiList = repaired)
+            StorageUtil.saveTransaksi(repaired)
+            StorageUtil.markTimeRepairV1Done()
+            Log.i("MainVM", "repairTransactionTimestamps: $changed of ${original.size} rows normalized to UTC")
+        } catch (e: Exception) {
+            Log.e("MainVM", "repairTransactionTimestamps failed: ${e.message}", e)
+        }
     }
 
     private fun repairLegacyTransactions() {
@@ -2864,6 +3021,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun tvStop(id: String, sleep: Boolean = false): Boolean {
         val tv = _state.value.tvList.firstOrNull { it.id == id } ?: return false
         val wasBebas = tv.bebas
+        val now = System.currentTimeMillis()
+        val sessionEnd = sesiSelesaiUntuk(tv, now)
+        val transactions = _state.value.transaksiList
+        val sessionIds = if (tv.sesiMulai > 0L) {
+            transactions.filter {
+                it.sesiMulai == tv.sesiMulai && (it.tvId == tv.id || it.kota == tv.nama)
+            }.mapTo(mutableSetOf()) { it.id }
+        } else if (tv.trxId.isNotBlank()) {
+            setOf(tv.trxId)
+        } else emptySet()
+        val updatedTransactions = if (sessionIds.isEmpty()) transactions else transactions.map { tx ->
+            if (tx.id !in sessionIds) tx else tx.copy(
+                sesiMulai = if (tx.sesiMulai <= 0L && tv.sesiMulai > 0L) tv.sesiMulai else tx.sesiMulai,
+                sesiSelesai = if (tx.sesiSelesai <= 0L) sessionEnd else tx.sesiSelesai,
+            )
+        }
         cancelAutoSleep(id)
         cancelSessionWake(id)
         val stopped = tv.copy(
@@ -2883,11 +3056,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             bebasPesananTotal = 0,
             cancelBatas = 0L,
             sudahBayar = false,
+            sesiMulai = 0L,
+            sesiSelesai = 0L,
+            sesiPaused = false,
+            bebasTertundaMs = 0L,
+            paketSudahBayar = false,
+            fnbSudahBayar = false,
+            cashDiterima = 0,
+            kembalian = 0,
         )
         val list = _state.value.tvList.map { if (it.id == id) stopped else it }
         val dismissed = _state.value.habisDismissedIds - id
-        _state.value = _state.value.copy(tvList = list, habisDismissedIds = dismissed)
+        _state.value = _state.value.copy(
+            tvList = list,
+            transaksiList = updatedTransactions,
+            habisDismissedIds = dismissed,
+        )
         StorageUtil.saveTvList(list)
+        if (updatedTransactions != transactions) StorageUtil.saveTransaksi(updatedTransactions)
         StorageUtil.saveHabisDismissedIds(dismissed)
         refreshHubConfig()
         val sent = TvHubManager.sendStopTimer(tv)
@@ -2902,6 +3088,199 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshTimerService()
         try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after tvStop: ${e.message}") }
         return sent
+    }
+
+    fun finishSession(id: String) {
+        val tv = _state.value.tvList.firstOrNull { it.id == id } ?: return
+        val now = System.currentTimeMillis()
+        val sessionEnd = sesiSelesaiUntuk(tv, now)
+        var bebasTx: Transaksi? = null
+        var bebasTotal = tv.paketHarga
+        val bebasSession = tv.bebas || (
+            tv.sesiPaused && (tv.bebasHargaPerJam > 0 || tv.paketAktif.contains("Bebas", ignoreCase = true))
+            )
+        if (bebasSession && tv.bebasHargaPerJam > 0) {
+            val elapsed = when {
+                tv.bebas && tv.bebasMulai > 0L ->
+                    (now - tv.bebasMulai).coerceAtLeast(0L) + tv.bebasTertundaMs
+                else -> tv.bebasTertundaMs.coerceAtLeast(0L)
+            }
+            bebasTotal = ((elapsed * tv.bebasHargaPerJam) / 3_600_000L).toInt()
+            val sesiMulai = if (tv.sesiMulai > 0L) tv.sesiMulai else tv.bebasMulai
+            bebasTx = Transaksi(
+                id = "TRX-$now-BEBAS",
+                waktu = TimeUtils.nowUtcIso(),
+                kasir = _state.value.currentUser.ifBlank { "Kasir" },
+                kota = tv.nama,
+                paket = "Main Bebas",
+                pesanan = emptyMap(),
+                total = bebasTotal,
+                paketHarga = bebasTotal,
+                pesananHarga = emptyMap(),
+                tvJenisPs = tv.jenisPs,
+                sudahBayar = false,
+                tvId = tv.id,
+                kategori = "PAKET",
+                jumlah = 1,
+                sesiMulai = sesiMulai,
+                sesiSelesai = sessionEnd,
+            )
+        }
+        val lunas = tv.paketSudahBayar && tv.fnbSudahBayar && bebasTx == null
+        var stopped = tv.copy(
+            timerActive = false,
+            bebas = false,
+            sisaDetik = 0L,
+            timerStart = 0L,
+            timerDurasi = 0L,
+            paketAktif = "",
+            sesiSelesai = sessionEnd,
+            sesiPaused = false,
+            sudahBayar = lunas,
+        )
+        if (bebasTx != null) {
+            stopped = stopped.copy(
+                paketHarga = bebasTotal,
+                paketSudahBayar = false,
+                sudahBayar = false,
+                bebasMulai = 0L,
+                bebasTertundaMs = 0L,
+            )
+        }
+        if (lunas) {
+            stopped = stopped.copy(
+                paketHarga = 0,
+                totalPesanan = 0,
+                pesanan = emptyMap(),
+                pesananHarga = emptyMap(),
+                bebasPesananTotal = 0,
+            )
+        }
+        val list = _state.value.tvList.map { if (it.id == id) stopped else it }
+        val transactions = if (bebasTx != null && _state.value.transaksiList.none { it.id == bebasTx.id }) {
+            _state.value.transaksiList + bebasTx
+        } else _state.value.transaksiList
+        val sessionIds = if (tv.sesiMulai > 0L) {
+            transactions.filter {
+                it.sesiMulai == tv.sesiMulai && (it.tvId == tv.id || it.kota == tv.nama)
+            }.mapTo(mutableSetOf()) { it.id }
+        } else emptySet()
+        val transactionsWithEnd = if (sessionIds.isEmpty()) transactions else transactions.map {
+            if (it.id in sessionIds && it.sesiSelesai <= 0L) it.copy(sesiSelesai = sessionEnd) else it
+        }
+        val transactionsChanged = transactionsWithEnd != transactions
+        val dismissed = _state.value.habisDismissedIds - id
+        _state.value = _state.value.copy(
+            tvList = list,
+            transaksiList = transactionsWithEnd,
+            habisDismissedIds = dismissed,
+        )
+        StorageUtil.saveTvList(list)
+        StorageUtil.saveHabisDismissedIds(dismissed)
+        if (transactionsChanged) StorageUtil.saveTransaksi(transactionsWithEnd)
+        cancelAutoSleep(id)
+        cancelSessionWake(id)
+        TvHubManager.sendStopTimer(tv)
+        addActivityLog("Sesi ${tv.nama} selesai")
+        refreshHubConfig()
+        refreshTimerService()
+        try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after finishSession: ${e.message}") }
+    }
+
+    fun pauseAllSessions(): Int {
+        val now = System.currentTimeMillis()
+        var changed = 0
+        val original = _state.value.tvList
+        val list = original.map { tv ->
+            when {
+                tv.sesiPaused -> tv
+                tv.timerActive -> {
+                    changed++
+                    tv.copy(timerActive = false, sesiPaused = true)
+                }
+                tv.bebas -> {
+                    changed++
+                    val elapsed = if (tv.bebasMulai > 0L) (now - tv.bebasMulai).coerceAtLeast(0L) else 0L
+                    tv.copy(
+                        bebas = false,
+                        bebasMulai = 0L,
+                        bebasTertundaMs = tv.bebasTertundaMs + elapsed,
+                        sesiPaused = true,
+                    )
+                }
+                else -> tv
+            }
+        }
+        if (changed == 0) return 0
+        _state.value = _state.value.copy(tvList = list)
+        StorageUtil.saveTvList(list)
+        original.filter { it.timerActive || it.bebas }.forEach { tv ->
+            cancelSessionWake(tv.id)
+            TvHubManager.sendStopTimer(tv)
+        }
+        refreshTimerService()
+        try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after pauseAllSessions: ${e.message}") }
+        return changed
+    }
+
+    fun resumeAllSessions(): Int {
+        val now = System.currentTimeMillis()
+        var changed = 0
+        val list = _state.value.tvList.map { tv ->
+            if (!tv.sesiPaused) tv
+            else if (tv.bebasHargaPerJam > 0 || tv.paketAktif.contains("Bebas", ignoreCase = true)) {
+                changed++
+                tv.copy(
+                    bebas = true,
+                    bebasMulai = (now - tv.bebasTertundaMs).coerceAtLeast(1L),
+                    bebasTertundaMs = 0L,
+                    sesiPaused = false,
+                )
+            } else if (tv.paketAktif.isNotBlank() && tv.sisaDetik > 0L) {
+                changed++
+                tv.copy(
+                    timerActive = true,
+                    timerStart = now,
+                    timerDurasi = tv.sisaDetik,
+                    sesiPaused = false,
+                )
+            } else tv
+        }
+        if (changed == 0) return 0
+        _state.value = _state.value.copy(tvList = list)
+        StorageUtil.saveTvList(list)
+        list.filter { it.sesiPaused.not() && (it.timerActive || it.bebas) }.forEach { startSessionOnTv(it) }
+        refreshTimerService()
+        try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after resumeAllSessions: ${e.message}") }
+        return changed
+    }
+
+    fun resumeSession(id: String): Boolean {
+        val tv = _state.value.tvList.firstOrNull { it.id == id } ?: return false
+        if (!tv.sesiPaused) return false
+        val now = System.currentTimeMillis()
+        val resumed = if (tv.bebasHargaPerJam > 0 || tv.paketAktif.contains("Bebas", ignoreCase = true)) {
+            tv.copy(
+                bebas = true,
+                bebasMulai = (now - tv.bebasTertundaMs).coerceAtLeast(1L),
+                bebasTertundaMs = 0L,
+                sesiPaused = false,
+            )
+        } else if (tv.paketAktif.isNotBlank() && tv.sisaDetik > 0L) {
+            tv.copy(
+                timerActive = true,
+                timerStart = now,
+                timerDurasi = tv.sisaDetik,
+                sesiPaused = false,
+            )
+        } else return false
+        val list = _state.value.tvList.map { if (it.id == id) resumed else it }
+        _state.value = _state.value.copy(tvList = list)
+        StorageUtil.saveTvList(list)
+        startSessionOnTv(resumed)
+        refreshTimerService()
+        try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after resumeSession: ${e.message}") }
+        return true
     }
 
     fun tvSync(id: String): Boolean {
@@ -2930,6 +3309,136 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return TvHubManager.sendMessage(tv, pesan, durasi)
     }
 
+    fun savePrayerConfig(config: PrayerConfig) {
+        val normalized = config.copy(
+            message = config.message.take(300),
+            durationSec = config.durationSec.coerceIn(3, 300),
+            latitude = config.latitude.coerceIn(-90.0, 90.0),
+            longitude = config.longitude.coerceIn(-180.0, 180.0),
+        )
+        _state.value = _state.value.copy(
+            prayerConfig = normalized,
+            prayerLocationStatus = if (normalized.locationSet) normalized.locationLabel else "",
+        )
+        StorageUtil.savePrayerConfig(normalized)
+        PrayerAlarmScheduler.reschedule(getApplication(), normalized)
+    }
+
+    fun prayerScheduleToday(): PrayerSchedule? = PrayerTimes.scheduleForToday(_state.value.prayerConfig)
+
+    fun testPrayerPopup(
+        message: String = _state.value.prayerConfig.message,
+        durationSec: Int = _state.value.prayerConfig.durationSec,
+    ): Int {
+        val prayerName = PrayerTimes.nextPrayer(_state.value.prayerConfig)?.name ?: "Sholat"
+        val text = message
+            .replace("{sholat}", prayerName)
+            .ifBlank { "Waktu sholat $prayerName telah masuk." }
+        return TvHubManager.broadcastMessage(text, durationSec.coerceIn(3, 300))
+    }
+
+    fun detectPrayerLocation(onDone: (Boolean, String) -> Unit = { _, _ -> }) {
+        val context = getApplication<Application>()
+        val fineGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        val coarseGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!fineGranted && !coarseGranted) {
+            onDone(false, "Izin lokasi belum diberikan")
+            return
+        }
+        val manager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        if (manager == null) {
+            onDone(false, "Layanan lokasi tidak tersedia")
+            return
+        }
+        val providers = listOf(
+            LocationManager.GPS_PROVIDER,
+            LocationManager.NETWORK_PROVIDER,
+            LocationManager.PASSIVE_PROVIDER,
+        )
+        val lastKnown = providers.mapNotNull { provider ->
+            runCatching {
+                if (manager.isProviderEnabled(provider)) manager.getLastKnownLocation(provider) else null
+            }.getOrNull()
+        }.maxByOrNull { it.time }
+        if (lastKnown != null && System.currentTimeMillis() - lastKnown.time < 10 * 60_000L) {
+            applyPrayerLocation(lastKnown, onDone)
+            return
+        }
+        val provider = when {
+            manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
+            fineGranted && manager.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
+            else -> null
+        }
+        if (provider == null) {
+            if (lastKnown != null) {
+                applyPrayerLocation(lastKnown, onDone)
+            } else {
+                onDone(false, "GPS/lokasi perangkat tidak aktif")
+            }
+            return
+        }
+        val handler = Handler(Looper.getMainLooper())
+        var finished = false
+        var listener: LocationListener? = null
+        fun finish(location: Location?) {
+            if (finished) return
+            finished = true
+            listener?.let { runCatching { manager.removeUpdates(it) } }
+            handler.removeCallbacksAndMessages(null)
+            if (location != null) {
+                applyPrayerLocation(location, onDone)
+            } else {
+                onDone(false, "Lokasi tidak terdeteksi. Coba aktifkan GPS lalu ulangi.")
+            }
+        }
+        listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) = finish(location)
+            override fun onProviderEnabled(provider: String) {}
+            override fun onProviderDisabled(provider: String) {}
+            @Deprecated("Deprecated in Java")
+            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                manager.getCurrentLocation(
+                    provider,
+                    null,
+                    ContextCompat.getMainExecutor(context),
+                ) { location -> finish(location) }
+            } else {
+                @Suppress("DEPRECATION")
+                manager.requestSingleUpdate(provider, listener, Looper.getMainLooper())
+            }
+            handler.postDelayed({ finish(lastKnown) }, 15_000L)
+        } catch (e: SecurityException) {
+            finished = true
+            onDone(false, "Izin lokasi ditolak")
+        }
+    }
+
+    private fun applyPrayerLocation(location: Location, onDone: (Boolean, String) -> Unit) {
+        val label = String.format(Locale.US, "%.4f, %.4f", location.latitude, location.longitude)
+        val config = _state.value.prayerConfig.copy(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            locationSet = true,
+            locationLabel = label,
+        )
+        _state.value = _state.value.copy(
+            prayerConfig = config,
+            prayerLocationStatus = "Lokasi terdeteksi: $label",
+        )
+        StorageUtil.savePrayerConfig(config)
+        PrayerAlarmScheduler.reschedule(getApplication(), config)
+        onDone(true, "Lokasi terdeteksi: $label")
+    }
+
     fun cancelSession(id: String): AuthResult {
         val tv = _state.value.tvList.firstOrNull { it.id == id }
             ?: return AuthResult(false, "TV tidak ditemukan")
@@ -2951,8 +3460,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val txId = "TRX-${System.currentTimeMillis()}"
         val transaction = Transaksi(
             id = txId,
-            waktu = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
-                .format(java.util.Date()),
+            waktu = TimeUtils.nowUtcIso(),
             kasir = _state.value.currentUser.ifBlank { "Kasir" },
             kota = tv.nama,
             paket = "BATAL",
@@ -2963,6 +3471,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             tvJenisPs = tv.jenisPs,
             sudahBayar = true,
             metode = "BATAL",
+            tvId = tv.id,
+            kategori = "BATAL",
+            sesiMulai = tv.sesiMulai,
+            sesiSelesai = System.currentTimeMillis(),
         )
 
         val stopped = tv.copy(
@@ -2982,6 +3494,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             bebasPesananTotal = 0,
             cancelBatas = 0L,
             sudahBayar = false,
+            sesiMulai = 0L,
+            sesiSelesai = 0L,
+            sesiPaused = false,
+            bebasTertundaMs = 0L,
+            paketSudahBayar = false,
+            fnbSudahBayar = false,
+            cashDiterima = 0,
+            kembalian = 0,
         )
         val list = _state.value.tvList.map { if (it.id == id) stopped else it }
         val dismissed = _state.value.habisDismissedIds - id
@@ -3010,6 +3530,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 sudahBayar = true,
                 metode = "BATAL",
                 kasir = _state.value.currentUser.ifBlank { trxList[trxIdx].kasir },
+                tvId = tv.id,
+                kategori = "BATAL",
+                sesiMulai = tv.sesiMulai,
+                sesiSelesai = System.currentTimeMillis(),
             )
             _state.value = _state.value.copy(transaksiList = trxList)
             StorageUtil.saveTransaksi(trxList)
@@ -3050,21 +3574,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val file = TvMediaStore.saveVideo(getApplication(), tv.id, kind, uri)
+                val file = TvMediaStore.saveMedia(getApplication(), tv.id, kind, uri)
+                val remoteName = TvMediaStore.remoteName(kind, file)
                 TvMediaUploader.upload(tv, file, kind) { ok, message ->
                     if (ok) {
                         if (kind == "lockscreen") {
                             updateTV(tv.id, mapOf("lockscreenVideoPath" to file.absolutePath))
                             TvHubManager.sendUpdateLockBg(
                                 tv.copy(lockscreenVideoPath = file.absolutePath),
-                                local = "lockscreen.mp4",
+                                local = remoteName,
                             )
                         } else {
                             updateTV(tv.id, mapOf("promoVideoPath" to file.absolutePath))
                             TvHubManager.sendShowMedia(
                                 tv.copy(promoVideoPath = file.absolutePath),
                                 mediaType = "video",
-                                local = "promo.mp4",
+                                local = remoteName,
                             )
                         }
                     }
@@ -3161,6 +3686,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         bebas = false, bebasMulai = 0L, bebasHargaPerJam = 0, bebasPesananTotal = 0,
                         paketHarga = 0, totalPesanan = 0,
                         cancelBatas = 0L,
+                        sesiMulai = 0L, sesiSelesai = 0L, sesiPaused = false, bebasTertundaMs = 0L,
+                        paketSudahBayar = false, fnbSudahBayar = false,
+                        cashDiterima = 0, kembalian = 0,
                     )
                 } else if (tv.id == targetId) {
                     val src = _state.value.tvList.find { it.id == sourceId } ?: return@map tv
@@ -3172,6 +3700,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         paketHarga = src.paketHarga, totalPesanan = src.totalPesanan,
                         cancelBatas = src.cancelBatas,
                         sudahBayar = src.sudahBayar,
+                        sesiMulai = src.sesiMulai, sesiSelesai = src.sesiSelesai,
+                        sesiPaused = src.sesiPaused, bebasTertundaMs = src.bebasTertundaMs,
+                        paketSudahBayar = src.paketSudahBayar, fnbSudahBayar = src.fnbSudahBayar,
+                        cashDiterima = src.cashDiterima, kembalian = src.kembalian,
                     )
                 } else tv
             }
@@ -3204,6 +3736,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         cloudRepo.sendWarningVideo(username, tvId, videoUrl)
     }
 
+    fun sendHdmiTest(tvId: String, port: Int, command: String): String {
+        val testId = "hdmi_${System.currentTimeMillis()}"
+        val username = _state.value.currentUser
+        if (username.isBlank()) return ""
+        cloudRepo.sendHdmiTest(username, tvId, testId, port, command)
+        return testId
+    }
+
     // ── Transaksi ──────────────────────────────────────────
     fun tambahTransaksi(t: Transaksi) {
         val tx = if (t.id.isNotBlank()) t else t.copy(id = "tx_${System.currentTimeMillis()}")
@@ -3219,6 +3759,128 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Log.i("MainVM", "auto-sync triggered after tambahTransaksi id=${tx.id}")
             syncToCloud()
         } catch (ex: Exception) { Log.i("MainVM", "auto-sync failed to start: ${ex.message}") }
+    }
+
+    fun transaksiSesi(tv: TvData): List<Transaksi> = scopedTransaksiSesi(tv, _state.value.transaksiList)
+
+    private fun sesiSelesaiUntuk(tv: TvData, now: Long): Long =
+        tv.sesiSelesai.takeIf { it > 0L }
+            ?: if (tv.timerActive && tv.timerStart > 0L && tv.timerDurasi > 0L) {
+                tv.timerStart + tv.timerDurasi * 1000L
+            } else now
+
+    private fun scopedTransaksiSesi(tv: TvData, list: List<Transaksi>): List<Transaksi> {
+        val related = list.filter {
+            it.tvId == tv.id || (it.tvId.isBlank() && it.kota == tv.nama)
+        }
+        if (tv.sesiMulai > 0L) {
+            val scoped = related.filter { it.sesiMulai == tv.sesiMulai }
+            if (scoped.isNotEmpty()) return scoped
+        }
+        if (tv.trxId.isNotBlank()) {
+            val anchor = related.firstOrNull { it.id == tv.trxId }
+            if (anchor != null) {
+                if (anchor.waktu.isNotBlank()) {
+                    val scoped = related.filter { it.id == anchor.id || it.waktu >= anchor.waktu }
+                    if (scoped.isNotEmpty()) return scoped
+                }
+                val anchorIndex = list.indexOfFirst { it.id == anchor.id }
+                if (anchorIndex >= 0) {
+                    val idsAfter = list.drop(anchorIndex).mapTo(mutableSetOf()) { it.id }
+                    val scoped = related.filter { it.id in idsAfter }
+                    if (scoped.isNotEmpty()) return scoped
+                }
+            }
+        }
+        return related
+    }
+
+    fun transaksiSesiUntuk(tx: Transaksi): List<Transaksi> {
+        if (tx.sesiMulai <= 0L) return listOf(tx)
+        val related = _state.value.transaksiList.filter {
+            it.sesiMulai == tx.sesiMulai &&
+                (tx.tvId.isBlank() || it.tvId == tx.tvId || it.kota == tx.kota)
+        }
+        return related.ifEmpty { listOf(tx) }
+    }
+
+    fun settlePembayaran(
+        tvId: String,
+        transactionIds: Collection<String>,
+        lunas: Boolean,
+        metode: String = "Tunai",
+        cash: Int = 0,
+        kembalian: Int = 0,
+    ): Boolean {
+        val tv = _state.value.tvList.firstOrNull { it.id == tvId } ?: return false
+        val ids = transactionIds.toSet()
+        if (ids.isEmpty()) return false
+        val list = _state.value.transaksiList.toMutableList()
+        var cashWritten = false
+        list.indices.forEach { i ->
+            val old = list[i]
+            if (old.id !in ids) return@forEach
+            val writeCash = lunas && !cashWritten
+            cashWritten = cashWritten || writeCash
+            list[i] = old.copy(
+                sudahBayar = lunas,
+                metode = if (lunas) metode else old.metode,
+                kasir = if (lunas) _state.value.currentUser.ifBlank { old.kasir } else old.kasir,
+                cash = if (writeCash) cash else old.cash,
+                kembalian = if (writeCash) kembalian else old.kembalian,
+                sesiSelesai = if (lunas && tv.sesiSelesai > 0L) tv.sesiSelesai else old.sesiSelesai,
+            )
+        }
+        val (paketLunas, fnbLunas) = statusPembayaran(tv, list)
+        val allLunas = paketLunas && fnbLunas
+        var newTv = tv.copy(
+            paketSudahBayar = paketLunas,
+            fnbSudahBayar = fnbLunas,
+            sudahBayar = allLunas,
+            cashDiterima = if (lunas) cash else tv.cashDiterima,
+            kembalian = if (lunas) kembalian else tv.kembalian,
+        )
+        if (allLunas && newTv.sesiSelesai > 0L) {
+            newTv = newTv.copy(
+                paketAktif = "",
+                paketHarga = 0,
+                totalPesanan = 0,
+                pesanan = emptyMap(),
+                pesananHarga = emptyMap(),
+                bebasPesananTotal = 0,
+            )
+        }
+        val tvs = _state.value.tvList.map { if (it.id == tvId) newTv else it }
+        _state.value = _state.value.copy(tvList = tvs, transaksiList = list)
+        StorageUtil.saveTvList(tvs)
+        StorageUtil.saveTransaksi(list)
+        TvHubManager.sendSyncTimer(newTv)
+        addActivityLog(
+            if (lunas) "Pembayaran Rp$cash ${newTv.nama} (kembali Rp$kembalian)"
+            else "Tagihan ${newTv.nama} Rp${newTv.totalBelanja}"
+        )
+        refreshTimerService()
+        try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after settlePembayaran: ${e.message}") }
+        return true
+    }
+
+    private fun transaksiUntukTV(tv: TvData, list: List<Transaksi>): List<Transaksi> =
+        scopedTransaksiSesi(tv, list)
+
+    private fun statusPembayaran(tv: TvData, list: List<Transaksi>): Pair<Boolean, Boolean> {
+        val sessionTxs = transaksiUntukTV(tv, list)
+        val packageTxs = sessionTxs.filter { it.isPaketTx() && it.paket != "BATAL" }
+        val fnbTxs = sessionTxs.filter { it.isFnbTx() }
+        val legacyMerged = packageTxs.any { it.kategori.isBlank() && it.pesanan.isNotEmpty() }
+        val paketLunas = if (packageTxs.isEmpty()) {
+            tv.paketHarga == 0 || tv.paketSudahBayar
+        } else packageTxs.all { it.sudahBayar }
+        val fnbLunas = if (legacyMerged) {
+            packageTxs.all { it.sudahBayar }
+        } else if (fnbTxs.isEmpty()) {
+            tv.totalFnb == 0 || tv.fnbSudahBayar
+        } else fnbTxs.all { it.sudahBayar }
+        return paketLunas to fnbLunas
     }
 
 fun bersihkanTransaksi() {
@@ -3243,9 +3905,9 @@ fun bersihkanTransaksi() {
         val stockDelta = mutableMapOf<String, Int>()
         tx.pesanan.forEach { (name, qty) ->
             val diff = qty - (previousPesanan[name] ?: 0)
-            if (diff > 0) stockDelta[name] = diff
+            if (diff != 0) stockDelta[name] = diff
         }
-        if (stockDelta.isNotEmpty()) deductStockForOrder(stockDelta)
+        if (stockDelta.isNotEmpty()) adjustStockForOrder(stockDelta)
         addActivityLog("Transaksi ${tx.paket} Rp${tx.total} di ${tx.kota}")
         refreshTimerService()
         try {
@@ -3262,13 +3924,31 @@ fun bersihkanTransaksi() {
             list.indexOfLast { it.kota == kota }
         }
         if (idx >= 0) {
-            list[idx] = list[idx].copy(
+            val old = list[idx]
+            list[idx] = old.copy(
                 sudahBayar = sudahBayar,
-                metode = if (metode.isNotBlank()) metode else list[idx].metode,
-                kasir = if (sudahBayar) _state.value.currentUser else list[idx].kasir,
+                metode = if (metode.isNotBlank()) metode else old.metode,
+                kasir = if (sudahBayar) _state.value.currentUser else old.kasir,
             )
-            _state.value = _state.value.copy(transaksiList = list)
+            val tv = _state.value.tvList.firstOrNull {
+                it.id == old.tvId || (old.tvId.isBlank() && it.nama == kota)
+            }
+            val tvs = if (tv != null) {
+                val (paketLunas, fnbLunas) = statusPembayaran(tv, list)
+                _state.value.tvList.map {
+                    if (it.id == tv.id) it.copy(
+                        paketSudahBayar = paketLunas,
+                        fnbSudahBayar = fnbLunas,
+                        sudahBayar = paketLunas && fnbLunas,
+                    ) else it
+                }
+            } else _state.value.tvList
+            _state.value = _state.value.copy(transaksiList = list, tvList = tvs)
             StorageUtil.saveTransaksi(list)
+            StorageUtil.saveTvList(tvs)
+            if (tv != null) {
+                _state.value.tvList.firstOrNull { it.id == tv.id }?.let(TvHubManager::sendSyncTimer)
+            }
             try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after setTransaksiSudahBayar: ${e.message}") }
         }
     }
@@ -3283,6 +3963,8 @@ fun bersihkanTransaksi() {
         tvId: String = "",
         pesanan: Map<String, Int>? = null,
         pesananHarga: Map<String, Int>? = null,
+        cash: Int = 0,
+        kembalian: Int = 0,
     ) {
         val list = _state.value.transaksiList.toMutableList()
         var idx = -1
@@ -3295,18 +3977,63 @@ fun bersihkanTransaksi() {
         }
         if (idx < 0) idx = list.indexOfLast { it.kota == kota }
         if (idx >= 0) {
-            val old = list[idx]
-            list[idx] = old.copy(
-                total = total.coerceAtLeast(0),
-                paketHarga = paketHarga.coerceAtLeast(0),
-                metode = metode,
-                sudahBayar = sudahBayar,
-                kasir = if (sudahBayar) _state.value.currentUser else old.kasir,
-                pesanan = pesanan ?: old.pesanan,
-                pesananHarga = pesananHarga ?: old.pesananHarga,
-            )
-            _state.value = _state.value.copy(transaksiList = list)
+            val requested = list[idx]
+            val tv = _state.value.tvList.firstOrNull {
+                it.id == tvId || (tvId.isBlank() && it.nama == kota)
+            }
+            val anchorId = if (requested.sesiMulai > 0L) {
+                list.firstOrNull {
+                    it.id == tv?.trxId && it.sesiMulai == requested.sesiMulai
+                }?.id ?: requested.id
+            } else requested.id
+            val anchorIdx = list.indexOfFirst { it.id == anchorId }.takeIf { it >= 0 } ?: idx
+            val old = list[anchorIdx]
+            val sessionIds = if (old.sesiMulai > 0L) {
+                list.filter {
+                    it.sesiMulai == old.sesiMulai &&
+                        (old.tvId.isBlank() || it.tvId == old.tvId || it.kota == old.kota)
+                }.mapTo(mutableSetOf()) { it.id }
+            } else setOf(old.id)
+            val addTotal = list.filter {
+                it.id in sessionIds && it.id != old.id && it.isPaketTx()
+            }.sumOf { it.total }
+            val anchorPaketHarga = (paketHarga.coerceAtLeast(0) - addTotal).coerceAtLeast(0)
+            val anchorTotal = (total.coerceAtLeast(0) - addTotal).coerceAtLeast(0)
+            list.indices.forEach { i ->
+                val tx = list[i]
+                if (tx.id !in sessionIds) return@forEach
+                val isAnchor = tx.id == old.id
+                list[i] = tx.copy(
+                    total = if (isAnchor) anchorTotal else tx.total,
+                    paketHarga = if (isAnchor) anchorPaketHarga else tx.paketHarga,
+                    metode = if (sudahBayar) metode else tx.metode,
+                    sudahBayar = sudahBayar,
+                    kasir = if (sudahBayar) _state.value.currentUser.ifBlank { tx.kasir } else tx.kasir,
+                    pesanan = if (isAnchor) pesanan ?: tx.pesanan else tx.pesanan,
+                    pesananHarga = if (isAnchor) pesananHarga ?: tx.pesananHarga else tx.pesananHarga,
+                    cash = if (isAnchor && sudahBayar) cash else tx.cash,
+                    kembalian = if (isAnchor && sudahBayar) kembalian else tx.kembalian,
+                    sesiSelesai = if (sudahBayar && tv != null && tv.sesiSelesai > 0L) {
+                        tv.sesiSelesai
+                    } else tx.sesiSelesai,
+                )
+            }
+            val tvs = if (tv != null) {
+                val (paketLunas, fnbLunas) = statusPembayaran(tv, list)
+                _state.value.tvList.map {
+                    if (it.id == tv.id) it.copy(
+                        paketSudahBayar = paketLunas,
+                        fnbSudahBayar = fnbLunas,
+                        sudahBayar = paketLunas && fnbLunas,
+                    ) else it
+                }
+            } else _state.value.tvList
+            _state.value = _state.value.copy(transaksiList = list, tvList = tvs)
             StorageUtil.saveTransaksi(list)
+            StorageUtil.saveTvList(tvs)
+            if (tv != null) {
+                _state.value.tvList.firstOrNull { it.id == tv.id }?.let(TvHubManager::sendSyncTimer)
+            }
             try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after settleTransaksi: ${e.message}") }
         }
     }
@@ -3351,10 +4078,32 @@ fun bersihkanTransaksi() {
         if (changed) saveStok(makanan, minuman)
     }
 
+    private fun adjustStockForOrder(delta: Map<String, Int>) {
+        if (delta.isEmpty()) return
+        val makanan = _state.value.stokMakanan.toMutableMap()
+        val minuman = _state.value.stokMinuman.toMutableMap()
+        var changed = false
+        delta.forEach { (name, qty) ->
+            when {
+                makanan.containsKey(name) -> {
+                    makanan[name] = ((makanan[name] ?: 0) - qty).coerceAtLeast(0)
+                    changed = true
+                }
+                minuman.containsKey(name) -> {
+                    minuman[name] = ((minuman[name] ?: 0) - qty).coerceAtLeast(0)
+                    changed = true
+                }
+            }
+        }
+        if (changed) saveStok(makanan, minuman)
+    }
+
     fun jualFnb(
         itemsMakanan: Map<String, Int>,
         itemsMinuman: Map<String, Int>,
         metode: String = "Tunai",
+        cash: Int = 0,
+        kembalian: Int = 0,
     ): FnbSaleResult {
         val makanan = itemsMakanan.filterValues { it > 0 }
         val minuman = itemsMinuman.filterValues { it > 0 }
@@ -3391,11 +4140,16 @@ fun bersihkanTransaksi() {
             total += price * qty
         }
 
+        val metodeFinal = metode.ifBlank { "Tunai" }
+        val isTunai = metodeFinal.equals("Tunai", ignoreCase = true)
+        val cashFinal = if (isTunai) cash.coerceAtLeast(total) else 0
+        val changeFinal = if (isTunai) {
+            if (kembalian > 0) kembalian else (cashFinal - total).coerceAtLeast(0)
+        } else 0
         val txId = "TRX-${System.currentTimeMillis()}"
         val transaction = Transaksi(
             id = txId,
-            waktu = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
-                .format(java.util.Date()),
+            waktu = TimeUtils.nowUtcIso(),
             kasir = _state.value.currentUser.ifBlank { "Kasir" },
             kota = "KASIR F&B",
             paket = "F&B",
@@ -3405,10 +4159,13 @@ fun bersihkanTransaksi() {
             pesananHarga = pesananHarga,
             tvJenisPs = "",
             sudahBayar = true,
-            metode = metode.ifBlank { "Tunai" },
+            metode = metodeFinal,
+            kategori = "FNB",
+            cash = cashFinal,
+            kembalian = changeFinal,
         )
         tambahTransaksi(transaction)
-        return FnbSaleResult(true, "Penjualan F&B tersimpan", txId)
+        return FnbSaleResult(true, "Penjualan F&B tersimpan", txId, total, cashFinal, changeFinal, metodeFinal)
     }
 
     // ── Grup ────────────────────────────────────────────────
@@ -3569,8 +4326,8 @@ fun bersihkanTransaksi() {
             // Activate with device type (multi-device support)
             cloudRepo.activateLicense(record.id, expires, deviceType = DEVICE_TYPE)
 
-            // Write licenseStatus ke user doc untuk sync antar device
-            val username = _state.value.currentUser
+            // Write licenseStatus ke user doc owner agar kasir ikut mewarisi.
+            val username = resolveLicenseUsername(_state.value.currentUser)
             if (username.isNotBlank()) {
                 try {
                     val userLs = mapOf(
@@ -3807,19 +4564,55 @@ fun bersihkanTransaksi() {
         }
         val userData = _state.value.users[_state.value.currentUser]
         viewModelScope.launch(Dispatchers.IO) {
+            val currentTv = _state.value.tvList.firstOrNull { it.id == tvData.id } ?: tvData
+            val riwayat = transaksiSesiUntuk(transaksi)
+            val packageTxs = riwayat.filter { it.isPaketTx() && it.paket != "BATAL" }
+            val fnbTxs = riwayat.filter { it.isFnbTx() && it.paket != "BATAL" }
+            val legacyMerged = packageTxs.any { it.kategori.isBlank() && it.pesanan.isNotEmpty() }
+            val paketLunas = if (packageTxs.isEmpty()) currentTv.paketSudahBayar
+                else packageTxs.all { it.sudahBayar }
+            val fnbLunas = if (legacyMerged) packageTxs.all { it.sudahBayar }
+                else if (fnbTxs.isEmpty()) currentTv.fnbSudahBayar
+                else fnbTxs.all { it.sudahBayar }
+            val txSesiMulai = transaksi.sesiMulai.takeIf { it > 0L }
+                ?: riwayat.mapNotNull { it.sesiMulai.takeIf { t -> t > 0L } }.minOrNull()
+            val sesiMulai = txSesiMulai
+                ?: currentTv.sesiMulai.takeIf { it > 0L }
+                ?: 0L
+            val sameSession = txSesiMulai != null && currentTv.sesiMulai == txSesiMulai
+            val sesiSelesai = riwayat.mapNotNull { it.sesiSelesai.takeIf { t -> t > 0L } }.maxOrNull()
+                ?: currentTv.sesiSelesai.takeIf { it > 0L && sameSession }
+                ?: currentTv.timerStart
+                    .takeIf { sameSession && currentTv.timerActive && it > 0L && currentTv.timerDurasi > 0L }
+                    ?.let { it + currentTv.timerDurasi * 1000L }
+                ?: if (sesiMulai > 0L) System.currentTimeMillis() else 0L
+            val durasi = if (sesiMulai > 0L && sesiSelesai > sesiMulai) {
+                (sesiSelesai - sesiMulai) / 1000
+            } else currentTv.timerDurasi
+            val cash = riwayat.sumOf { it.cash }.takeIf { it > 0 }
+                ?: if (sameSession) currentTv.cashDiterima else 0
+            val kembali = riwayat.sumOf { it.kembalian }.takeIf { it > 0 }
+                ?: if (sameSession) currentTv.kembalian else 0
             com.billingps.aptv.utils.ThermalPrinter.printStruk(
                 transaksi = transaksi,
-                tvNama = tvData.nama.ifBlank { transaksi.kota },
-                tvJenisPs = tvData.jenisPs.ifBlank { transaksi.tvJenisPs },
+                tvNama = currentTv.nama.ifBlank { transaksi.kota },
+                tvJenisPs = currentTv.jenisPs.ifBlank { transaksi.tvJenisPs },
                 kasir = transaksi.kasir.ifBlank { _state.value.currentUser },
                 namaRental = userData?.namaRental ?: "",
                 alamatRental = userData?.alamatRental ?: "",
-                riwayatTransaksi = listOf(transaksi),
+                riwayatTransaksi = riwayat,
                 menuMakanan = _state.value.menuMakanan,
                 menuMinuman = _state.value.menuMinuman,
                 csWhatsapp = "082180208414",
-                bebas = tvData.bebas,
-                durasiBebasDetik = tvData.timerDurasi,
+                bebas = (sameSession && currentTv.bebas) ||
+                    riwayat.any { it.paket.contains("Bebas", ignoreCase = true) },
+                durasiBebasDetik = durasi,
+                sesiMulai = sesiMulai,
+                sesiSelesai = sesiSelesai,
+                cashDiterima = cash,
+                kembalian = kembali,
+                paketSudahBayar = paketLunas,
+                fnbSudahBayar = fnbLunas,
             )
             _state.value = _state.value.copy(statusMessage = "Struk dicetak")
         }

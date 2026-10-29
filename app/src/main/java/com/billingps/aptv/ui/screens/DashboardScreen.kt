@@ -6,6 +6,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -36,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.animation.core.*
 import com.billingps.aptv.models.*
+import com.billingps.aptv.tv.HdmiCommandCatalog
 import com.billingps.aptv.tv.TvHubManager
 import com.billingps.aptv.ui.theme.*
 import kotlinx.coroutines.delay
@@ -51,10 +53,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
 import com.billingps.aptv.ui.screens.ClientApkInstallerDialog
 import com.billingps.aptv.utils.ApkServer
+import com.billingps.aptv.utils.TimeUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.NumberFormat
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 fun fmtRp(amount: Int): String {
@@ -70,7 +75,6 @@ fun DashboardScreen(
 ) {
     val state by viewModel.state.collectAsState()
 
-    var searchQuery by remember { mutableStateOf("") }
     var showTambah by remember { mutableStateOf(false) }
     var showPaket by remember { mutableStateOf(false) }
     var selectedTV by remember { mutableStateOf<TvData?>(null) }
@@ -82,9 +86,12 @@ fun DashboardScreen(
     var tambahWaktuTV by remember { mutableStateOf<TvData?>(null) }
     var showBatalDialog by remember { mutableStateOf(false) }
     var batalTV by remember { mutableStateOf<TvData?>(null) }
-    var showKonfirmasiBayar by remember { mutableStateOf(false) }
-    var tvBayar by remember { mutableStateOf<TvData?>(null) }
-    var bayarUpdates by remember { mutableStateOf<Map<String, Any>?>(null) }
+    var showPembayaran by remember { mutableStateOf(false) }
+    var pembayaranTV by remember { mutableStateOf<TvData?>(null) }
+    var pembayaranTransaksi by remember { mutableStateOf<List<Transaksi>>(emptyList()) }
+    var pembayaranMode by remember { mutableStateOf("IDLE") }
+    var showDetailTV by remember { mutableStateOf(false) }
+    var detailTV by remember { mutableStateOf<TvData?>(null) }
     var showHabisDialog by remember { mutableStateOf(false) }
     var tvHabis by remember { mutableStateOf<TvData?>(null) }
     val habisDismissedIds = state.habisDismissedIds
@@ -112,6 +119,21 @@ fun DashboardScreen(
 
     val uploadScope = rememberCoroutineScope()
     val autoPowerSentSessions = remember { mutableStateMapOf<String, Long>() }
+
+    fun bukaPembayaran(tv: TvData, mode: String) {
+        val current = state.tvList.firstOrNull { it.id == tv.id } ?: tv
+        pembayaranTV = current
+        pembayaranTransaksi = viewModel.transaksiSesi(current)
+        pembayaranMode = mode
+        showPembayaran = true
+    }
+
+    fun tutupPembayaran() {
+        showPembayaran = false
+        pembayaranTV = null
+        pembayaranTransaksi = emptyList()
+        pembayaranMode = "IDLE"
+    }
 
     fun startUpload(uri: Uri, tv: TvData, username: String, mode: String) {
         uploadStatus = "Mengupload..."
@@ -198,6 +220,8 @@ fun DashboardScreen(
     val WhiteNeon = Color(0xFFF0FDF4)
     val GreenTosca = Color(0xFF00C9A7)
     val headerGradient = Brush.horizontalGradient(colors = listOf(WhiteNeon, GreenTosca))
+    val activeSessionCount = state.tvList.count { it.timerActive || it.bebas }
+    val pausedSessionCount = state.tvList.count { it.sesiPaused }
 
     Column(modifier = Modifier.fillMaxSize().background(DarkBackground)) {
         // Header
@@ -211,44 +235,47 @@ fun DashboardScreen(
             )
             Text("TV: ${state.tvList.size}", style = MaterialTheme.typography.titleLarge, color = DarkBackground,
                 modifier = Modifier.align(Alignment.Center))
-            FilledTonalButton(
-                onClick = { showTambah = true },
+            Row(
                 modifier = Modifier.align(Alignment.CenterEnd),
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.filledTonalButtonColors(containerColor = DarkBackground, contentColor = WhiteNeon),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Tambah TV", style = MaterialTheme.typography.labelSmall)
+                IconButton(
+                    onClick = { viewModel.pauseAllSessions() },
+                    enabled = activeSessionCount > 0,
+                    modifier = Modifier.size(36.dp).background(DarkBackground, CircleShape),
+                ) {
+                    Icon(
+                        Icons.Filled.Pause,
+                        contentDescription = "Pause semua sesi",
+                        tint = if (activeSessionCount > 0) WhiteNeon else WhiteNeon.copy(alpha = 0.4f),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                IconButton(
+                    onClick = { viewModel.resumeAllSessions() },
+                    enabled = pausedSessionCount > 0,
+                    modifier = Modifier.size(36.dp).background(DarkBackground, CircleShape),
+                ) {
+                    Icon(
+                        Icons.Filled.PlayArrow,
+                        contentDescription = "Resume semua sesi",
+                        tint = if (pausedSessionCount > 0) WhiteNeon else WhiteNeon.copy(alpha = 0.4f),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                FilledTonalButton(
+                    onClick = { showTambah = true },
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    colors = ButtonDefaults.filledTonalButtonColors(containerColor = DarkBackground, contentColor = WhiteNeon),
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Tambah TV", style = MaterialTheme.typography.labelSmall)
+                }
             }
         }
-
-        // Search Bar
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = { searchQuery = it },
-            placeholder = { Text("Cari TV...", color = TextDim) },
-            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp)) },
-            trailingIcon = {
-                if (searchQuery.isNotEmpty()) {
-                    IconButton(onClick = { searchQuery = "" }) {
-                        Icon(Icons.Filled.Clear, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp))
-                    }
-                }
-            },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-            shape = RoundedCornerShape(12.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = NeonGreen, unfocusedBorderColor = DarkSurfaceV3,
-                cursorColor = NeonGreen, focusedLabelColor = NeonGreen,
-                unfocusedContainerColor = DarkSurfaceV2, focusedContainerColor = DarkSurfaceV2,
-            ),
-            textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextPrimary),
-        )
-
-        val filteredList = if (searchQuery.isBlank()) state.tvList
-            else state.tvList.filter { it.nama.contains(searchQuery, ignoreCase = true) || it.ip.contains(searchQuery, ignoreCase = true) || it.jenisPs.contains(searchQuery, ignoreCase = true) }
 
         if (state.tvList.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -259,19 +286,9 @@ fun DashboardScreen(
                     Text("Tap \"Tambah TV\" untuk memulai", style = MaterialTheme.typography.bodySmall, color = TextDim)
                 }
             }
-        } else if (searchQuery.isNotBlank() && filteredList.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Filled.SearchOff, contentDescription = null, modifier = Modifier.size(64.dp), tint = TextDim)
-                    Spacer(Modifier.height(12.dp))
-                    Text("TV \"$searchQuery\" tidak ditemukan", style = MaterialTheme.typography.bodyLarge, color = TextSecondary)
-                    Text("Coba kata kunci lain", style = MaterialTheme.typography.bodySmall, color = TextDim)
-                }
-            }
         } else {
             val listState = rememberLazyListState()
-            val tvList = filteredList
-            val scope = rememberCoroutineScope()
+            val tvList = state.tvList
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(12.dp),
@@ -280,11 +297,27 @@ fun DashboardScreen(
                 ) {
                     itemsIndexed(tvList, key = { _, tv -> tv.id }) { idx, tv ->
                     val forceDisabled = state.licenseStatus.status != "active" && idx >= 2
+                    val sesiTxs = viewModel.transaksiSesi(tv)
+                    val tagihanSesi = sesiTxs
+                        .filter { !it.sudahBayar && it.paket != "BATAL" }
+                        .sumOf { it.total.coerceAtLeast(0) }
+                    val totalSesi = sesiTxs
+                        .filter { it.paket != "BATAL" }
+                        .sumOf { it.total.coerceAtLeast(0) }
                     TVCard(
                         tv = tv,
                         clientStatus = state.clientStatus[tv.id],
                         forceDisabled = forceDisabled,
-                        onPilihPaket = { selectedTV = tv; showPaket = true },
+                        tagihanSesi = tagihanSesi,
+                        totalSesi = totalSesi,
+                        onPilihPaket = {
+                            if (tv.adaTagihan && !tv.timerActive && !tv.bebas && !tv.sesiPaused) {
+                                bukaPembayaran(tv, "IDLE")
+                            } else {
+                                selectedTV = tv
+                                showPaket = true
+                            }
+                        },
                         onHapus = {
                             if (state.tvPasswordHash.isEmpty()) {
                                 tvHapusTarget = tv
@@ -321,15 +354,18 @@ fun DashboardScreen(
                             }
                         },
                         onSelesai = {
-                            if (tv.certPem.isNotEmpty() && tv.keyPem.isNotEmpty()) {
-                                tvViewModel.sendPower(tv.ip, tv.certPem, tv.keyPem, false)
-                            }
                             selesaiSummaryTV = tv
                             showSelesaiSummary = true
                         },
                         onHdmi = {
                             if (tv.certPem.isNotEmpty() && tv.keyPem.isNotEmpty()) {
-                                tvViewModel.sendKeyCommand(tv.ip, tv.certPem, tv.keyPem, "TV_INPUT", "HDMI")
+                                val remotePort = if (tv.hdmiPort in 1..4) tv.hdmiPort else 1
+                                val keys = HdmiCommandCatalog.findRemoteKeys(tv.hdmiRemoteCommand, remotePort)
+                                if (keys.isNotEmpty()) {
+                                    tvViewModel.sendKeys(tv.ip, keys, "HDMI") { _, _ -> }
+                                } else {
+                                    tvViewModel.sendKeyCommand(tv.ip, tv.certPem, tv.keyPem, "TV_INPUT", "HDMI")
+                                }
                             }
                         },
                         onOk = {
@@ -345,10 +381,21 @@ fun DashboardScreen(
                             pindahTvSource = tv
                             showPindahTvDialog = true
                         },
-                        onSudahBayar = {
-                            tvBayar = tv
-                            showKonfirmasiBayar = true
+                        onSudahBayar = { bukaPembayaran(tv, "IDLE") },
+                        onTagihan = {
+                            val ids = viewModel.transaksiSesi(tv)
+                                .filter { !it.sudahBayar && it.paket != "BATAL" }
+                                .map { it.id }
+                            if (ids.isNotEmpty()) {
+                                viewModel.settlePembayaran(tv.id, ids, lunas = false)
+                                if (!tv.timerActive && !tv.bebas) viewModel.finishSession(tv.id)
+                            }
                         },
+                        onDetail = {
+                            detailTV = tv
+                            showDetailTV = true
+                        },
+                        onResume = { viewModel.resumeSession(tv.id) },
                         onBatal = {
                             selectedTV = tv
                             showBatalDialog = true
@@ -432,44 +479,85 @@ fun DashboardScreen(
         )
     }
 
+    val detailTvValue = detailTV
+    if (showDetailTV && detailTvValue != null) {
+        val current = state.tvList.firstOrNull { it.id == detailTvValue.id } ?: detailTvValue
+        DetailSesiDialog(
+            tv = current,
+            transaksi = viewModel.transaksiSesi(current),
+            onDismiss = { showDetailTV = false; detailTV = null },
+            onBayar = {
+                showDetailTV = false
+                detailTV = null
+                bukaPembayaran(current, "IDLE")
+            },
+        )
+    }
+
     val selesaiSummaryTv = selesaiSummaryTV
     if (showSelesaiSummary && selesaiSummaryTv != null) {
         SelesaiSummaryDialog(
             tv = selesaiSummaryTv,
             onBatal = { showSelesaiSummary = false; selesaiSummaryTV = null },
             onSelesai = {
-                viewModel.updateTV(selesaiSummaryTv.id, mapOf(
-                    "timerActive" to false, "sisaDetik" to 0L,
-                    "bebas" to false, "paketAktif" to "",
-                ))
-                if (selesaiSummaryTv.bebas) {
-                    viewModel.setTransaksiSudahBayar(selesaiSummaryTv.nama, true)
+                viewModel.finishSession(selesaiSummaryTv.id)
+                if (selesaiSummaryTv.certPem.isNotEmpty() && selesaiSummaryTv.keyPem.isNotEmpty()) {
+                    tvViewModel.sendPower(
+                        selesaiSummaryTv.ip,
+                        selesaiSummaryTv.certPem,
+                        selesaiSummaryTv.keyPem,
+                        false,
+                    )
                 }
                 showSelesaiSummary = false
                 selesaiSummaryTV = null
             },
+            onBayar = {
+                showSelesaiSummary = false
+                selesaiSummaryTV = null
+                viewModel.finishSession(selesaiSummaryTv.id)
+                val updated = viewModel.state.value.tvList.firstOrNull { it.id == selesaiSummaryTv.id }
+                if (updated != null) bukaPembayaran(updated, "IDLE")
+            },
             onPrint = {
-                val lastTx = state.transaksiList.filter { it.kota == selesaiSummaryTv.nama }.maxByOrNull { it.waktu }
-                if (lastTx != null) {
-                    viewModel.printReceipt(lastTx, selesaiSummaryTv)
+                val txs = viewModel.transaksiSesi(selesaiSummaryTv)
+                val tx = txs.firstOrNull()
+                    ?: state.transaksiList.filter { it.kota == selesaiSummaryTv.nama }.maxByOrNull { it.waktu }
+                if (tx != null) {
+                    viewModel.printReceipt(tx, selesaiSummaryTv)
                 }
             },
         )
     }
 
-    val tvBayarValue = tvBayar
-    if (showKonfirmasiBayar && tvBayarValue != null) {
-        KonfirmasiBayarDialog(
-            tvNama = tvBayarValue.nama,
-            onSudahBayar = {
-                viewModel.updateTV(tvBayarValue.id, mapOf("sudahBayar" to true))
-                viewModel.setTransaksiSudahBayar(tvBayarValue.nama, true)
-                showKonfirmasiBayar = false; tvBayar = null
+    val pembayaranTvValue = pembayaranTV
+    if (showPembayaran && pembayaranTvValue != null) {
+        val currentTv = state.tvList.firstOrNull { it.id == pembayaranTvValue.id } ?: pembayaranTvValue
+        val txs = viewModel.transaksiSesi(currentTv).ifEmpty { pembayaranTransaksi }
+        PembayaranDialog(
+            tv = currentTv,
+            transaksi = txs,
+            onDismiss = { tutupPembayaran() },
+            onBayar = { ids, cash, kembalian, metode ->
+                viewModel.settlePembayaran(
+                    tvId = currentTv.id,
+                    transactionIds = ids,
+                    lunas = true,
+                    metode = metode,
+                    cash = cash,
+                    kembalian = kembalian,
+                )
+                if (pembayaranMode == "FINAL") viewModel.finishSession(currentTv.id)
+                tutupPembayaran()
             },
-            onBelumBayar = {
-                viewModel.updateTV(tvBayarValue.id, mapOf("sudahBayar" to false))
-                viewModel.setTransaksiSudahBayar(tvBayarValue.nama, false)
-                showKonfirmasiBayar = false; tvBayar = null
+            onTagihan = { ids ->
+                viewModel.settlePembayaran(
+                    tvId = currentTv.id,
+                    transactionIds = ids,
+                    lunas = false,
+                )
+                if (pembayaranMode == "FINAL") viewModel.finishSession(currentTv.id)
+                tutupPembayaran()
             },
         )
     }
@@ -482,21 +570,17 @@ fun DashboardScreen(
             tvViewModel = tvViewModel,
             autoPowerSent = alreadyPoweredOff,
             onDismiss = {
+                viewModel.finishSession(tvHabisValue.id)
                 viewModel.dismissWaktuHabis(tvHabisValue.id)
                 showHabisDialog = false; tvHabis = null
             },
-                onSudahBayar = {
-                    viewModel.updateTV(tvHabisValue.id, mapOf(
-                        "sudahBayar" to true,
-                        "paketAktif" to "",
-                        "timerActive" to false,
-                        "bebas" to false,
-                        "sisaDetik" to 0L,
-                    ))
-                    viewModel.setTransaksiSudahBayar(tvHabisValue.nama, true)
-                    viewModel.dismissWaktuHabis(tvHabisValue.id)
-                    showHabisDialog = false; tvHabis = null
-                },
+            onSudahBayar = {
+                viewModel.dismissWaktuHabis(tvHabisValue.id)
+                viewModel.finishSession(tvHabisValue.id)
+                showHabisDialog = false; tvHabis = null
+                val updated = viewModel.state.value.tvList.firstOrNull { it.id == tvHabisValue.id }
+                if (updated != null) bukaPembayaran(updated, "IDLE")
+            },
         )
     }
 
@@ -553,17 +637,21 @@ fun DashboardScreen(
             confirmButton = {
                 Button(onClick = {
                     val newSisa = if (selectedPaket == "Main Bebas") 0L else tvData.sisaDetik + tambahDetik
+                    val now = System.currentTimeMillis()
                     val updates = mutableMapOf<String, Any>(
                         "paketAktif" to "${tvData.paketAktif}+$selectedPaket",
-                        "totalPesanan" to (tvData.totalPesanan + tambahHarga),
+                        "paketHarga" to (tvData.paketHarga + tambahHarga),
                         "sisaDetik" to newSisa,
                         "timerActive" to (newSisa > 0),
-                        "timerStart" to System.currentTimeMillis(),
+                        "timerStart" to now,
                         "timerDurasi" to newSisa,
+                        "paketSudahBayar" to false,
+                        "sudahBayar" to false,
                     )
                     viewModel.updateTV(tvData.id, updates)
                     viewModel.tambahTransaksi(Transaksi(
-                        waktu = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).format(java.util.Date()),
+                        id = "TRX-$now-ADD",
+                        waktu = TimeUtils.nowUtcIso(),
                         kasir = state.currentUser,
                         kota = tvData.nama,
                         paket = "Tambah Waktu: $selectedPaket",
@@ -571,9 +659,15 @@ fun DashboardScreen(
                         total = tambahHarga,
                         paketHarga = tambahHarga,
                         tvJenisPs = tvData.jenisPs,
-                        sudahBayar = tvData.sudahBayar,
+                        sudahBayar = false,
+                        tvId = tvData.id,
+                        kategori = "PAKET",
+                        jumlah = 1,
+                        sesiMulai = tvData.sesiMulai,
                     ))
+                    val updated = viewModel.state.value.tvList.firstOrNull { it.id == tvData.id }
                     showTambahWaktu = false; tambahWaktuTV = null
+                    if (updated != null && tambahHarga > 0) bukaPembayaran(updated, "IDLE")
                 }, colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground)) { Text("Tambah Rp$tambahHarga") }
             },
             dismissButton = { TextButton(onClick = { showTambahWaktu = false; tambahWaktuTV = null }) { Text("Batal", color = TextSecondary) } },
@@ -606,8 +700,10 @@ fun DashboardScreen(
                 Button(onClick = {
                     val lastTx = state.transaksiList.filter { it.kota == tvData.nama }.maxByOrNull { it.waktu }
                     if (lastTx != null) {
+                        val now = System.currentTimeMillis()
                         viewModel.tambahTransaksi(Transaksi(
-                            waktu = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).format(java.util.Date()),
+                            id = "TRX-$now-BATAL",
+                            waktu = TimeUtils.nowUtcIso(),
                             kasir = state.currentUser,
                             kota = tvData.nama,
                             paket = "BATAL: ${lastTx.paket}",
@@ -615,7 +711,11 @@ fun DashboardScreen(
                             total = -lastTx.total,
                             paketHarga = -lastTx.paketHarga,
                             tvJenisPs = tvData.jenisPs,
-                            sudahBayar = false,
+                            sudahBayar = true,
+                            metode = "BATAL",
+                            tvId = tvData.id,
+                            kategori = "BATAL",
+                            sesiMulai = tvData.sesiMulai,
                         ))
                         val isPaket = lastTx.paket != "Pesanan Tambahan"
                         if (isPaket) {
@@ -651,33 +751,92 @@ fun DashboardScreen(
             currentUser = state.currentUser,
             onDismiss = { showPaket = false; selectedTV = null },
             onConfirm = { paketNm, paketHarga, pesanan, total, durasi, updates ->
-                if (paketNm == null && updates != null) {
-                    viewModel.updateTV(selectedTvPaket.id, updates)
-                } else if (paketNm != null) {
-                    viewModel.updateTV(selectedTvPaket.id, updates ?: emptyMap())
+                val now = System.currentTimeMillis()
+                val txStamp = now.toString()
+                val wasActive = selectedTvPaket.timerActive || selectedTvPaket.bebas
+                val sesiMulai = when {
+                    selectedTvPaket.sesiMulai > 0L -> selectedTvPaket.sesiMulai
+                    wasActive -> 0L
+                    else -> now
                 }
-                val pesananHarga = pesanan.entries.associate { (name, qty) ->
-                    val unitPrice = state.menuMakanan[name] ?: state.menuMinuman[name] ?: 0
-                    name to (unitPrice * qty)
+                val unitPrices = pesanan.entries.associate { (name, _) ->
+                    name to (state.menuMakanan[name] ?: state.menuMinuman[name] ?: 0)
                 }
-                viewModel.tambahTransaksi(Transaksi(
-                    waktu = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).format(java.util.Date()),
-                    kasir = state.currentUser,
-                    kota = selectedTvPaket.nama,
-                    paket = paketNm ?: "Pesanan Tambahan",
-                    pesanan = pesanan,
-                    total = total,
-                    paketHarga = if (paketNm != null) paketHarga else 0,
-                    pesananHarga = pesananHarga,
-                    tvJenisPs = selectedTvPaket.jenisPs,
-                    sudahBayar = if (paketNm == "Main Bebas") true else selectedTvPaket.sudahBayar,
-                ))
-if (paketNm != null && paketNm != "Main Bebas") {
-                    tvBayar = selectedTV
-                    bayarUpdates = updates
-                    showKonfirmasiBayar = true
+                val fnbTotal = pesanan.entries.sumOf { (name, qty) -> (unitPrices[name] ?: 0) * qty }
+                val isBebas = paketNm == "Main Bebas"
+                val isNewSession = paketNm != null && !wasActive
+                val paketTxId = "TRX-$txStamp-P"
+                val fnbTxId = "TRX-$txStamp-F"
+                val finalUpdates = (updates ?: emptyMap()).toMutableMap()
+                finalUpdates["tvId"] = selectedTvPaket.id
+                finalUpdates["sesiMulai"] = sesiMulai
+                if (isNewSession) {
+                    finalUpdates["sesiSelesai"] = 0L
+                    finalUpdates["sesiPaused"] = false
+                    finalUpdates["bebasTertundaMs"] = 0L
+                    finalUpdates["cashDiterima"] = 0
+                    finalUpdates["kembalian"] = 0
+                }
+                if (paketNm != null) {
+                    finalUpdates["trxId"] = if (isBebas) "" else paketTxId
+                    finalUpdates["paketSudahBayar"] = isBebas
+                    finalUpdates["fnbSudahBayar"] = fnbTotal == 0
+                    finalUpdates["sudahBayar"] = isBebas && fnbTotal == 0
+                    if (isBebas) finalUpdates["paketHarga"] = 0
+                } else {
+                    if (!wasActive) {
+                        finalUpdates["sesiSelesai"] = now
+                        finalUpdates["trxId"] = ""
+                    }
+                    finalUpdates["fnbSudahBayar"] = false
+                    finalUpdates["sudahBayar"] = false
+                }
+                viewModel.updateTV(selectedTvPaket.id, finalUpdates)
+
+                if (paketNm != null && !isBebas) {
+                    viewModel.tambahTransaksi(Transaksi(
+                        id = paketTxId,
+                        waktu = TimeUtils.nowUtcIso(),
+                        kasir = state.currentUser,
+                        kota = selectedTvPaket.nama,
+                        paket = paketNm,
+                        pesanan = emptyMap(),
+                        total = paketHarga,
+                        paketHarga = paketHarga,
+                        pesananHarga = emptyMap(),
+                        tvJenisPs = selectedTvPaket.jenisPs,
+                        sudahBayar = isBebas,
+                        metode = if (isBebas) "Bebas" else "",
+                        tvId = selectedTvPaket.id,
+                        kategori = "PAKET",
+                        jumlah = 1,
+                        sesiMulai = sesiMulai,
+                    ))
+                }
+                if (pesanan.isNotEmpty() && fnbTotal > 0) {
+                    viewModel.tambahTransaksi(Transaksi(
+                        id = fnbTxId,
+                        waktu = TimeUtils.nowUtcIso(),
+                        kasir = state.currentUser,
+                        kota = selectedTvPaket.nama,
+                        paket = "F&B",
+                        pesanan = pesanan,
+                        total = fnbTotal,
+                        paketHarga = 0,
+                        pesananHarga = unitPrices,
+                        tvJenisPs = selectedTvPaket.jenisPs,
+                        sudahBayar = false,
+                        tvId = selectedTvPaket.id,
+                        kategori = "FNB",
+                        jumlah = 1,
+                        sesiMulai = sesiMulai,
+                    ))
                 }
                 showPaket = false; selectedTV = null
+                if (paketNm != null || fnbTotal > 0) {
+                    val updated = viewModel.state.value.tvList.firstOrNull { it.id == selectedTvPaket.id }
+                    if (updated != null) bukaPembayaran(updated, "IDLE")
+                }
             },
         )
     }
@@ -952,6 +1111,11 @@ fun TVCard(
     onBatal: () -> Unit = {},
     onInstallClient: () -> Unit = {},
     onSudahBayar: () -> Unit = {},
+    onTagihan: () -> Unit = {},
+    onDetail: () -> Unit = {},
+    onResume: () -> Unit = {},
+    tagihanSesi: Int = 0,
+    totalSesi: Int = 0,
     forceDisabled: Boolean = false,
 ) {
     val alpha = if (forceDisabled) 0.38f else 1f
@@ -966,7 +1130,11 @@ fun TVCard(
     var showEditHarga by remember { mutableStateOf(false) }
     var editHargaValue by remember { mutableStateOf("") }
 
-    val sisaWaktu = if (tv.timerActive && !tv.bebas) {
+    val sisaWaktu = if (tv.sesiPaused && tv.sisaDetik > 0) {
+        val m = tv.sisaDetik / 60
+        val d = tv.sisaDetik % 60
+        "${m}m ${d}d (dijeda)"
+    } else if (tv.timerActive && !tv.bebas) {
         val m = tv.sisaDetik / 60
         val d = tv.sisaDetik % 60
         "${m}m ${d}d"
@@ -978,6 +1146,8 @@ fun TVCard(
     } else ""
     val isHabis = tv.paketAktif == "WAKTU HABIS" || tv.paketAktif == "SELESAI"
     val isAlmostHabis = tv.timerActive && !tv.bebas && tv.sisaDetik in 1..60
+    val isPaused = tv.sesiPaused
+    val adaTagihan = tv.adaTagihan
 
     val blinkAlpha by if (isAlmostHabis) {
         val infiniteTransition = rememberInfiniteTransition(label = "blink")
@@ -992,18 +1162,21 @@ fun TVCard(
         )
     } else remember { mutableStateOf(1f) }
 
-    val isTersedia = !tv.timerActive && !tv.bebas && !isHabis && !isAlmostHabis
+    val isTersedia = !tv.timerActive && !tv.bebas && !isHabis && !isAlmostHabis && !isPaused && !adaTagihan
     val cardBg = when {
-        isHabis -> Color(0xFFEF4444)                                 // Merah
-        isAlmostHabis -> Color(0xFFF59E0B).copy(alpha = blinkAlpha)  // Oranye blink
-        tv.timerActive || tv.bebas -> Color(0xFF3498DB)              // Biru Electric
-        else -> Color.White                                           // Putih untuk Tersedia
+        isHabis -> Color(0xFFEF4444)
+        isAlmostHabis -> Color(0xFFF59E0B).copy(alpha = blinkAlpha)
+        isPaused -> Color(0xFF6B7280)
+        tv.timerActive || tv.bebas -> Color(0xFF3498DB)
+        adaTagihan -> Color(0xFFB45309)
+        else -> Color.White
     }
     val gradientShape = RoundedCornerShape(20.dp)
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .alpha(alpha)
+            .clickable(enabled = !forceDisabled) { onDetail() }
             .then(
                 if (tv.timerActive || tv.bebas || isHabis)
                     Modifier.border(
@@ -1053,6 +1226,11 @@ fun TVCard(
                 }
             }
 
+            if (isPaused) {
+                Spacer(Modifier.height(8.dp))
+                Text("DIJEDA", style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White, fontWeight = FontWeight.Bold)
+            }
             if (tv.paketAktif.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
                 if (!isHabis && sisaWaktu.isNotEmpty()) {
@@ -1066,25 +1244,64 @@ fun TVCard(
                 Spacer(Modifier.height(8.dp))
                 Text("TERSEDIA", style = MaterialTheme.typography.bodyMedium,
                     color = Color(0xFF1A1A1A), fontWeight = FontWeight.Bold)
-                if (!isHabis && tv.bebas) {
-                    val elapsedMs = bebasTick - tv.bebasMulai
-                    val runningTotal = ((elapsedMs * tv.bebasHargaPerJam) / 3600000).toInt() + tv.bebasPesananTotal
-                    Spacer(Modifier.height(2.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Biaya: ${fmtRp(runningTotal)} (${fmtRp(tv.bebasHargaPerJam)}/jam)",
-                            style = MaterialTheme.typography.bodySmall, color = NeonGreen,
-                            modifier = Modifier.weight(1f))
-                        IconButton(
-                            onClick = { showEditHarga = true; editHargaValue = tv.bebasHargaPerJam.toString() },
-                            modifier = Modifier.size(18.dp),
-                        ) { Icon(Icons.Filled.Edit, contentDescription = "Ubah harga", tint = NeonYellow, modifier = Modifier.size(14.dp)) }
+            }
+            if (tv.bebas) {
+                val elapsedMs = bebasTick - tv.bebasMulai
+                val runningTotal = ((elapsedMs * tv.bebasHargaPerJam) / 3600000).toInt() + tv.bebasPesananTotal
+                Spacer(Modifier.height(2.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Biaya: ${fmtRp(runningTotal)} (${fmtRp(tv.bebasHargaPerJam)}/jam)",
+                        style = MaterialTheme.typography.bodySmall, color = NeonGreen,
+                        modifier = Modifier.weight(1f))
+                    IconButton(
+                        onClick = { showEditHarga = true; editHargaValue = tv.bebasHargaPerJam.toString() },
+                        modifier = Modifier.size(18.dp),
+                    ) { Icon(Icons.Filled.Edit, contentDescription = "Ubah harga", tint = NeonYellow, modifier = Modifier.size(14.dp)) }
+                }
+            }
+            val hasSession = tv.sesiMulai > 0L || tv.timerActive || tv.bebas || tv.sesiPaused || tv.sesiSelesai > 0L
+            val tagihan = if (tagihanSesi > 0) tagihanSesi else tv.totalBelanja
+            val totalSesiTampil = maxOf(totalSesi, tv.totalBelanja)
+            val lunasSesi = tagihan <= 0 && totalSesiTampil > 0
+            if (hasSession && totalSesiTampil > 0) {
+                Spacer(Modifier.height(4.dp))
+                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                    Text(
+                        if (lunasSesi) "LUNAS" else "TAGIHAN",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (lunasSesi) NeonGreen else NeonYellow,
+                    )
+                    Text(
+                        fmtRp(if (lunasSesi) totalSesiTampil else tagihan),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (lunasSesi) NeonGreen else Color.White,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                if (tagihan > 0 && !tv.timerActive && !tv.bebas && !isPaused) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(
+                            onClick = { if (!forceDisabled) onSudahBayar() },
+                            enabled = !forceDisabled,
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                        ) {
+                            Text("Lunas", style = MaterialTheme.typography.labelSmall, color = NeonGreen)
+                        }
+                        TextButton(
+                            onClick = { if (!forceDisabled) onTagihan() },
+                            enabled = !forceDisabled,
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                        ) {
+                            Text("Tagihan", style = MaterialTheme.typography.labelSmall, color = NeonYellow)
+                        }
                     }
                 }
-                if (!isHabis && !tv.bebas) {
-                    val totalBelanja = tv.paketHarga + tv.totalPesanan
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(fmtRp(totalBelanja), style = MaterialTheme.typography.bodyMedium, color = NeonGreen, fontWeight = FontWeight.Bold)
-                    }
+            }
+            if (tv.cashDiterima > 0 || tv.kembalian > 0) {
+                Spacer(Modifier.height(2.dp))
+                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                    Text("Tunai ${fmtRp(tv.cashDiterima)}", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    Text("Kembali ${fmtRp(tv.kembalian)}", style = MaterialTheme.typography.bodySmall, color = NeonYellow, fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -1107,7 +1324,12 @@ fun TVCard(
                     shape = RoundedCornerShape(6.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                ) { Text(if (tv.timerActive || tv.bebas) "Pesanan" else "Paket", style = MaterialTheme.typography.labelSmall) }
+                ) { Text(
+                    if (adaTagihan && !tv.timerActive && !tv.bebas && !isPaused) "Bayar"
+                    else if (tv.timerActive || tv.bebas) "Pesanan"
+                    else "Paket",
+                    style = MaterialTheme.typography.labelSmall,
+                ) }
                 if (tv.paired) {
                     OutlinedButton(
                         onClick = { if (!forceDisabled) onVolDown() },
@@ -1135,6 +1357,16 @@ fun TVCard(
                         border = BorderStroke(1.dp, NeonYellow),
                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
                     ) { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(12.dp)); Spacer(Modifier.width(2.dp)); Text("Waktu", style = MaterialTheme.typography.labelSmall) }
+                }
+                if (isPaused) {
+                    OutlinedButton(
+                        onClick = { if (!forceDisabled) onResume() },
+                        enabled = !forceDisabled,
+                        shape = RoundedCornerShape(6.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
+                        border = BorderStroke(1.dp, NeonGreen),
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                    ) { Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(12.dp)); Spacer(Modifier.width(2.dp)); Text("Lanjut", style = MaterialTheme.typography.labelSmall) }
                 }
                 if (tv.cancelBatas > 0 && System.currentTimeMillis() < tv.cancelBatas) {
                     OutlinedButton(
@@ -1194,7 +1426,7 @@ fun TVCard(
                             contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
                         ) { Icon(Icons.Filled.Android, contentDescription = null, modifier = Modifier.size(12.dp)); Spacer(Modifier.width(2.dp)); Text("Install Client", style = MaterialTheme.typography.labelSmall) }
                     }
-                    if (tv.timerActive || tv.bebas) {
+                    if (tv.timerActive || tv.bebas || isPaused) {
                         OutlinedButton(
                             onClick = { if (!forceDisabled) onSelesai() },
                             enabled = !forceDisabled,
@@ -1209,7 +1441,7 @@ fun TVCard(
                         Spacer(Modifier.width(2.dp))
                         Text("Pindah", style = MaterialTheme.typography.labelSmall, color = if (forceDisabled) TextDim else NeonCyan)
                     }
-                    if (tv.timerActive) {
+                    if (tv.timerActive || tv.bebas || isPaused || adaTagihan) {
                         TextButton(onClick = { if (!forceDisabled) onSudahBayar() }, enabled = !forceDisabled, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) {
                             Icon(Icons.Filled.Payments, contentDescription = null, modifier = Modifier.size(12.dp), tint = if (forceDisabled) TextDim else NeonGreen)
                             Spacer(Modifier.width(2.dp))
@@ -1453,8 +1685,8 @@ fun ModalPaket(
                         // total hanya makanan+minuman (hargaPaket=0)
                         onConfirm(null, 0, pesananBaru, total, null,
                             mapOf(
-                                "totalPesanan" to (tv.totalPesanan + total),
-                                "bebasPesananTotal" to (tv.bebasPesananTotal + total),
+                                "totalPesanan" to if (tv.bebas) tv.totalPesanan else (tv.totalPesanan + total),
+                                "bebasPesananTotal" to if (tv.bebas) (tv.bebasPesananTotal + total) else tv.bebasPesananTotal,
                                 "cancelBatas" to (System.currentTimeMillis() + 600_000),
                             ))
                     } else {
@@ -1581,24 +1813,157 @@ fun PairingDialog(
 }
 
 @Composable
+fun DetailSesiDialog(
+    tv: TvData,
+    transaksi: List<Transaksi>,
+    onDismiss: () -> Unit,
+    onBayar: () -> Unit,
+) {
+    val txAktif = transaksi.filter { it.paket != "BATAL" }
+    val paketTxs = txAktif.filter { it.isPaketTx() }
+    val fnbTxs = txAktif.filter {
+        it.isFnbTx() || (it.isPaketTx() && it.kategori.isBlank() && it.pesanan.isNotEmpty())
+    }
+    val paketGroup = paketTxs.groupBy { it.namaPaketBersih().ifBlank { it.paket } }
+    val fnbItems = mutableMapOf<String, Pair<Int, Int>>()
+    fnbTxs.forEach { tx ->
+        tx.pesanan.forEach { (name, qty) ->
+            val unit = tx.pesananHarga[name] ?: 0
+            val old = fnbItems[name]
+            fnbItems[name] = ((old?.first ?: 0) + qty) to ((old?.second ?: 0) + unit * qty)
+        }
+    }
+    val paketTotal = paketTxs.sumOf { it.paketHarga }
+    val fnbTotal = fnbItems.values.sumOf { it.second }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = DarkSurface,
+        title = { Text(tv.nama, color = NeonGreen) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    when {
+                        tv.sesiPaused -> "DIJEDA"
+                        tv.timerActive || tv.bebas -> "BERJALAN"
+                        tv.adaTagihan -> "TAGIHAN"
+                        else -> "SELESAI"
+                    },
+                    color = when {
+                        tv.sesiPaused -> NeonYellow
+                        tv.timerActive || tv.bebas -> NeonCyan
+                        tv.adaTagihan -> NeonRed
+                        else -> NeonGreen
+                    },
+                    fontWeight = FontWeight.Bold,
+                )
+                if (paketGroup.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("PAKET", color = NeonCyan, style = MaterialTheme.typography.labelLarge)
+                    paketGroup.forEach { (nama, items) ->
+                        val lunas = items.all { it.sudahBayar }
+                        Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                            Text("$nama x ${items.size}", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                "${fmtRp(items.sumOf { it.paketHarga })} ${if (lunas) "LUNAS" else "TAGIHAN"}",
+                                color = if (lunas) NeonGreen else NeonRed,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                }
+                if (fnbItems.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("F&B", color = NeonCyan, style = MaterialTheme.typography.labelLarge)
+                    fnbItems.forEach { (name, pair) ->
+                        Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                            Text("${pair.first}x $name", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
+                            Text(fmtRp(pair.second), color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    Text(
+                        if (tv.fnbSudahBayar) "F&B LUNAS" else "F&B TAGIHAN",
+                        color = if (tv.fnbSudahBayar) NeonGreen else NeonRed,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                HorizontalDivider(color = DarkSurfaceV3)
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                    Text("Total", color = TextPrimary, fontWeight = FontWeight.Bold)
+                    Text(fmtRp(paketTotal + fnbTotal), color = NeonGreen, fontWeight = FontWeight.Bold)
+                }
+                if (tv.paketSudahBayar) Text("Paket: LUNAS", color = NeonGreen, style = MaterialTheme.typography.bodySmall)
+                if (tv.fnbSudahBayar && (fnbTotal > 0 || tv.totalFnb > 0)) {
+                    Text("F&B: LUNAS", color = NeonGreen, style = MaterialTheme.typography.bodySmall)
+                }
+                if (tv.cashDiterima > 0) {
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                        Text("Tunai", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                        Text(fmtRp(tv.cashDiterima), color = TextPrimary, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                        Text("Kembali", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                        Text(fmtRp(tv.kembalian), color = NeonYellow, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (tv.adaTagihan) {
+                Button(
+                    onClick = onBayar,
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
+                ) { Text("Bayar") }
+            } else {
+                Button(
+                    onClick = onDismiss,
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
+                ) { Text("Tutup") }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Tutup", color = TextSecondary) }
+        },
+    )
+}
+
+@Composable
 fun SelesaiSummaryDialog(
     tv: TvData,
     onBatal: () -> Unit,
     onSelesai: () -> Unit,
+    onBayar: () -> Unit = {},
     onPrint: (() -> Unit)? = null,
 ) {
-    val totalBiaya = if (tv.bebas) {
-        val elapsedMs = System.currentTimeMillis() - tv.bebasMulai
-        ((elapsedMs * tv.bebasHargaPerJam) / 3600000).toInt() + tv.bebasPesananTotal
-    } else {
-        tv.paketHarga + tv.totalPesanan
+    val now = System.currentTimeMillis()
+    val mulai = when {
+        tv.sesiMulai > 0L -> tv.sesiMulai
+        tv.bebas && tv.bebasMulai > 0L -> tv.bebasMulai
+        tv.timerStart > 0L -> tv.timerStart
+        else -> 0L
     }
-    val durasiText = if (tv.bebas) {
-        val menit = ((System.currentTimeMillis() - tv.bebasMulai) / 60000).toInt()
-        "${menit / 60}j ${menit % 60}m"
-    } else {
-        "${tv.sisaDetik / 60}m"
+    val selesai = if (tv.sesiSelesai > 0L) tv.sesiSelesai else now
+    val bebasSession = tv.bebas || (
+        tv.sesiPaused && (tv.bebasHargaPerJam > 0 || tv.paketAktif.contains("Bebas", ignoreCase = true))
+        )
+    val elapsedBebas = when {
+        tv.bebas && tv.bebasMulai > 0L -> (selesai - tv.bebasMulai).coerceAtLeast(0L) + tv.bebasTertundaMs
+        else -> tv.bebasTertundaMs.coerceAtLeast(0L)
     }
+    val totalBiaya = if (bebasSession) {
+        ((elapsedBebas * tv.bebasHargaPerJam) / 3600000).toInt() + tv.bebasPesananTotal
+    } else {
+        tv.paketHarga + tv.totalFnb
+    }
+    val totalMenit = if (bebasSession) {
+        (elapsedBebas / 60000).toInt()
+    } else if (mulai > 0L) {
+        ((selesai - mulai).coerceAtLeast(0L) / 60000).toInt()
+    } else 0
+    val durasiText = "${totalMenit / 60}j ${totalMenit % 60}m"
+    val fmtWaktu = remember { SimpleDateFormat("dd/MM HH:mm", Locale("id", "ID")) }
+    val perluBayar = tv.adaTagihan || (bebasSession && totalBiaya > 0)
 
     AlertDialog(
         onDismissRequest = onBatal,
@@ -1616,20 +1981,60 @@ fun SelesaiSummaryDialog(
                     Text("Durasi", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                     Text(durasiText, style = MaterialTheme.typography.bodySmall, color = NeonYellow)
                 }
-                if (tv.totalPesanan > 0 || tv.bebasPesananTotal > 0) {
+                if (mulai > 0L) {
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                        Text("Mulai", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                        Text(fmtWaktu.format(Date(mulai)), style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                    }
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                        Text("Selesai", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                        Text(fmtWaktu.format(Date(selesai)), style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                    }
+                }
+                if (tv.totalFnb > 0) {
                     Spacer(Modifier.height(4.dp))
-                    Text("Pesanan:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                    Text(fmtRp(tv.totalPesanan + tv.bebasPesananTotal), style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                        Text("Paket", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                        Text(
+                            "${fmtRp(tv.paketHarga)} ${if (tv.paketSudahBayar) "LUNAS" else "TAGIHAN"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (tv.paketSudahBayar) NeonGreen else NeonRed,
+                        )
+                    }
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                        Text("F&B", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                        Text(
+                            "${fmtRp(tv.totalFnb)} ${if (tv.fnbSudahBayar) "LUNAS" else "TAGIHAN"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (tv.fnbSudahBayar) NeonGreen else NeonRed,
+                        )
+                    }
+                } else if (tv.paketHarga > 0) {
+                    Text(
+                        if (tv.paketSudahBayar) "Paket LUNAS" else "Paket TAGIHAN",
+                        color = if (tv.paketSudahBayar) NeonGreen else NeonRed,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
                 Spacer(Modifier.height(12.dp))
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
                     Text("TOTAL", style = MaterialTheme.typography.titleMedium, color = NeonGreen)
                     Text(fmtRp(totalBiaya), style = MaterialTheme.typography.titleMedium, color = NeonGreen)
                 }
+                if (tv.cashDiterima > 0) {
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                        Text("Tunai", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                        Text(fmtRp(tv.cashDiterima), style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                    }
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                        Text("Kembali", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                        Text(fmtRp(tv.kembalian), style = MaterialTheme.typography.bodySmall, color = NeonYellow, fontWeight = FontWeight.Bold)
+                    }
+                }
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    if (tv.sudahBayar) "✓ Sudah Bayar" else "✗ Belum Bayar",
-                    color = if (tv.sudahBayar) NeonGreen else NeonRed,
+                    if (tv.semuaLunas && !perluBayar) "SUDAH BAYAR" else "BELUM BAYAR",
+                    color = if (tv.semuaLunas && !perluBayar) NeonGreen else NeonRed,
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.titleMedium,
                 )
@@ -1645,10 +2050,18 @@ fun SelesaiSummaryDialog(
                         border = BorderStroke(1.dp, NeonCyan),
                     ) { Icon(Icons.Filled.Print, contentDescription = null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Cetak") }
                 }
+                if (perluBayar) {
+                    OutlinedButton(
+                        onClick = onBayar,
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonGreen),
+                        border = BorderStroke(1.dp, NeonGreen),
+                    ) { Text("Bayar") }
+                }
                 Button(
                     onClick = onSelesai,
                     colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
-                ) { Text("OK, Selesai") }
+                ) { Text(if (perluBayar) "Tagihan" else "OK, Selesai") }
             }
         },
         dismissButton = {
@@ -1660,6 +2073,220 @@ fun SelesaiSummaryDialog(
             ) { Text("Batal") }
         },
     )
+}
+
+@Composable
+fun PembayaranDialog(
+    tv: TvData,
+    transaksi: List<Transaksi>,
+    onDismiss: () -> Unit,
+    onBayar: (ids: List<String>, cash: Int, kembalian: Int, metode: String) -> Unit,
+    onTagihan: (ids: List<String>) -> Unit,
+) {
+    val paketTxs = transaksi.filter { it.isPaketTx() && it.paket != "BATAL" }
+    val fnbTxs = transaksi.filter { it.isFnbTx() && it.paket != "BATAL" }
+    val adaFnbTerpisah = fnbTxs.isNotEmpty()
+    val legacyMerged = paketTxs.any { it.kategori.isBlank() && it.pesanan.isNotEmpty() }
+    val paketTotal = if (legacyMerged) {
+        tv.totalBelanja.coerceAtLeast(0)
+    } else if (paketTxs.isNotEmpty()) {
+        paketTxs.sumOf { it.paketHarga.coerceAtLeast(0) }
+    } else {
+        tv.paketHarga.coerceAtLeast(0)
+    }
+    val fnbTotal = if (fnbTxs.isNotEmpty()) {
+        fnbTxs.sumOf { it.total.coerceAtLeast(0) }
+    } else {
+        tv.totalFnb.coerceAtLeast(0)
+    }
+    val paketDue = if (legacyMerged) {
+        if (tv.adaTagihan) tv.totalBelanja.coerceAtLeast(0) else 0
+    } else if (paketTxs.isNotEmpty()) {
+        paketTxs.filter { !it.sudahBayar }.sumOf { it.paketHarga.coerceAtLeast(0) }
+    } else if (!tv.paketSudahBayar) {
+        tv.paketHarga.coerceAtLeast(0)
+    } else 0
+    val fnbDue = if (fnbTxs.isNotEmpty()) {
+        fnbTxs.filter { !it.sudahBayar }.sumOf { it.total.coerceAtLeast(0) }
+    } else if (!tv.fnbSudahBayar) {
+        tv.totalFnb.coerceAtLeast(0)
+    } else 0
+    var pilihPaket by remember(tv.id, tv.sesiMulai) { mutableStateOf(paketDue > 0) }
+    var pilihFnb by remember(tv.id, tv.sesiMulai, adaFnbTerpisah) {
+        mutableStateOf(fnbDue > 0 && adaFnbTerpisah)
+    }
+    var cashInput by remember(tv.id, tv.sesiMulai) { mutableStateOf("") }
+    var metode by remember(tv.id, tv.sesiMulai) { mutableStateOf("Tunai") }
+
+    val paketIds = paketTxs.filter { !it.sudahBayar }.map { it.id }
+        .ifEmpty { listOfNotNull(tv.trxId.takeIf { it.isNotBlank() && paketDue > 0 }) }
+    val fnbIds = fnbTxs.filter { !it.sudahBayar }.map { it.id }
+    val totalDipilih =
+        (if (pilihPaket) paketDue else 0) +
+            (if (pilihFnb) fnbDue else 0)
+    val idsDipilih = buildList {
+        if (pilihPaket) addAll(paketIds)
+        if (pilihFnb) addAll(fnbIds)
+    }
+    val cash = if (metode == "Tunai") {
+        cashInput.filter { it.isDigit() }.toIntOrNull() ?: 0
+    } else {
+        totalDipilih
+    }
+    val kembali = if (metode == "Tunai") (cash - totalDipilih).coerceAtLeast(0) else 0
+    val labelBayar = when {
+        pilihPaket && pilihFnb -> "Lunas Semua"
+        pilihFnb -> "Lunas F&B"
+        else -> "Lunas Paket"
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = DarkSurface,
+        title = { Text("PEMBAYARAN", color = NeonGreen) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(tv.nama, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+                Spacer(Modifier.height(10.dp))
+                if (paketTotal > 0) {
+                    PembayaranRow(
+                        label = if (adaFnbTerpisah) "Paket" else "Paket + Pesanan",
+                        nominal = if (paketDue > 0) paketDue else paketTotal,
+                        lunas = paketDue <= 0,
+                        checked = pilihPaket,
+                        enabled = paketDue > 0,
+                        onChecked = { pilihPaket = it },
+                    )
+                }
+                if (fnbTotal > 0 && adaFnbTerpisah) {
+                    PembayaranRow(
+                        label = "Makanan / Minuman",
+                        nominal = if (fnbDue > 0) fnbDue else fnbTotal,
+                        lunas = fnbDue <= 0,
+                        checked = pilihFnb,
+                        enabled = fnbDue > 0,
+                        onChecked = { pilihFnb = it },
+                    )
+                } else if (fnbTotal > 0 && !legacyMerged) {
+                    Text(
+                        "Pesanan ${fmtRp(fnbTotal)} ikut status paket.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextDim,
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                HorizontalDivider(color = DarkSurfaceV3)
+                Spacer(Modifier.height(8.dp))
+                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                    Text("Harus dibayar", color = TextSecondary)
+                    Text(fmtRp(totalDipilih), color = NeonGreen, fontWeight = FontWeight.Bold)
+                }
+                if (paketDue > 0 && !pilihPaket) {
+                    Text("Paket tidak dipilih (tagihan).", color = NeonYellow, style = MaterialTheme.typography.bodySmall)
+                }
+                if (fnbDue > 0 && !pilihFnb && adaFnbTerpisah) {
+                    Text("F&B tidak dipilih (tagihan).", color = NeonYellow, style = MaterialTheme.typography.bodySmall)
+                }
+                Spacer(Modifier.height(10.dp))
+                Text("Metode bayar", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("Tunai", "QRIS", "Transfer").forEach { m ->
+                        FilterChip(
+                            selected = metode == m,
+                            onClick = { metode = m },
+                            label = { Text(m, style = MaterialTheme.typography.labelSmall) },
+                        )
+                    }
+                }
+                if (metode == "Tunai") {
+                    OutlinedTextField(
+                        value = cashInput,
+                        onValueChange = { cashInput = it.filter { c -> c.isDigit() }.take(12) },
+                        label = { Text("Uang tunai") },
+                        leadingIcon = { Text("Rp", color = TextSecondary) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = fieldColors(),
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(totalDipilih, 50000, 100000).distinct().forEach { nominal ->
+                            AssistChip(
+                                onClick = { cashInput = nominal.toString() },
+                                label = { Text(if (nominal == totalDipilih) "Uang Pas" else fmtRp(nominal), fontSize = 11.sp) },
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                        Text("Kembalian", color = TextSecondary)
+                        Text(fmtRp(kembali), color = if (cash >= totalDipilih) NeonYellow else TextDim, fontWeight = FontWeight.Bold)
+                    }
+                } else {
+                    Text(
+                        "Pembayaran $metode sebesar ${fmtRp(totalDipilih)}.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = NeonCyan,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val cashDibayar = if (metode == "Tunai") cash else 0
+                    val kembaliDibayar = if (metode == "Tunai") kembali else 0
+                    onBayar(idsDipilih, cashDibayar, kembaliDibayar, metode)
+                },
+                enabled = idsDipilih.isNotEmpty() && totalDipilih > 0 &&
+                    (metode != "Tunai" || cash >= totalDipilih),
+                colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
+            ) { Text(labelBayar) }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                TextButton(
+                    onClick = { onTagihan(idsDipilih) },
+                    enabled = idsDipilih.isNotEmpty(),
+                ) { Text("Tagihan", color = NeonYellow) }
+                TextButton(onClick = onDismiss) { Text("Batal", color = TextSecondary) }
+            }
+        },
+    )
+}
+
+@Composable
+private fun PembayaranRow(
+    label: String,
+    nominal: Int,
+    lunas: Boolean,
+    checked: Boolean,
+    enabled: Boolean,
+    onChecked: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(
+            checked = if (lunas) true else checked,
+            onCheckedChange = { if (enabled) onChecked(it) },
+            enabled = enabled,
+            colors = CheckboxDefaults.colors(checkedColor = NeonGreen, uncheckedColor = NeonYellow),
+        )
+        Column(Modifier.weight(1f)) {
+            Text(label, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
+            Text(fmtRp(nominal), color = NeonGreen, style = MaterialTheme.typography.bodySmall)
+        }
+        Text(
+            if (lunas) "LUNAS" else "TAGIHAN",
+            color = if (lunas) NeonGreen else NeonRed,
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.labelSmall,
+        )
+    }
 }
 
 @Composable
@@ -1700,9 +2327,6 @@ fun HabisDialog(
     onDismiss: () -> Unit,
     onSudahBayar: () -> Unit,
 ) {
-    var sudahDibayar by remember { mutableStateOf(false) }
-    var showWarning by remember { mutableStateOf(false) }
-
     fun sendPowerOff() {
         if (!autoPowerSent && tv.certPem.isNotEmpty() && tv.keyPem.isNotEmpty()) {
             tvViewModel.sendPower(tv.ip, tv.certPem, tv.keyPem, false)
@@ -1710,13 +2334,8 @@ fun HabisDialog(
     }
 
     Dialog(onDismissRequest = {
-        if (!sudahDibayar) {
-            showWarning = true
-        } else {
-            sendPowerOff()
-            onSudahBayar()
-            onDismiss()
-        }
+        sendPowerOff()
+        onDismiss()
     }) {
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -1729,52 +2348,35 @@ fun HabisDialog(
                 Text(tv.nama, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
                 Text("Sesi selesai", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                 Spacer(Modifier.height(12.dp))
-
-                if (sudahDibayar) {
-                    Text("✓ Sudah Bayar", color = NeonGreen, fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.titleMedium)
-                } else {
-                    Text("✗ Belum Bayar", color = NeonRed, fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.titleMedium)
+                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                    Text("Total", color = TextSecondary)
+                    Text(fmtRp(tv.totalBelanja), color = NeonGreen, fontWeight = FontWeight.Bold)
                 }
-
+                Text(
+                    if (tv.paketSudahBayar && tv.fnbSudahBayar) "LUNAS"
+                    else "TAGIHAN: ${fmtRp(tv.totalBelanja)}",
+                    color = if (tv.adaTagihan) NeonRed else NeonGreen,
+                    fontWeight = FontWeight.Bold,
+                )
                 Spacer(Modifier.height(16.dp))
-
-                if (!sudahDibayar) {
-                    Button(
-                        onClick = {
-                            sudahDibayar = true
-                            showWarning = false
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
-                    ) { Text("Sudah Bayar") }
-                    Spacer(Modifier.height(8.dp))
-                }
-
                 Button(
                     onClick = {
-                        if (!sudahDibayar) {
-                            showWarning = true
-                        } else {
-                            sendPowerOff()
-                            onSudahBayar()
-                            onDismiss()
-                        }
+                        sendPowerOff()
+                        onSudahBayar()
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (sudahDibayar) NeonGreen else Color(0xFF555555),
-                        contentColor = if (sudahDibayar) DarkBackground else TextSecondary,
-                    ),
-                ) { Text(if (sudahDibayar) "OK" else "OK / Selesai") }
-
-                if (showWarning) {
-                    Spacer(Modifier.height(12.dp))
-                    Text("Belum Bayar! Klik Sudah Bayar terlebih dahulu.",
-                        color = NeonRed, fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.bodyMedium)
-                }
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
+                ) { Text(if (tv.adaTagihan) "Bayar Sekarang" else "OK") }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        sendPowerOff()
+                        onDismiss()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonYellow),
+                    border = BorderStroke(1.dp, NeonYellow),
+                ) { Text(if (tv.adaTagihan) "Nanti / Tagihan" else "Tutup") }
             }
         }
     }

@@ -6,6 +6,7 @@ import android.provider.Settings
 import android.util.Log
 import com.billingps.aptv.models.*
 import com.billingps.aptv.utils.ECDSAUtils
+import com.billingps.aptv.utils.TimeUtils
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
@@ -132,11 +133,10 @@ class CloudRepository(private val app: Application) {
         return firestore.collection("billingps_users").document(username)
             .addSnapshotListener { snap, error ->
                 if (error != null || snap == null || !snap.exists()) return@addSnapshotListener
+                if (snap.metadata.isFromCache) return@addSnapshotListener
                 val activeId = snap.getString("activeDeviceId").orEmpty()
-                val activeSession = snap.getString("activeSessionId").orEmpty()
                 val activeName = snap.getString("activeDeviceName").orEmpty()
-                val replaced = (activeSession.isNotBlank() && activeSession != sessionId) ||
-                    (activeId.isNotBlank() && activeId != deviceId)
+                val replaced = activeId.isNotBlank() && activeId != deviceId
                 if (replaced) {
                     onConflict(
                         DeviceConflict(
@@ -248,13 +248,23 @@ class CloudRepository(private val app: Application) {
                     "bebasDurasi" to tv.bebasDurasi,
                     "hdmiPort" to tv.hdmiPort,
                     "hdmiInputHint" to tv.hdmiInputHint,
+                    "hdmiCommand" to tv.hdmiCommand,
+                    "hdmiRemoteCommand" to tv.hdmiRemoteCommand,
+                    "sesiMulai" to tv.sesiMulai,
+                    "sesiSelesai" to tv.sesiSelesai,
+                    "sesiPaused" to tv.sesiPaused,
+                    "bebasTertundaMs" to tv.bebasTertundaMs,
+                    "paketSudahBayar" to tv.paketSudahBayar,
+                    "fnbSudahBayar" to tv.fnbSudahBayar,
+                    "cashDiterima" to tv.cashDiterima,
+                    "kembalian" to tv.kembalian,
                 )
             }
 
             val txs = state.transaksiList.map { t ->
                 mapOf(
                     "id" to t.id,
-                    "waktu" to t.waktu,
+                    "waktu" to TimeUtils.normalizeTransactionTime(t.id, t.waktu),
                     "kasir" to t.kasir,
                     "kota" to t.kota,
                     "paket" to t.paket,
@@ -265,11 +275,19 @@ class CloudRepository(private val app: Application) {
                     "tvJenisPs" to t.tvJenisPs,
                     "sudahBayar" to t.sudahBayar,
                     "metode" to t.metode,
+                    "tvId" to t.tvId,
+                    "kategori" to t.kategori,
+                    "jumlah" to t.jumlah,
+                    "sesiMulai" to t.sesiMulai,
+                    "sesiSelesai" to t.sesiSelesai,
+                    "cash" to t.cash,
+                    "kembalian" to t.kembalian,
                 )
             }
 
             val payload = mutableMapOf<String, Any>(
                 "lastSync" to System.currentTimeMillis(),
+                "trxTimeRepairV1" to true,
                 "deviceId" to deviceId,
                 "currentUser" to state.currentUser,
                 "tvList" to tvs,
@@ -315,6 +333,7 @@ class CloudRepository(private val app: Application) {
                 val doc = mapOf(
                     "username" to key,
                     "role" to u.role,
+                    "admin_utama" to u.adminUtama,
                     "email" to u.email,
                     "dibuat" to u.dibuat,
                     "namaRental" to u.namaRental,
@@ -357,11 +376,17 @@ class CloudRepository(private val app: Application) {
                         if (!snap.exists()) { Log.i("CloudRepo", "no document for user $username"); if (!cont.isCompleted) cont.resume(emptyList()) ; return@addOnSuccessListener }
                         try {
                             val raw = snap.get("transaksiList") as? List<*>
+                            val timeRepairDone = snap.getBoolean("trxTimeRepairV1") ?: false
                             val list = mutableListOf<Transaksi>()
                             raw?.forEach { item ->
                                 if (item is Map<*, *>) {
                                     val id = item["id"] as? String ?: ""
                                     val waktu = item["waktu"] as? String ?: ""
+                                    val normalizedWaktu = if (timeRepairDone) {
+                                        TimeUtils.normalizeTransactionTime(id, waktu)
+                                    } else {
+                                        TimeUtils.migrateLegacyLocalTransactionTime(id, waktu)
+                                    }
                                     val kasir = item["kasir"] as? String ?: ""
                                     val kota = item["kota"] as? String ?: ""
                                     val paket = item["paket"] as? String ?: ""
@@ -372,12 +397,19 @@ class CloudRepository(private val app: Application) {
                                     val pesananHarga = mutableMapOf<String, Int>()
                                     val ph = item["pesananHarga"] as? Map<*, *>
                                     ph?.forEach { (k, v) -> if (k is String && v is Number) pesananHarga[k] = v.toInt() }
-                                    list.add(Transaksi(id = id, waktu = waktu, kasir = kasir, kota = kota, paket = paket, pesanan = pesananMap, total = total,
+                                    list.add(Transaksi(id = id, waktu = normalizedWaktu, kasir = kasir, kota = kota, paket = paket, pesanan = pesananMap, total = total,
                                         paketHarga = (item["paketHarga"] as? Number)?.toInt() ?: 0,
                                         pesananHarga = pesananHarga,
                                         tvJenisPs = item["tvJenisPs"] as? String ?: "",
                                         sudahBayar = item["sudahBayar"] as? Boolean ?: false,
-                                        metode = item["metode"] as? String ?: ""))
+                                        metode = item["metode"] as? String ?: "",
+                                        tvId = item["tvId"] as? String ?: "",
+                                        kategori = item["kategori"] as? String ?: "",
+                                        jumlah = (item["jumlah"] as? Number)?.toInt() ?: 1,
+                                        sesiMulai = (item["sesiMulai"] as? Number)?.toLong() ?: 0L,
+                                        sesiSelesai = (item["sesiSelesai"] as? Number)?.toLong() ?: 0L,
+                                        cash = (item["cash"] as? Number)?.toInt() ?: 0,
+                                        kembalian = (item["kembalian"] as? Number)?.toInt() ?: 0))
                                 }
                             }
                             Log.i("CloudRepo", "fetchTransaksiForUser: got ${list.size} items for $username")
@@ -440,6 +472,18 @@ class CloudRepository(private val app: Application) {
                                     bebasDurasi = (item["bebasDurasi"] as? Number)?.toInt() ?: 30,
                                     hdmiPort = (item["hdmiPort"] as? Number)?.toInt() ?: 0,
                                     hdmiInputHint = item["hdmiInputHint"] as? String ?: "",
+                                    hdmiCommand = item["hdmiCommand"] as? String ?: "",
+                                    hdmiRemoteCommand = item["hdmiRemoteCommand"] as? String ?: "",
+                                    sesiMulai = (item["sesiMulai"] as? Number)?.toLong() ?: 0L,
+                                    sesiSelesai = (item["sesiSelesai"] as? Number)?.toLong() ?: 0L,
+                                    sesiPaused = item["sesiPaused"] as? Boolean ?: false,
+                                    bebasTertundaMs = (item["bebasTertundaMs"] as? Number)?.toLong() ?: 0L,
+                                    paketSudahBayar = item["paketSudahBayar"] as? Boolean
+                                        ?: (item["sudahBayar"] as? Boolean ?: false),
+                                    fnbSudahBayar = item["fnbSudahBayar"] as? Boolean
+                                        ?: (item["sudahBayar"] as? Boolean ?: false),
+                                    cashDiterima = (item["cashDiterima"] as? Number)?.toInt() ?: 0,
+                                    kembalian = (item["kembalian"] as? Number)?.toInt() ?: 0,
                                 ))
                             }
                         }
@@ -1249,9 +1293,11 @@ class CloudRepository(private val app: Application) {
                 val online = snap.getBoolean("clientOnline") ?: false
                 val version = snap.getString("clientVersion") ?: ""
                 val lastSeen = snap.getTimestamp("lastSeen")?.toDate()?.time ?: 0L
+                val hdmiTestId = snap.getString("hdmiTestId") ?: ""
+                val hdmiTestResult = snap.getString("hdmiTestResult") ?: ""
                 val allFields = snap.data?.keys?.joinToString(",") ?: "none"
                 Log.i("CloudRepo", "listenClientStatus: tvId=$tvId exists=$exists online=$online version=$version lastSeen=$lastSeen fields=[$allFields]")
-                onUpdate(ClientStatus(online, version, lastSeen))
+                onUpdate(ClientStatus(online, version, lastSeen, hdmiTestId, hdmiTestResult))
             }
     }
 
@@ -1338,6 +1384,23 @@ class CloudRepository(private val app: Application) {
             .set(
                 mapOf(
                     "hdmiPort" to hdmiPort.toLong(),
+                ),
+                com.google.firebase.firestore.SetOptions.merge(),
+            )
+    }
+
+    fun sendHdmiTest(username: String, tvId: String, testId: String, port: Int, command: String) {
+        if (username.isBlank() || tvId.isBlank() || testId.isBlank() || command.isBlank()) return
+        firestore
+            .collection("billingps_users").document(username)
+            .collection("tvCommands").document(tvId)
+            .set(
+                mapOf(
+                    "hdmiTestId" to testId,
+                    "hdmiTestPort" to port.toLong(),
+                    "hdmiTestCommand" to command,
+                    "hdmiTestResult" to "",
+                    "hdmiTestAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
                 ),
                 com.google.firebase.firestore.SetOptions.merge(),
             )

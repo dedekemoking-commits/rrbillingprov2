@@ -46,6 +46,7 @@ fun saveUsers(users: Map<String, UserData>) {
             put("passwordHash", v.passwordHash)
             put("salt", v.salt)
             put("role", v.role)
+            put("adminUtama", v.adminUtama)
             put("email", v.email)
             put("noHp", v.noHp)
             put("dibuat", v.dibuat)
@@ -83,6 +84,7 @@ fun loadUsers(): Map<String, UserData> {
             passwordHash = u.optString("passwordHash", ""),
             salt = u.optString("salt", ""),
             role = u.optString("role", "kasir"),
+            adminUtama = u.optString("adminUtama", u.optString("admin_utama", "")),
             email = u.optString("email", ""),
             noHp = u.optString("noHp", ""),
             dibuat = u.optString("dibuat", ""),
@@ -230,6 +232,16 @@ fun loadUsers(): Map<String, UserData> {
                 put("bebasDurasi", tv.bebasDurasi)
                 put("hdmiPort", tv.hdmiPort)
                 put("hdmiInputHint", tv.hdmiInputHint)
+                put("hdmiCommand", tv.hdmiCommand)
+                put("hdmiRemoteCommand", tv.hdmiRemoteCommand)
+                put("sesiMulai", tv.sesiMulai)
+                put("sesiSelesai", tv.sesiSelesai)
+                put("sesiPaused", tv.sesiPaused)
+                put("bebasTertundaMs", tv.bebasTertundaMs)
+                put("paketSudahBayar", tv.paketSudahBayar)
+                put("fnbSudahBayar", tv.fnbSudahBayar)
+                put("cashDiterima", tv.cashDiterima)
+                put("kembalian", tv.kembalian)
             })
         }
         prefs.edit().putString("tvList", arr.toString()).apply()
@@ -281,9 +293,47 @@ fun loadUsers(): Map<String, UserData> {
                 bebasDurasi = o.optInt("bebasDurasi", 30),
                 hdmiPort = o.optInt("hdmiPort", 0),
                 hdmiInputHint = o.optString("hdmiInputHint"),
+                hdmiCommand = o.optString("hdmiCommand"),
+                hdmiRemoteCommand = o.optString("hdmiRemoteCommand"),
+                sesiMulai = o.optLong("sesiMulai"),
+                sesiSelesai = o.optLong("sesiSelesai"),
+                sesiPaused = o.optBoolean("sesiPaused"),
+                bebasTertundaMs = o.optLong("bebasTertundaMs"),
+                paketSudahBayar = o.optBoolean("paketSudahBayar", o.optBoolean("sudahBayar")),
+                fnbSudahBayar = o.optBoolean("fnbSudahBayar", o.optBoolean("sudahBayar")),
+                cashDiterima = o.optInt("cashDiterima"),
+                kembalian = o.optInt("kembalian"),
             ))
         }
         return list
+    }
+
+    // ── Pengaturan Sholat ──────────────────────────────────
+    fun savePrayerConfig(config: PrayerConfig) {
+        prefs.edit()
+            .putBoolean("prayerEnabled", config.enabled)
+            .putString("prayerMessage", config.message)
+            .putInt("prayerDurationSec", config.durationSec)
+            .putString("prayerLatitude", config.latitude.toString())
+            .putString("prayerLongitude", config.longitude.toString())
+            .putBoolean("prayerLocationSet", config.locationSet)
+            .putString("prayerLocationLabel", config.locationLabel)
+            .apply()
+    }
+
+    fun loadPrayerConfig(): PrayerConfig {
+        val default = PrayerConfig()
+        val lat = prefs.getString("prayerLatitude", null)?.toDoubleOrNull() ?: default.latitude
+        val lon = prefs.getString("prayerLongitude", null)?.toDoubleOrNull() ?: default.longitude
+        return PrayerConfig(
+            enabled = prefs.getBoolean("prayerEnabled", default.enabled),
+            message = prefs.getString("prayerMessage", default.message) ?: default.message,
+            durationSec = prefs.getInt("prayerDurationSec", default.durationSec).coerceIn(3, 300),
+            latitude = lat,
+            longitude = lon,
+            locationSet = prefs.getBoolean("prayerLocationSet", false),
+            locationLabel = prefs.getString("prayerLocationLabel", "") ?: "",
+        )
     }
 
     // ── Transaksi ──────────────────────────────────────────
@@ -301,6 +351,19 @@ fun loadUsers(): Map<String, UserData> {
         prefs.edit().putBoolean("trxRepairV1", true).apply()
     }
 
+    fun backupBeforeTimeRepair() {
+        prefs.edit()
+            .putString("transaksiList_backup_time_v1", prefs.getString("transaksiList", "[]"))
+            .putLong("backup_time_v1_time", System.currentTimeMillis())
+            .commit()
+    }
+
+    fun isTimeRepairV1Done(): Boolean = prefs.getBoolean("trxTimeRepairV1", false)
+
+    fun markTimeRepairV1Done() {
+        prefs.edit().putBoolean("trxTimeRepairV1", true).apply()
+    }
+
     fun saveTransaksi(list: List<Transaksi>) {
         val arr = JSONArray()
         list.forEach { t ->
@@ -315,6 +378,13 @@ fun loadUsers(): Map<String, UserData> {
                 put("tvJenisPs", t.tvJenisPs)
                 put("sudahBayar", t.sudahBayar)
                 put("metode", t.metode)
+                put("tvId", t.tvId)
+                put("kategori", t.kategori)
+                put("jumlah", t.jumlah)
+                put("sesiMulai", t.sesiMulai)
+                put("sesiSelesai", t.sesiSelesai)
+                put("cash", t.cash)
+                put("kembalian", t.kembalian)
                 val pesananObj = JSONObject()
                 t.pesanan.forEach { (k, v) -> pesananObj.put(k, v) }
                 put("pesanan", pesananObj)
@@ -351,6 +421,13 @@ fun loadUsers(): Map<String, UserData> {
                 tvJenisPs = o.optString("tvJenisPs"),
                 sudahBayar = o.optBoolean("sudahBayar", false),
                 metode = o.optString("metode"),
+                tvId = o.optString("tvId"),
+                kategori = o.optString("kategori"),
+                jumlah = o.optInt("jumlah", 1).coerceAtLeast(1),
+                sesiMulai = o.optLong("sesiMulai"),
+                sesiSelesai = o.optLong("sesiSelesai"),
+                cash = o.optInt("cash"),
+                kembalian = o.optInt("kembalian"),
             ))
         }
         return list

@@ -1,6 +1,7 @@
 package com.billingps.aptv.utils
 
 import android.content.Context
+import android.net.wifi.WifiManager
 import android.util.Log
 import com.chaquo.python.Python
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +19,8 @@ class ClientApkManager(private val context: Context) {
     companion object {
         private const val CLIENT_APK_ASSET = "tv-client.apk"
     }
+
+    private val keyDir: String = File(context.filesDir, "adb").absolutePath
 
     /**
      * Extract the bundled TV client APK from assets to cache dir.
@@ -55,15 +58,15 @@ class ClientApkManager(private val context: Context) {
                 if (!Python.isStarted()) {
                     return@withContext AdbPairingResult(false, "Python tidak tersedia")
                 }
-                val result = Python.getInstance()
-                    .getModule("adb_installer")
-                    .callAttr("adb_direct_install", ip, port, apkPath)
+                val module = Python.getInstance().getModule("adb_installer")
+                module.callAttr("adb_set_key_dir", keyDir)
+                val result = module.callAttr("adb_direct_install", ip, port, apkPath)
 
                 val success = result.callAttr("get", "success")?.toBoolean() ?: false
                 val message = result.callAttr("get", "message")?.toString() ?: "Unknown"
 
                 if (message == "DEVICE_UNAUTHORIZED") {
-                    AdbPairingResult(false, "Perlu pairing terlebih dahulu", paired = false)
+                    AdbPairingResult(false, "TV belum mengizinkan ADB. Cek prompt di TV atau lakukan pairing.", paired = false)
                 } else if (message == "CONNECTION_TIMEOUT") {
                     AdbPairingResult(false, "Tidak dapat terhubung ke $ip:$port. Pastikan ADB Wireless Debugging aktif.", paired = false)
                 } else {
@@ -85,9 +88,9 @@ class ClientApkManager(private val context: Context) {
                 if (!Python.isStarted()) {
                     return@withContext AdbPairingResult(false, "Python tidak tersedia")
                 }
-                val result = Python.getInstance()
-                    .getModule("adb_installer")
-                    .callAttr("adb_pair", ip, pairingPort, pairingCode)
+                val module = Python.getInstance().getModule("adb_installer")
+                module.callAttr("adb_set_key_dir", keyDir)
+                val result = module.callAttr("adb_pair", ip, pairingPort, pairingCode)
 
                 val success = result.callAttr("get", "success")?.toBoolean() ?: false
                 val message = result.callAttr("get", "message")?.toString() ?: "Unknown"
@@ -111,9 +114,9 @@ class ClientApkManager(private val context: Context) {
                 if (!Python.isStarted()) {
                     return@withContext AdbPairingResult(false, "Python tidak tersedia")
                 }
-                val result = Python.getInstance()
-                    .getModule("adb_installer")
-                    .callAttr("adb_connect_and_install", ip, connectionPort, apkPath)
+                val module = Python.getInstance().getModule("adb_installer")
+                module.callAttr("adb_set_key_dir", keyDir)
+                val result = module.callAttr("adb_tls_install", ip, connectionPort, apkPath)
 
                 val success = result.callAttr("get", "success")?.toBoolean() ?: false
                 val message = result.callAttr("get", "message")?.toString() ?: "Unknown"
@@ -124,6 +127,42 @@ class ClientApkManager(private val context: Context) {
             }
         }
     }
+
+    suspend fun discoverConnectPort(ip: String, timeoutSec: Int = 6): Int? =
+        discoverAdbPort(ip, "adb_discover_connect_port", timeoutSec)
+
+    suspend fun discoverPairingPort(ip: String, timeoutSec: Int = 6): Int? =
+        discoverAdbPort(ip, "adb_discover_pairing_port", timeoutSec)
+
+    private suspend fun discoverAdbPort(ip: String, method: String, timeoutSec: Int): Int? =
+        withContext(Dispatchers.IO) {
+            if (!Python.isStarted()) return@withContext null
+            val wifi = context.applicationContext
+                .getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val lock = try {
+                wifi?.createMulticastLock("billingps-adb-mdns")?.apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            } catch (e: Exception) {
+                Log.w("ClientApkManager", "Multicast lock failed: ${e.message}")
+                null
+            }
+            try {
+                val module = Python.getInstance().getModule("adb_installer")
+                val result = module.callAttr(method, ip, timeoutSec.toDouble())
+                val success = result.callAttr("get", "success")?.toBoolean() ?: false
+                if (success) result.callAttr("get", "port")?.toInt() else null
+            } catch (e: Exception) {
+                Log.e("ClientApkManager", "mDNS discovery failed: ${e.message}")
+                null
+            } finally {
+                try {
+                    lock?.release()
+                } catch (_: Exception) {
+                }
+            }
+        }
 
     fun cleanup() {
         ApkServer.stop()

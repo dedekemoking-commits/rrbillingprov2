@@ -264,7 +264,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val username = _state.value.currentUser
         if (username.isEmpty()) return
         tvList.forEach { tv ->
-            val isAlmostHabis = tv.timerActive && !tv.bebas && tv.sisaDetik in 1..300
+            val popupMode = tv.popupMode.trim().lowercase()
+            val warningLimitSec = if (popupMode == "hidden") 0L else if (popupMode == "last_minutes") tv.popupLastMinutes * 60L else 300L
+            val isAlmostHabis = tv.timerActive && !tv.bebas && tv.sisaDetik > 0 && tv.sisaDetik <= warningLimitSec
             if (isAlmostHabis && warningSentSessions[tv.id] != tv.timerStart) {
                 warningSentSessions[tv.id] = tv.timerStart
                 val menit = tv.sisaDetik / 60

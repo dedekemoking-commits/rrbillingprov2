@@ -34,6 +34,8 @@ data class TvStatus(
     val hdmiPort: Int = 0,
     val hdmiInputHint: String = "",
     val hdmiCommand: String = "",
+    val popupMode: String = "always",
+    val popupLastMinutes: Int = 5,
 )
 
 class CloudHelper {
@@ -136,7 +138,9 @@ class CloudHelper {
                     val hdmiPort = (match["hdmiPort"] as? Number)?.toInt() ?: 0
                     val hdmiInputHint = match["hdmiInputHint"] as? String ?: ""
                     val hdmiCommand = match["hdmiCommand"] as? String ?: ""
-                    onStatus(TvStatus(sisaDetik, timerActive, paketAktif, ip, hdmiPort, hdmiInputHint, hdmiCommand))
+                    val popupMode = (match["popupMode"] as? String)?.trim()?.lowercase() ?: "always"
+                    val popupLastMinutes = ((match["popupLastMinutes"] as? Number)?.toInt() ?: 5).coerceIn(1, 120)
+                    onStatus(TvStatus(sisaDetik, timerActive, paketAktif, ip, hdmiPort, hdmiInputHint, hdmiCommand, popupMode, popupLastMinutes))
                 } catch (e: Exception) {
                     Log.e("CloudHelper", "listenTvStatus parse error: ${e.message}")
                 }

@@ -173,8 +173,6 @@ class TvClientService : Service() {
         }
         if (sessionActive) {
             if (!playCachedMedia()) scheduleHdmiAfterPromo(3_000L)
-        } else {
-            playCachedMedia()
         }
     }
 
@@ -402,7 +400,7 @@ class TvClientService : Service() {
             getSharedPreferences("tvclient_prefs", Context.MODE_PRIVATE)
                 .edit().putString(PREF_CACHED_WARNING_VIDEO, file.absolutePath).apply()
             Log.i("TvClientService", "Warning video cached: ${file.absolutePath}")
-            if (lastSisaDetik in 1..300) {
+            if (lastSisaDetik > 0 && lastSisaDetik <= 300) {
                 showWarningOverlay("Sisa ${lastSisaDetik / 60} menit!")
             }
         } catch (e: Exception) {
@@ -457,11 +455,18 @@ class TvClientService : Service() {
             sessionActive = false
             hdmiSwitchJob?.cancel()
             isPlayingMedia = false
+            OverlayManager.stopVideo()
+            OverlayManager.hideWarning()
             currentWarningShown = false
             Log.i("TvClientService", "Session ended, HDMI switch cancelled")
         }
 
-        val isAlmostHabis = status.timerActive && status.sisaDetik in 1..300
+        val warningLimitSec = when (status.popupMode.trim().lowercase()) {
+            "hidden" -> 0L
+            "last_minutes" -> status.popupLastMinutes * 60L
+            else -> 300L
+        }
+        val isAlmostHabis = status.timerActive && status.sisaDetik > 0 && status.sisaDetik <= warningLimitSec
         if (isAlmostHabis && !currentWarningShown) {
             val menit = status.sisaDetik / 60
             val detik = status.sisaDetik % 60

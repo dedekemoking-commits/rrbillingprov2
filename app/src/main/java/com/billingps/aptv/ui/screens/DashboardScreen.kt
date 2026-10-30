@@ -1416,16 +1416,22 @@ fun TVCard(
                         border = BorderStroke(1.dp, NeonGreen),
                         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
                     ) { Text("OK", style = MaterialTheme.typography.labelSmall, color = NeonGreen) }
-                    if (clientStatus?.online != true) {
-                        OutlinedButton(
-                            onClick = { if (!forceDisabled) onInstallClient() },
-                            enabled = !forceDisabled,
-                            shape = RoundedCornerShape(6.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan),
-                            border = BorderStroke(1.dp, NeonCyan),
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
-                        ) { Icon(Icons.Filled.Android, contentDescription = null, modifier = Modifier.size(12.dp)); Spacer(Modifier.width(2.dp)); Text("Install Client", style = MaterialTheme.typography.labelSmall) }
+                    val clientVersion = clientStatus?.version
+                    val clientNotInstalled = clientVersion.isNullOrBlank()
+                    val clientOnline = clientStatus?.online == true
+                    val clientActionLabel = when {
+                        clientNotInstalled -> "Install Client"
+                        clientOnline -> "Cek Update Client"
+                        else -> "Update Client"
                     }
+                    OutlinedButton(
+                        onClick = { if (!forceDisabled) onInstallClient() },
+                        enabled = !forceDisabled,
+                        shape = RoundedCornerShape(6.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan),
+                        border = BorderStroke(1.dp, NeonCyan),
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                    ) { Icon(Icons.Filled.Android, contentDescription = null, modifier = Modifier.size(12.dp)); Spacer(Modifier.width(2.dp)); Text(clientActionLabel, style = MaterialTheme.typography.labelSmall) }
                     if (tv.timerActive || tv.bebas || isPaused) {
                         OutlinedButton(
                             onClick = { if (!forceDisabled) onSelesai() },

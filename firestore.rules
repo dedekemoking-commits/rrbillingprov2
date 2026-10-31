@@ -53,9 +53,18 @@ service cloud.firestore {
       // For now: require auth. In future: require request.auth.uid == username mapping
       allow write: if isAuth();
 
-      // tvCommands subcollection — TV client heartbeat + billing commands
+      // tvCommands subcollection — TV client heartbeat + billing + monitor commands
       match /tvCommands/{tvId} {
         allow read, write: if isAuth();
+      }
+
+      // tvLogs subcollection — TV logcat reports uploaded by the billing app
+      match /tvLogs/{tvId} {
+        allow read, write: if isAuth();
+
+        match /reports/{reportId} {
+          allow read, write: if isAuth();
+        }
       }
     }
 

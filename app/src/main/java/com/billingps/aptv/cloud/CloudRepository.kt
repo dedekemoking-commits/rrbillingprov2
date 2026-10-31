@@ -1295,10 +1295,104 @@ class CloudRepository(private val app: Application) {
                 val lastSeen = snap.getTimestamp("lastSeen")?.toDate()?.time ?: 0L
                 val hdmiTestId = snap.getString("hdmiTestId") ?: ""
                 val hdmiTestResult = snap.getString("hdmiTestResult") ?: ""
+                val monitorCommand = snap.getString("monitorCommand") ?: ""
+                val monitorCommandId = snap.getString("monitorCommandId") ?: ""
+                val monitorStatus = snap.getString("monitorStatus") ?: ""
+                val monitorResult = snap.getString("monitorResult") ?: ""
+                val monitorIssuedAt = snap.getTimestamp("monitorIssuedAt")?.toDate()?.time ?: 0L
                 val allFields = snap.data?.keys?.joinToString(",") ?: "none"
                 Log.i("CloudRepo", "listenClientStatus: tvId=$tvId exists=$exists online=$online version=$version lastSeen=$lastSeen fields=[$allFields]")
-                onUpdate(ClientStatus(online, version, lastSeen, hdmiTestId, hdmiTestResult))
+                onUpdate(
+                    ClientStatus(
+                        online, version, lastSeen, hdmiTestId, hdmiTestResult,
+                        monitorCommand, monitorCommandId, monitorStatus, monitorResult, monitorIssuedAt,
+                    )
+                )
             }
+    }
+
+    suspend fun uploadTvLogReport(
+        username: String,
+        tvId: String,
+        app: String,
+        version: String,
+        lines: List<String>,
+        errorCount: Int,
+        totalLines: Int,
+    ): Boolean {
+        if (username.isBlank() || tvId.isBlank()) return false
+        if (!ensureSignedIn()) return false
+        return suspendCancellableCoroutine { cont ->
+            val now = System.currentTimeMillis()
+            val data = hashMapOf<String, Any>(
+                "tvId" to tvId,
+                "app" to app.ifBlank { "rrbilling-tv" },
+                "version" to version,
+                "errorCount" to errorCount.coerceAtLeast(0),
+                "totalLines" to totalLines.coerceAtLeast(0),
+                "lines" to lines.takeLast(200),
+                "lastReportAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+                "lastReportMs" to now,
+            )
+            val base = firestore
+                .collection("billingps_users").document(username)
+                .collection("tvLogs").document(tvId)
+            base.set(data, SetOptions.merge())
+                .addOnSuccessListener {
+                    Log.i("CloudRepo", "uploadTvLogReport success: $username/$tvId errors=$errorCount")
+                    try {
+                        base.collection("reports").add(
+                            hashMapOf(
+                                "at" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+                                "app" to app.ifBlank { "rrbilling-tv" },
+                                "version" to version,
+                                "errorCount" to errorCount.coerceAtLeast(0),
+                                "totalLines" to totalLines.coerceAtLeast(0),
+                                "lines" to lines.takeLast(200),
+                            )
+                        )
+                    } catch (e: Exception) {
+                        Log.w("CloudRepo", "saveTvLogHistory failed: ${e.message}")
+                    }
+                    if (!cont.isCompleted) cont.resume(true)
+                }
+                .addOnFailureListener { ex ->
+                    Log.e("CloudRepo", "uploadTvLogReport failed: ${ex.message}")
+                    if (!cont.isCompleted) cont.resume(false)
+                }
+        }
+    }
+
+    suspend fun ackMonitorCommand(
+        username: String,
+        tvId: String,
+        commandId: String,
+        status: String,
+        result: String,
+    ): Boolean {
+        if (username.isBlank() || tvId.isBlank() || commandId.isBlank()) return false
+        if (!ensureSignedIn()) return false
+        return suspendCancellableCoroutine { cont ->
+            firestore
+                .collection("billingps_users").document(username)
+                .collection("tvCommands").document(tvId)
+                .set(
+                    mapOf(
+                        "monitorCommandId" to commandId,
+                        "monitorStatus" to status,
+                        "monitorResult" to result.take(300),
+                        "monitorHandledAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+                    ),
+                    SetOptions.merge(),
+                )
+                .addOnSuccessListener {
+                    if (!cont.isCompleted) cont.resume(true)
+                }
+                .addOnFailureListener { ex ->
+                    Log.e("CloudRepo", "ackMonitorCommand failed: ${ex.message}")
+                    if (!cont.isCompleted) cont.resume(false)
+                }
+        }
     }
 
     suspend fun deleteTvCommandDoc(username: String, tvId: String): Boolean {

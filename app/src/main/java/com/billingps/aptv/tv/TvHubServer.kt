@@ -18,6 +18,7 @@ class TvHubServer(
     bindHost: String? = null,
     private val configProvider: () -> HubConfig,
     private val onConnectionsChanged: (Map<String, TvConnection>) -> Unit,
+    private val onLogReport: (String, JSONObject) -> Unit = { _, _ -> },
     private val onServerError: (String) -> Unit = {},
 ) : WebSocketServer(
     if (bindHost.isNullOrBlank()) InetSocketAddress(port)
@@ -172,6 +173,11 @@ class TvHubServer(
                     "${session.mejaId} event=$event ok=${obj.optBoolean("ok", false)} " +
                         "msg=${obj.optString("message", "")}",
                 )
+            }
+            TvHubProtocol.TYPE_LOG_REPORT -> {
+                session.lastSeen = System.currentTimeMillis()
+                onLogReport(session.mejaId.ifBlank { session.nama }, obj)
+                publishConnections()
             }
             TvHubProtocol.TYPE_GET_TVS -> {
                 send(conn, JSONObject().put("type", TvHubProtocol.TYPE_TVS_RESPONSE).put("tv", tvsJson()))

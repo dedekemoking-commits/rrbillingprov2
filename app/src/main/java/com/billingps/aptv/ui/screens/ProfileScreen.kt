@@ -62,7 +62,15 @@ fun ProfileScreen(
     var regEmail by remember { mutableStateOf("") }
     var regMsg by remember { mutableStateOf("") }
     var regMsgOk by remember { mutableStateOf(false) }
+    var shiftDraft by remember { mutableStateOf(state.shiftConfig) }
+    var shiftMsg by remember { mutableStateOf("") }
+    var shiftMsgOk by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(state.shiftConfig) { shiftDraft = state.shiftConfig }
+    LaunchedEffect(state.currentRole) {
+        if (state.currentRole == "admin") viewModel.refreshShiftConfig()
+    }
 
 
 
@@ -236,6 +244,92 @@ fun ProfileScreen(
                         }
 
                         Spacer(Modifier.height(8.dp))
+                        HorizontalDivider(color = DarkSurfaceV3.copy(alpha = 0.5f), thickness = 0.5.dp)
+                        Spacer(Modifier.height(8.dp))
+
+                        // Pengaturan shift global rental
+                        Text("PENGATURAN SHIFT", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "Berlaku global untuk rental ini. Transaksi di luar jam shift dicatat sebagai Luar Shift.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextDim,
+                        )
+                        Spacer(Modifier.height(8.dp))
+
+                        Text("Shift Pagi", style = MaterialTheme.typography.bodySmall, color = TextPrimary, fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            ShiftTimePicker("Mulai", shiftDraft.pagiMulai) {
+                                shiftDraft = shiftDraft.copy(pagiMulai = it); shiftMsg = ""
+                            }
+                            Text("s/d", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                            ShiftTimePicker("Selesai", shiftDraft.pagiSelesai) {
+                                shiftDraft = shiftDraft.copy(pagiSelesai = it); shiftMsg = ""
+                            }
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+                        Text("Shift Malam", style = MaterialTheme.typography.bodySmall, color = TextPrimary, fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            ShiftTimePicker("Mulai", shiftDraft.malamMulai) {
+                                shiftDraft = shiftDraft.copy(malamMulai = it); shiftMsg = ""
+                            }
+                            Text("s/d", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                            ShiftTimePicker("Selesai", shiftDraft.malamSelesai) {
+                                shiftDraft = shiftDraft.copy(malamSelesai = it); shiftMsg = ""
+                            }
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+                        Text("Batas Hari Operasional", style = MaterialTheme.typography.bodySmall, color = TextPrimary, fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            ShiftTimePicker("Batas Hari", shiftDraft.batasHari) {
+                                shiftDraft = shiftDraft.copy(batasHari = it); shiftMsg = ""
+                            }
+                            Text(
+                                "Transaksi sebelum jam ini dihitung tanggal kemarin.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextDim,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    val err = shiftDraft.validasi()
+                                    if (err != null) {
+                                        shiftMsg = err; shiftMsgOk = false
+                                    } else {
+                                        val draft = shiftDraft
+                                        scope.launch {
+                                            shiftMsg = "Menyimpan pengaturan shift..."
+                                            shiftMsgOk = true
+                                            val ok = viewModel.updateShiftConfig(draft)
+                                            shiftMsg = if (ok) "Pengaturan shift disimpan"
+                                            else "Tersimpan lokal; sinkron cloud gagal"
+                                            shiftMsgOk = ok
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
+                            ) { Text("Simpan Shift") }
+                            OutlinedButton(
+                                onClick = { shiftDraft = ShiftConfig(); shiftMsg = "" },
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
+                                border = BorderStroke(1.dp, DarkSurfaceV3),
+                            ) { Text("Default") }
+                        }
+                        if (shiftMsg.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(shiftMsg, style = MaterialTheme.typography.bodySmall, color = if (shiftMsgOk) NeonGreen else NeonRed)
+                        }
+
+                        Spacer(Modifier.height(10.dp))
                         HorizontalDivider(color = DarkSurfaceV3.copy(alpha = 0.5f), thickness = 0.5.dp)
                         Spacer(Modifier.height(8.dp))
 
@@ -884,6 +978,40 @@ fun ProfileScreen(
             }
 
             Spacer(Modifier.height(30.dp))
+        }
+    }
+}
+
+@Composable
+private fun ShiftTimePicker(
+    label: String,
+    minuteOfDay: Int,
+    onPicked: (Int) -> Unit,
+) {
+    val ctx = LocalContext.current
+    OutlinedButton(
+        onClick = {
+            android.app.TimePickerDialog(
+                ctx,
+                { _, hour, minute -> onPicked(hour * 60 + minute) },
+                minuteOfDay / 60,
+                minuteOfDay % 60,
+                true,
+            ).show()
+        },
+        shape = RoundedCornerShape(8.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+        border = BorderStroke(1.dp, DarkSurfaceV3),
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = TextDim)
+            Text(
+                ShiftConfig.formatTime(minuteOfDay),
+                style = MaterialTheme.typography.bodySmall,
+                color = NeonCyan,
+                fontWeight = FontWeight.Bold,
+            )
         }
     }
 }

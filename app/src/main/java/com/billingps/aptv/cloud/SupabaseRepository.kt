@@ -3,6 +3,7 @@ package com.billingps.aptv.cloud
 import android.util.Log
 import com.billingps.aptv.models.Invoice
 import com.billingps.aptv.models.LicenseStatus
+import com.billingps.aptv.models.ShiftConfig
 import com.billingps.aptv.models.Transaksi
 import com.billingps.aptv.utils.TimeUtils
 import org.json.JSONArray
@@ -223,6 +224,47 @@ class SupabaseRepository {
             Log.e(TAG, "parse invoices failed: ${e.message}")
             emptyList()
         }
+    }
+
+    fun fetchShiftConfig(username: String): ShiftConfig? {
+        if (username.isBlank()) return null
+        val encoded = URLEncoder.encode(username, "UTF-8")
+        val raw = httpGet("shift_settings?select=*&username=eq.$encoded&limit=1") ?: return null
+        return try {
+            val array = JSONArray(raw)
+            if (array.length() == 0) null else {
+                val o = array.getJSONObject(0)
+                ShiftConfig(
+                    pagiMulai = ShiftConfig.parseTime(o.optString("pagi_mulai")) ?: 11 * 60,
+                    pagiSelesai = ShiftConfig.parseTime(o.optString("pagi_selesai")) ?: 19 * 60,
+                    malamMulai = ShiftConfig.parseTime(o.optString("malam_mulai")) ?: 21 * 60,
+                    malamSelesai = ShiftConfig.parseTime(o.optString("malam_selesai")) ?: 5 * 60,
+                    batasHari = ShiftConfig.parseTime(o.optString("batas_hari")) ?: 6 * 60,
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "parse shift_settings failed: ${e.message}")
+            null
+        }
+    }
+
+    fun saveShiftConfig(username: String, config: ShiftConfig): Boolean {
+        if (username.isBlank()) return false
+        val body = JSONObject().apply {
+            put("username", username)
+            put("pagi_mulai", ShiftConfig.formatTime(config.pagiMulai))
+            put("pagi_selesai", ShiftConfig.formatTime(config.pagiSelesai))
+            put("malam_mulai", ShiftConfig.formatTime(config.malamMulai))
+            put("malam_selesai", ShiftConfig.formatTime(config.malamSelesai))
+            put("batas_hari", ShiftConfig.formatTime(config.batasHari))
+            put("zona_waktu", "Asia/Jakarta")
+            put("updated_at", TimeUtils.nowUtcIso())
+        }
+        return httpPost(
+            "shift_settings?on_conflict=username",
+            body.toString(),
+            "resolution=merge-duplicates,return=minimal",
+        )
     }
 
     private fun httpGet(path: String): String? {

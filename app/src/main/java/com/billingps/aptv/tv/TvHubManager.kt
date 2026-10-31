@@ -25,6 +25,9 @@ object TvHubManager {
     @Volatile
     private var config: HubConfig = HubConfig()
 
+    @Volatile
+    private var logUploader: ((String, JSONObject) -> Unit)? = null
+
     private val _connections = MutableStateFlow<Map<String, TvConnection>>(emptyMap())
     val connections: StateFlow<Map<String, TvConnection>> = _connections.asStateFlow()
 
@@ -58,6 +61,7 @@ object TvHubManager {
                 bindHost = host,
                 configProvider = { config },
                 onConnectionsChanged = { _connections.value = it },
+                onLogReport = { tvId, payload -> logUploader?.invoke(tvId, payload) },
                 onServerError = { message ->
                     lastError = message
                     server = null
@@ -82,6 +86,10 @@ object TvHubManager {
         }
         server = null
         _connections.value = emptyMap()
+    }
+
+    fun setLogUploader(uploader: ((String, JSONObject) -> Unit)?) {
+        logUploader = uploader
     }
 
     fun updateConfig(tvs: List<TvData>, rentalName: String, clientEnabled: Boolean = true) {
@@ -152,6 +160,22 @@ object TvHubManager {
 
     fun sendStopTimer(tv: TvData): Boolean =
         send(tv, TvHubProtocol.stopTimer(mejaIdOf(tv)))
+
+    fun sendReportLogs(tv: TvData): Boolean =
+        sendCommand(tv, TvHubProtocol.ACTION_REPORT_LOGS)
+
+    fun sendReconnectWs(tv: TvData): Boolean =
+        sendCommand(tv, TvHubProtocol.ACTION_RECONNECT_WS)
+
+    fun sendRestartClient(tv: TvData): Boolean =
+        sendCommand(tv, TvHubProtocol.ACTION_RESTART_CLIENT)
+
+    fun sendCommand(tv: TvData, action: String, payload: JSONObject = JSONObject()): Boolean {
+        val command = JSONObject(payload.toString())
+            .put("action", action)
+            .put("meja_id", mejaIdOf(tv))
+        return send(tv, command)
+    }
 
     fun sendSleepTv(tv: TvData): Boolean =
         send(tv, TvHubProtocol.sleepTv(mejaIdOf(tv)))

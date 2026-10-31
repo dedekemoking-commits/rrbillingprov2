@@ -118,6 +118,7 @@ data class AppUiState(
     val tvPasswordHash: String = "",
     val themeOption: ThemeOption = ThemeOption.GAMING_DARK,
     val backgroundOption: BackgroundOption = BackgroundOption.AMOLED_BLACK,
+    val shiftConfig: ShiftConfig = ShiftConfig(),
     val promo: PromoSettings = PromoSettings(),
     val loginMethod: String = "password", // "password" or "google"
     val printerAddress: String = "",
@@ -188,6 +189,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val tvConnections: StateFlow<Map<String, TvConnection>> = TvHubManager.connections
     private var timerReceiver: BroadcastReceiver? = null
     private var clientStatusListeners = mutableMapOf<String, ListenerRegistration>()
+    private val monitorHandledCommands = mutableMapOf<String, String>()
     private val autoCutNextAt = mutableMapOf<String, Long>()
     private val autoCutRepeat = mutableSetOf<String>()
     private val pendingSleepJobs = mutableMapOf<String, Job>()
@@ -453,6 +455,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             currentRole = cr,
             themeOption = savedTheme,
             backgroundOption = savedBg,
+            shiftConfig = StorageUtil.loadShiftConfig(cu),
             users = users,
             tvList = StorageUtil.loadTvList(),
             transaksiList = StorageUtil.loadTransaksi(),
@@ -999,6 +1002,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         stopPromoListener()
         stopNotifListener()
         stopClientStatusListeners()
+        TvHubManager.setLogUploader(null)
+        monitorHandledCommands.clear()
         StorageUtil.clearSession()
         _state.value = _state.value.copy(
             isLoggedIn = false,
@@ -1225,6 +1230,73 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(backgroundOption = option)
     }
 
+    fun refreshShiftConfig() {
+        val username = shiftConfigUsername()
+        if (username.isBlank()) return
+        viewModelScope.launch {
+            val config = try {
+                withContext(Dispatchers.IO) { supabaseRepo.fetchShiftConfig(username) }
+            } catch (t: Throwable) {
+                Log.i("MainVM", "refreshShiftConfig failed: ${t.message}")
+                null
+            }
+            if (config != null) {
+                StorageUtil.saveShiftConfig(username, config)
+                _state.value = _state.value.copy(shiftConfig = config)
+            }
+        }
+    }
+
+    suspend fun updateShiftConfig(config: ShiftConfig): Boolean {
+        val error = config.validasi()
+        if (error != null) {
+            _state.value = _state.value.copy(statusMessage = error)
+            return false
+        }
+        val username = shiftConfigUsername()
+        if (username.isBlank()) return false
+        StorageUtil.saveShiftConfig(username, config)
+        _state.value = _state.value.copy(
+            shiftConfig = config,
+            statusMessage = "Menyimpan pengaturan shift...",
+        )
+        val ok = try {
+            withContext(Dispatchers.IO) { supabaseRepo.saveShiftConfig(username, config) }
+        } catch (t: Throwable) {
+            Log.i("MainVM", "saveShiftConfig failed: ${t.message}")
+            false
+        }
+        _state.value = _state.value.copy(
+            statusMessage = if (ok) "Pengaturan shift disimpan"
+            else "Pengaturan shift tersimpan lokal; sinkron cloud gagal",
+        )
+        return ok
+    }
+
+    fun isDalamShiftSekarang(): Boolean {
+        if (_state.value.currentRole == "admin") return true
+        val now = java.time.ZonedDateTime.now(TimeUtils.WIB)
+        return _state.value.shiftConfig.isDalamShift(now.getHour() * 60 + now.getMinute())
+    }
+
+    fun shiftBlockMessage(): String {
+        val config = _state.value.shiftConfig
+        return "Sesi hanya bisa dimulai pada shift Pagi (${config.pagiLabel()}) " +
+            "atau Malam (${config.malamLabel()})."
+    }
+
+    private fun shiftConfigUsername(): String {
+        val snapshot = _state.value
+        val current = snapshot.users[snapshot.currentUser]
+        if (current?.role == "admin") return current.username.trim()
+        val admin = snapshot.users.values
+            .firstOrNull { it.role == "admin" }
+            ?.username
+            ?.trim()
+            .orEmpty()
+        return admin.ifBlank { snapshot.currentUser.trim() }
+    }
+
     fun logout(clearGoogleSignIn: Boolean = false) {
         val username = _state.value.currentUser
         val sessionId = _state.value.deviceSessionId
@@ -1244,6 +1316,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         stopLicenseListener()
         stopPromoListener()
         stopNotifListener()
+        stopClientStatusListeners()
+        TvHubManager.setLogUploader(null)
+        monitorHandledCommands.clear()
         try { firebaseAuth.signOut() } catch (e: Exception) { Log.e("MainVM", "firebaseAuth.signOut on logout: ${e.message}") }
         if (clearGoogleSignIn) {
             try {
@@ -1627,6 +1702,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val isStale = status.lastSeen > 0 && (System.currentTimeMillis() - status.lastSeen) > 120_000
                 updated[tv.id] = if (isStale) status.copy(online = false) else status
                 _state.value = _state.value.copy(clientStatus = updated)
+                if (status.monitorStatus == "pending" &&
+                    status.monitorCommandId.isNotBlank() &&
+                    monitorHandledCommands[tv.id] != status.monitorCommandId
+                ) {
+                    monitorHandledCommands[tv.id] = status.monitorCommandId
+                    val command = status.monitorCommand.trim().uppercase()
+                    val sent = when (command) {
+                        TvHubProtocol.ACTION_REPORT_LOGS -> TvHubManager.sendReportLogs(tv)
+                        TvHubProtocol.ACTION_RECONNECT_WS -> TvHubManager.sendReconnectWs(tv)
+                        TvHubProtocol.ACTION_RESTART_CLIENT -> TvHubManager.sendRestartClient(tv)
+                        else -> false
+                    }
+                    Log.i("MainVM", "monitor command tv=${tv.id} cmd=$command sent=$sent")
+                    viewModelScope.launch {
+                        cloudRepo.ackMonitorCommand(
+                            username = username,
+                            tvId = tv.id,
+                            commandId = status.monitorCommandId,
+                            status = if (sent) "sent" else "offline",
+                            result = if (sent) "Perintah $command dikirim ke ${tv.nama}"
+                            else "TV ${tv.nama} tidak terhubung ke hub",
+                        )
+                    }
+                }
             }
             if (listener != null) {
                 clientStatusListeners[tv.id] = listener
@@ -1643,12 +1742,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun startListeners(username: String) {
         val licenseUser = resolveLicenseUsername(username)
+        refreshShiftConfig()
         startLicenseListener(username, licenseUser)
         startSupabaseLicensePolling(username, licenseUser)
         startPromoListener()
         startNotifListener(username)
         initFcmToken(username)
         startClientStatusListeners(username)
+        TvHubManager.setLogUploader { tvId, payload ->
+            val lines = payload.optJSONArray("lines")?.let { arr ->
+                (0 until arr.length()).map { arr.optString(it) }
+            } ?: emptyList()
+            val app = payload.optString("app", "rrbilling-tv")
+            val version = payload.optString("version", "")
+            val errorCount = payload.optInt("error_count", 0)
+            val totalLines = payload.optInt("total_lines", 0)
+            viewModelScope.launch {
+                cloudRepo.uploadTvLogReport(
+                    username = username,
+                    tvId = tvId,
+                    app = app,
+                    version = version,
+                    lines = lines,
+                    errorCount = errorCount,
+                    totalLines = totalLines,
+                )
+            }
+        }
     }
 
     private fun startLicenseListener(username: String, licenseUser: String) {
@@ -2201,6 +2321,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 put("metode", t.metode); put("tvId", t.tvId); put("kategori", t.kategori)
                 put("jumlah", t.jumlah); put("sesiMulai", t.sesiMulai); put("sesiSelesai", t.sesiSelesai)
                 put("cash", t.cash); put("kembalian", t.kembalian)
+                put("tanggalOperasional", t.tanggalOperasional); put("jenisShift", t.jenisShift)
             }
         }))
         obj.put("paketMain", org.json.JSONObject(s.paketMain.mapValues { (_, v) -> org.json.JSONObject(v) }))
@@ -2326,6 +2447,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         sesiSelesai = o.optLong("sesiSelesai"),
                         cash = o.optInt("cash"),
                         kembalian = o.optInt("kembalian"),
+                        tanggalOperasional = o.optString("tanggalOperasional"),
+                        jenisShift = o.optString("jenisShift"),
                     ))
                 }
                 StorageUtil.saveTransaksi(list)
@@ -2718,6 +2841,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateTV(id: String, updates: Map<String, Any>) {
         val previousTv = _state.value.tvList.firstOrNull { it.id == id }
+        val startsSession = (updates["timerActive"] == true || updates["bebas"] == true) &&
+            previousTv != null && !previousTv.timerActive && !previousTv.bebas
+        if (startsSession && !isDalamShiftSekarang()) {
+            _state.value = _state.value.copy(statusMessage = shiftBlockMessage())
+            return
+        }
         val list = _state.value.tvList.map { tv ->
             if (tv.id != id) tv
             else {
@@ -3017,6 +3146,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun tvStart(id: String): Boolean {
         val tv = _state.value.tvList.firstOrNull { it.id == id } ?: return false
+        if (!tv.timerActive && !tv.bebas && !isDalamShiftSekarang()) {
+            _state.value = _state.value.copy(statusMessage = shiftBlockMessage())
+            return false
+        }
         return startSessionOnTv(tv)
     }
 
@@ -3109,7 +3242,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             bebasTotal = ((elapsed * tv.bebasHargaPerJam) / 3_600_000L).toInt()
             val sesiMulai = if (tv.sesiMulai > 0L) tv.sesiMulai else tv.bebasMulai
-            bebasTx = Transaksi(
+            bebasTx = enrichShift(Transaksi(
                 id = "TRX-$now-BEBAS",
                 waktu = TimeUtils.nowUtcIso(),
                 kasir = _state.value.currentUser.ifBlank { "Kasir" },
@@ -3126,7 +3259,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 jumlah = 1,
                 sesiMulai = sesiMulai,
                 sesiSelesai = sessionEnd,
-            )
+            ))
         }
         val lunas = tv.paketSudahBayar && tv.fnbSudahBayar && bebasTx == null
         var stopped = tv.copy(
@@ -3226,6 +3359,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resumeAllSessions(): Int {
+        if (!isDalamShiftSekarang()) {
+            _state.value = _state.value.copy(statusMessage = shiftBlockMessage())
+            return 0
+        }
         val now = System.currentTimeMillis()
         var changed = 0
         val list = _state.value.tvList.map { tv ->
@@ -3260,6 +3397,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun resumeSession(id: String): Boolean {
         val tv = _state.value.tvList.firstOrNull { it.id == id } ?: return false
         if (!tv.sesiPaused) return false
+        if (!isDalamShiftSekarang()) {
+            _state.value = _state.value.copy(statusMessage = shiftBlockMessage())
+            return false
+        }
         val now = System.currentTimeMillis()
         val resumed = if (tv.bebasHargaPerJam > 0 || tv.paketAktif.contains("Bebas", ignoreCase = true)) {
             tv.copy(
@@ -3747,8 +3888,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ── Transaksi ──────────────────────────────────────────
+    private fun enrichShift(t: Transaksi): Transaksi {
+        val id = t.id.ifBlank { "tx_${System.currentTimeMillis()}" }
+        val waktu = t.waktu.ifBlank { TimeUtils.nowUtcIso() }
+        val zoned = TimeUtils.transactionZoned(id, waktu)
+            ?: java.time.ZonedDateTime.now(TimeUtils.WIB)
+        val shiftConfig = _state.value.shiftConfig
+        return t.copy(
+            id = id,
+            waktu = waktu,
+            tanggalOperasional = t.tanggalOperasional.ifBlank {
+                shiftConfig.tanggalOperasional(zoned).toString()
+            },
+            jenisShift = t.jenisShift.ifBlank { shiftConfig.jenisShift(zoned) },
+        )
+    }
+
     fun tambahTransaksi(t: Transaksi) {
-        val tx = if (t.id.isNotBlank()) t else t.copy(id = "tx_${System.currentTimeMillis()}")
+        val tx = enrichShift(t)
         val isNew = _state.value.transaksiList.none { it.id == tx.id }
         val list = (_state.value.transaksiList + tx)
         _state.value = _state.value.copy(transaksiList = list)
@@ -3893,9 +4050,10 @@ fun bersihkanTransaksi() {
     }
 
     fun upsertTransaksi(t: Transaksi) {
-        val tx = if (t.id.isNotBlank()) t else t.copy(id = "tx_${System.currentTimeMillis()}")
+        val txId = t.id.ifBlank { "tx_${System.currentTimeMillis()}" }
         val list = _state.value.transaksiList.toMutableList()
-        val idx = list.indexOfFirst { it.id == tx.id }
+        val idx = list.indexOfFirst { it.id == txId }
+        val tx = if (idx >= 0) t.copy(id = txId) else enrichShift(t.copy(id = txId))
         val previousPesanan = if (idx >= 0) list[idx].pesanan else emptyMap()
         if (idx >= 0) {
             list[idx] = tx

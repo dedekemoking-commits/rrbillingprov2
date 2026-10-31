@@ -1,6 +1,7 @@
 package com.billingps.aptv.models
 
 import java.io.Serializable
+import java.util.Locale
 
 data class TvData(
     val id: String = "",
@@ -68,6 +69,8 @@ data class Transaksi(
     val sesiSelesai: Long = 0L,
     val cash: Int = 0,
     val kembalian: Int = 0,
+    val tanggalOperasional: String = "",
+    val jenisShift: String = "",
 )
 
 fun Transaksi.fnbTotal(): Int =
@@ -109,6 +112,88 @@ data class UserData(
     val whatsappRental: String = "",
     val registeredAt: Long = 0L,
 )
+
+data class ShiftConfig(
+    val pagiMulai: Int = 11 * 60,
+    val pagiSelesai: Int = 19 * 60,
+    val malamMulai: Int = 21 * 60,
+    val malamSelesai: Int = 5 * 60,
+    val batasHari: Int = 6 * 60,
+) : Serializable {
+    fun validasi(): String? {
+        if (pagiMulai !in 0 until MINUTES_PER_DAY ||
+            pagiSelesai !in 0 until MINUTES_PER_DAY ||
+            malamMulai !in 0 until MINUTES_PER_DAY ||
+            malamSelesai !in 0 until MINUTES_PER_DAY ||
+            batasHari !in 0 until MINUTES_PER_DAY
+        ) {
+            return "Jam shift tidak valid"
+        }
+        if (pagiMulai >= pagiSelesai) return "Jam selesai shift pagi harus setelah jam mulai"
+        if (malamMulai == malamSelesai) return "Jam mulai dan selesai shift malam tidak boleh sama"
+        if (batasHari > pagiMulai) return "Batas hari tidak boleh melewati jam mulai shift pagi"
+        if (malamMulai > malamSelesai && batasHari < malamSelesai) {
+            return "Batas hari minimal jam selesai shift malam"
+        }
+        val malamRanges = if (malamMulai > malamSelesai) {
+            listOf(malamMulai to MINUTES_PER_DAY, 0 to malamSelesai)
+        } else {
+            listOf(malamMulai to malamSelesai)
+        }
+        if (malamRanges.any { (start, end) -> overlaps(pagiMulai, pagiSelesai, start, end) }) {
+            return "Shift pagi dan shift malam tidak boleh overlap"
+        }
+        return null
+    }
+
+    fun isPagi(menit: Int): Boolean = menit >= pagiMulai && menit < pagiSelesai
+
+    fun isMalam(menit: Int): Boolean = if (malamMulai > malamSelesai) {
+        menit >= malamMulai || menit < malamSelesai
+    } else {
+        menit >= malamMulai && menit < malamSelesai
+    }
+
+    fun isDalamShift(menit: Int): Boolean = isPagi(menit) || isMalam(menit)
+
+    fun labelShift(menit: Int): String = when {
+        isPagi(menit) -> "Pagi"
+        isMalam(menit) -> "Malam"
+        else -> "Luar Shift"
+    }
+
+    fun pagiLabel(): String = "${formatTime(pagiMulai)} - ${formatTime(pagiSelesai)}"
+
+    fun malamLabel(): String = "${formatTime(malamMulai)} - ${formatTime(malamSelesai)}"
+
+    fun tanggalOperasional(waktuWib: java.time.ZonedDateTime): java.time.LocalDate {
+        val menit = waktuWib.hour * 60 + waktuWib.minute
+        return if (menit < batasHari) waktuWib.toLocalDate().minusDays(1) else waktuWib.toLocalDate()
+    }
+
+    fun jenisShift(waktuWib: java.time.ZonedDateTime): String =
+        labelShift(waktuWib.hour * 60 + waktuWib.minute)
+
+    private fun overlaps(aStart: Int, aEnd: Int, bStart: Int, bEnd: Int): Boolean =
+        aStart < bEnd && bStart < aEnd
+
+    companion object {
+        const val MINUTES_PER_DAY = 24 * 60
+
+        fun formatTime(menit: Int): String =
+            String.format(Locale.US, "%02d:%02d", menit / 60, menit % 60)
+
+        fun parseTime(raw: String?): Int? {
+            if (raw.isNullOrBlank()) return null
+            val parts = raw.trim().take(5).split(":")
+            if (parts.size < 2) return null
+            val jam = parts[0].toIntOrNull() ?: return null
+            val menit = parts[1].toIntOrNull() ?: return null
+            if (jam !in 0..23 || menit !in 0..59) return null
+            return jam * 60 + menit
+        }
+    }
+}
 
 data class PrayerConfig(
     val enabled: Boolean = false,
@@ -254,6 +339,11 @@ data class ClientStatus(
     val lastSeen: Long = 0L,
     val hdmiTestId: String = "",
     val hdmiTestResult: String = "",
+    val monitorCommand: String = "",
+    val monitorCommandId: String = "",
+    val monitorStatus: String = "",
+    val monitorResult: String = "",
+    val monitorIssuedAt: Long = 0L,
 )
 
 data class DeviceConflict(

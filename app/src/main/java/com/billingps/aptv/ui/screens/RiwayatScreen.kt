@@ -92,11 +92,13 @@ fun RiwayatScreen(viewModel: MainViewModel) {
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
         if (uri != null) {
             try {
-                val header = "ID,Waktu,Kasir,TV,Paket,PaketHarga,FnbHarga,Total,Status,Metode\n"
+                val header = "ID,Waktu,TanggalOperasional,Shift,Kasir,TV,Paket,PaketHarga,FnbHarga,Total,Status,Metode\n"
                 val rows = txList.joinToString("\n") { t ->
                     listOf(
                         t.id,
                         t.waktu,
+                        t.tanggalOperasional,
+                        t.jenisShift,
                         t.kasir,
                         t.kota,
                         t.paket,
@@ -515,6 +517,19 @@ fun RiwayatScreen(viewModel: MainViewModel) {
                     ) {
                         Column(modifier = Modifier.weight(2f)) {
                             Text(formatWaktu(tx.id, tx.waktu), style = MaterialTheme.typography.bodySmall, color = TextDim)
+                            if (tx.tanggalOperasional.isNotBlank() || tx.jenisShift.isNotBlank()) {
+                                Text(
+                                    listOf(tx.tanggalOperasional, tx.jenisShift)
+                                        .filter { it.isNotBlank() }
+                                        .joinToString(" • "),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = when (tx.jenisShift) {
+                                        "Pagi" -> NeonYellow
+                                        "Malam" -> NeonCyan
+                                        else -> TextDim
+                                    },
+                                )
+                            }
                             Text(tx.kota, style = MaterialTheme.typography.bodyMedium, color = NeonGreen, fontWeight = FontWeight.Bold)
                             Text(tx.paket, style = MaterialTheme.typography.bodySmall, color = NeonYellow)
                             tx.pesanan.forEach { (nm, q) ->
@@ -554,6 +569,16 @@ fun RiwayatScreen(viewModel: MainViewModel) {
                     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                         Text("No    : ${tx.id.takeLast(12)}", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
                         Text("Tgl   : $tglStr", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
+                        Text("Tgl Ops: ${tx.tanggalOperasional.ifBlank { "-" }}", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "Shift : ${tx.jenisShift.ifBlank { "-" }}",
+                            color = when (tx.jenisShift) {
+                                "Pagi" -> NeonYellow
+                                "Malam" -> NeonCyan
+                                else -> TextDim
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                         Text("TV    : ${tx.kota}", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
                         if (tvData != null) Text("PS    : ${tvData.jenisPs}", color = TextPrimary, style = MaterialTheme.typography.bodySmall)
                         Text("Kasir : ${tx.kasir}", color = TextPrimary, style = MaterialTheme.typography.bodySmall)

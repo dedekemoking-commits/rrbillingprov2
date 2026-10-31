@@ -8,6 +8,7 @@ import com.billingps.aptv.models.*
 import org.json.JSONArray
 import org.json.JSONObject
 import android.util.Log
+import java.util.Locale
 
 object StorageUtil {
     private const val PREFS_NAME = "billingps_data"
@@ -385,6 +386,8 @@ fun loadUsers(): Map<String, UserData> {
                 put("sesiSelesai", t.sesiSelesai)
                 put("cash", t.cash)
                 put("kembalian", t.kembalian)
+                put("tanggalOperasional", t.tanggalOperasional)
+                put("jenisShift", t.jenisShift)
                 val pesananObj = JSONObject()
                 t.pesanan.forEach { (k, v) -> pesananObj.put(k, v) }
                 put("pesanan", pesananObj)
@@ -428,6 +431,8 @@ fun loadUsers(): Map<String, UserData> {
                 sesiSelesai = o.optLong("sesiSelesai"),
                 cash = o.optInt("cash"),
                 kembalian = o.optInt("kembalian"),
+                tanggalOperasional = o.optString("tanggalOperasional"),
+                jenisShift = o.optString("jenisShift"),
             ))
         }
         return list
@@ -661,6 +666,45 @@ fun loadUsers(): Map<String, UserData> {
 
     fun loadBackgroundOption(): String = prefs.getString("backgroundOption", "AMOLED_BLACK") ?: "AMOLED_BLACK"
 
+    // ── Shift Settings ──────────────────────────────────────
+    private const val SHIFT_CONFIG_GLOBAL_KEY = "shiftConfig_global"
+
+    private fun shiftConfigKey(username: String): String =
+        "shiftConfig_${username.trim().lowercase(Locale.ROOT)}"
+
+    fun saveShiftConfig(username: String, config: ShiftConfig) {
+        val json = JSONObject().apply {
+            put("pagiMulai", config.pagiMulai)
+            put("pagiSelesai", config.pagiSelesai)
+            put("malamMulai", config.malamMulai)
+            put("malamSelesai", config.malamSelesai)
+            put("batasHari", config.batasHari)
+        }
+        prefs.edit()
+            .putString(shiftConfigKey(username), json.toString())
+            .putString(SHIFT_CONFIG_GLOBAL_KEY, json.toString())
+            .apply()
+    }
+
+    fun loadShiftConfig(username: String): ShiftConfig {
+        val raw = prefs.getString(shiftConfigKey(username), null)
+            ?: prefs.getString(SHIFT_CONFIG_GLOBAL_KEY, null)
+            ?: return ShiftConfig()
+        return try {
+            val o = JSONObject(raw)
+            ShiftConfig(
+                pagiMulai = o.optInt("pagiMulai", 11 * 60),
+                pagiSelesai = o.optInt("pagiSelesai", 19 * 60),
+                malamMulai = o.optInt("malamMulai", 21 * 60),
+                malamSelesai = o.optInt("malamSelesai", 5 * 60),
+                batasHari = o.optInt("batasHari", 6 * 60),
+            )
+        } catch (e: Exception) {
+            Log.w("StorageUtil", "loadShiftConfig failed: ${e.message}")
+            ShiftConfig()
+        }
+    }
+
     // ── TV Password ─────────────────────────────────────────
     fun saveTvPassword(hash: String) {
         securePrefs.edit().putString("tvPasswordHash", hash).apply()
@@ -833,6 +877,7 @@ fun loadUsers(): Map<String, UserData> {
         val keepInvoices = prefs.getString("invoices", null)
         val keepNotifications = prefs.getString("notifications", null)
         val keepPromo = prefs.getString("promo", null)
+        val keepShiftConfig = prefs.getString(SHIFT_CONFIG_GLOBAL_KEY, null)
         val keepSmtp = prefs.getString("smtp", null)
         val keepLicStatus = prefs.getString("licenseStatus", null)
         val keepLicPesan = prefs.getString("licensePesan", null)
@@ -861,6 +906,7 @@ fun loadUsers(): Map<String, UserData> {
         if (keepInvoices != null) editor.putString("invoices", keepInvoices)
         if (keepNotifications != null) editor.putString("notifications", keepNotifications)
         if (keepPromo != null) editor.putString("promo", keepPromo)
+        if (keepShiftConfig != null) editor.putString(SHIFT_CONFIG_GLOBAL_KEY, keepShiftConfig)
         if (keepSmtp != null) editor.putString("smtp", keepSmtp)
         if (keepLicStatus != null) editor.putString("licenseStatus", keepLicStatus)
         if (keepLicPesan != null) editor.putString("licensePesan", keepLicPesan)

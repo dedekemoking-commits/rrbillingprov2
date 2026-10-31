@@ -10,7 +10,8 @@ from adb_shell.exceptions import (
 )
 
 RSA_KEY_DIR = None
-REMOTE_APK = "/data/local/tmp/billingps-tv-client.apk"
+REMOTE_APK = "/data/local/tmp/rrbilling-tv-client.apk"
+LEGACY_PACKAGES = ("com.billingps.tvclient",)
 
 
 def adb_set_key_dir(path):
@@ -55,9 +56,31 @@ def _output_text(value):
     return str(value)
 
 
+def _remove_legacy_client(device):
+    for package in LEGACY_PACKAGES:
+        try:
+            result = device.shell(
+                "pm uninstall {}".format(package),
+                timeout_s=30.0,
+            )
+            print(
+                "[ADB] remove legacy {}: {}".format(
+                    package, _output_text(result).strip()
+                ),
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                "[ADB] remove legacy {} error: {}".format(package, exc),
+                flush=True,
+            )
+
+
 def _install_apk(device, apk_path):
     if not apk_path or not os.path.exists(apk_path):
         return {"success": False, "message": "File APK tidak ditemukan"}
+
+    _remove_legacy_client(device)
 
     try:
         device.push(apk_path, REMOTE_APK, st_mode=0o644)

@@ -253,7 +253,11 @@ fun DashboardScreen(
                     )
                 }
                 IconButton(
-                    onClick = { viewModel.resumeAllSessions() },
+                    onClick = {
+                        if (viewModel.resumeAllSessions() == 0 && !viewModel.isDalamShiftSekarang()) {
+                            android.widget.Toast.makeText(ctx, viewModel.shiftBlockMessage(), android.widget.Toast.LENGTH_LONG).show()
+                        }
+                    },
                     enabled = pausedSessionCount > 0,
                     modifier = Modifier.size(36.dp).background(DarkBackground, CircleShape),
                 ) {
@@ -311,7 +315,10 @@ fun DashboardScreen(
                         tagihanSesi = tagihanSesi,
                         totalSesi = totalSesi,
                         onPilihPaket = {
-                            if (tv.adaTagihan && !tv.timerActive && !tv.bebas && !tv.sesiPaused) {
+                            val mulaiSesiBaru = !tv.timerActive && !tv.bebas && !tv.sesiPaused
+                            if (mulaiSesiBaru && !viewModel.isDalamShiftSekarang()) {
+                                android.widget.Toast.makeText(ctx, viewModel.shiftBlockMessage(), android.widget.Toast.LENGTH_LONG).show()
+                            } else if (tv.adaTagihan && !tv.timerActive && !tv.bebas && !tv.sesiPaused) {
                                 bukaPembayaran(tv, "IDLE")
                             } else {
                                 selectedTV = tv
@@ -395,7 +402,13 @@ fun DashboardScreen(
                             detailTV = tv
                             showDetailTV = true
                         },
-                        onResume = { viewModel.resumeSession(tv.id) },
+                        onResume = {
+                            if (!viewModel.isDalamShiftSekarang()) {
+                                android.widget.Toast.makeText(ctx, viewModel.shiftBlockMessage(), android.widget.Toast.LENGTH_LONG).show()
+                            } else {
+                                viewModel.resumeSession(tv.id)
+                            }
+                        },
                         onBatal = {
                             selectedTV = tv
                             showBatalDialog = true
@@ -750,10 +763,15 @@ fun DashboardScreen(
             minumanData = state.menuMinuman,
             currentUser = state.currentUser,
             onDismiss = { showPaket = false; selectedTV = null },
-            onConfirm = { paketNm, paketHarga, pesanan, total, durasi, updates ->
+            onConfirm = confirm@{ paketNm, paketHarga, pesanan, total, durasi, updates ->
                 val now = System.currentTimeMillis()
                 val txStamp = now.toString()
                 val wasActive = selectedTvPaket.timerActive || selectedTvPaket.bebas
+                val isNewSession = paketNm != null && !wasActive
+                if (isNewSession && !viewModel.isDalamShiftSekarang()) {
+                    android.widget.Toast.makeText(ctx, viewModel.shiftBlockMessage(), android.widget.Toast.LENGTH_LONG).show()
+                    return@confirm
+                }
                 val sesiMulai = when {
                     selectedTvPaket.sesiMulai > 0L -> selectedTvPaket.sesiMulai
                     wasActive -> 0L
@@ -764,7 +782,6 @@ fun DashboardScreen(
                 }
                 val fnbTotal = pesanan.entries.sumOf { (name, qty) -> (unitPrices[name] ?: 0) * qty }
                 val isBebas = paketNm == "Main Bebas"
-                val isNewSession = paketNm != null && !wasActive
                 val paketTxId = "TRX-$txStamp-P"
                 val fnbTxId = "TRX-$txStamp-F"
                 val finalUpdates = (updates ?: emptyMap()).toMutableMap()

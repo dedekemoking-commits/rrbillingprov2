@@ -51,6 +51,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.firebase.firestore.ListenerRegistration
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.rememberCoroutineScope
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -181,7 +183,16 @@ private fun DevicesScreen(username: String, onSwitchUser: () -> Unit) {
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var selectedId by remember { mutableStateOf<String?>(null) }
+    var periodicLogError by remember { mutableStateOf<String?>(null) }
 
+    // Start periodic log sync when username changes
+    DisposableEffect(username) {
+        onStop = {
+            // Cleanup handled by the Repository's scope cancellation
+        }
+    }
+
+    // Collect devices from listenLogs
     DisposableEffect(username) {
         val registration: ListenerRegistration = MonitorRepository.listenLogs(
             username = username,
@@ -189,13 +200,33 @@ private fun DevicesScreen(username: String, onSwitchUser: () -> Unit) {
                 devices = it
                 loading = false
                 error = null
+                periodicLogError = null
             },
             onError = {
                 error = it
                 loading = false
+                periodicLogError = null
             },
         )
         onDispose { registration.remove() }
+    }
+
+    // Start periodic sync when there are devices
+    LaunchedEffect(username, devices) {
+        if (username.isNotBlank() && devices.isNotEmpty()) {
+            MonitorRepository.startPeriodicLogSync(
+                scope = rememberCoroutineScope(),
+                username = username,
+                tvIds = devices.map { it.tvId },
+                onLogReady = { newDocs ->
+                    // Update devices with latest logs
+                    devices = newDocs
+                },
+                onError = { msg ->
+                    periodicLogError = msg
+                },
+            )
+        }
     }
 
     val selected = devices.firstOrNull { it.tvId == selectedId }

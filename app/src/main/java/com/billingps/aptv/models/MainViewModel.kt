@@ -77,6 +77,8 @@ import javax.mail.internet.InternetAddress
 import javax.mail.internet.MimeMessage
 import kotlin.coroutines.resume
 
+private const val AUTO_SLEEP_AFTER_END_MS = 45_000L
+
 data class AppUiState(
     val isLoggedIn: Boolean = false,
     val currentUser: String = "",
@@ -344,6 +346,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             override fun onReceive(context: Context, intent: Intent) {
                 when (intent.action) {
                     com.billingps.aptv.TimerService.ACTION_TICK_BATCH -> {
+                        if (!_state.value.isLoggedIn) return
                         val tickDataStr = intent.getStringExtra(com.billingps.aptv.TimerService.EXTRA_TICK_DATA) ?: return
                         val expiredIdsStr = intent.getStringExtra(com.billingps.aptv.TimerService.EXTRA_EXPIRED_IDS) ?: "[]"
                         try {
@@ -369,10 +372,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                             paketAktif = finalPaket,
                                             sesiSelesai = if (tv.sesiSelesai > 0L) tv.sesiSelesai else System.currentTimeMillis(),
                                         )
-                                        TvHubManager.sendLockScreen(expiredTv)
+                                        if (!expiredTv.sudahBayar) {
+                                            TvHubManager.sendLockScreen(expiredTv)
+                                        }
                                         if (expiredTv.sudahBayar) {
-                                            Log.i("MainVM", "expiry ${tv.nama}: schedule auto-sleep in 30s")
-                                            scheduleSleepAfter(expiredTv, 30_000L)
+                                            Log.i("MainVM", "expiry ${tv.nama}: schedule auto-sleep in 45s")
+                                            scheduleSleepAfter(expiredTv, AUTO_SLEEP_AFTER_END_MS)
                                         }
                                         currentList = currentList.toMutableList().also {
                                             it[i] = expiredTv
@@ -390,11 +395,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 _state.value = _state.value.copy(tvList = currentList)
                                 if (expiredSet.isNotEmpty()) StorageUtil.saveTvList(currentList)
                                 refreshHubConfig()
-                                currentList.filter { it.timerActive || it.bebas }.forEach { tv ->
-                                    TvHubManager.sendSyncTimer(tv)
-                                }
                             }
-                            currentList.filter { it.bebas }.forEach { tv ->
+                            currentList.filter { it.timerActive || it.bebas }.forEach { tv ->
                                 TvHubManager.sendSyncTimer(tv)
                             }
                             fireWarningIfAlmostHabis(currentList)
@@ -534,10 +536,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return (licensed || trialActive) && s.licenseStatus.clientEnabled
     }
 
-    private fun refreshHubConfig() {
+    private fun refreshHubConfig(): Boolean {
         val clientEnabled = isClientFeatureEnabled()
         com.billingps.aptv.utils.ApkServer.clientAllowed = clientEnabled
-        TvHubManager.updateConfig(_state.value.tvList, currentRentalName(), clientEnabled)
+        return TvHubManager.updateConfig(_state.value.tvList, currentRentalName(), clientEnabled)
     }
 
     private fun sha256(text: String): String {
@@ -1363,6 +1365,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             prayerConfig = StorageUtil.loadPrayerConfig(),
         )
         refreshHubConfig()
+        TvHubManager.refreshAll()
+        refreshTimerService()
         PrayerAlarmScheduler.reschedule(getApplication(), _state.value.prayerConfig)
     }
 
@@ -2927,7 +2931,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         _state.value = _state.value.copy(tvList = list)
         StorageUtil.saveTvList(list)
-        refreshHubConfig()
+        val hubRefreshed = refreshHubConfig()
         val updatedTv = list.firstOrNull { it.id == id }
         if (updatedTv != null) {
             val keys = updates.keys
@@ -2950,7 +2954,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     TvHubManager.sendStopTimer(updatedTv)
                 }
             }
-            if (keys.any { it in configKeys }) {
+            if (keys.any { it in configKeys } && !hubRefreshed) {
                 TvHubManager.applyTvConfig(updatedTv)
             }
         }
@@ -3101,7 +3105,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun scheduleExpiredPaidSleeps() {
         _state.value.tvList
             .filter { it.sudahBayar && !it.timerActive && !it.bebas && it.timerDurasi > 0 && it.sisaDetik <= 0 }
-            .forEach { scheduleSleepAfter(it, 30_000L) }
+            .forEach { scheduleSleepAfter(it, AUTO_SLEEP_AFTER_END_MS) }
     }
 
     private fun scheduleSleepAfter(tv: TvData, delayMs: Long) {
@@ -3214,7 +3218,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val sent = TvHubManager.sendStopTimer(tv)
         if (sleep || wasBebas) {
             viewModelScope.launch(Dispatchers.IO) {
-                delay(800L)
+                delay(AUTO_SLEEP_AFTER_END_MS)
                 val current = _state.value.tvList.firstOrNull { it.id == id } ?: return@launch
                 if (current.timerActive || current.bebas) return@launch
                 sleepTv(current, "Sleep after stop")
@@ -3685,6 +3689,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             tambahTransaksi(transaction)
         }
+        stopExpiredAlert(id)
         refreshTimerService()
         return AuthResult(true, "Sesi dibatalkan. Laporan Rp 0.")
     }
@@ -3751,6 +3756,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         StorageUtil.saveHabisDismissedIds(ids)
     }
 
+    private fun stopExpiredAlert(id: String) {
+        if (!com.billingps.aptv.TimerService.isRunning()) return
+        val app = getApplication<Application>()
+        val intent = Intent(app, com.billingps.aptv.TimerService::class.java).apply {
+            action = com.billingps.aptv.TimerService.ACTION_STOP_ALERT
+            putExtra(com.billingps.aptv.TimerService.EXTRA_TV_ID, id)
+        }
+        try {
+            app.startService(intent)
+        } catch (e: Exception) {
+            Log.e("MainVM", "stopExpiredAlert failed: ${e.message}")
+        }
+    }
+
     private fun refreshTimerService() {
         val app = getApplication<Application>()
         val activeTvs = _state.value.tvList.filter { it.timerActive || it.bebas }
@@ -3800,6 +3819,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             refreshHubConfig()
             refreshClientStatusListeners()
+            stopExpiredAlert(id)
             refreshTimerService()
             try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after hapusTV: ${e.message}") }
             val username = _state.value.currentUser
@@ -4019,6 +4039,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             else "Tagihan ${newTv.nama} Rp${newTv.totalBelanja}"
         )
         refreshTimerService()
+        if (allLunas) {
+            stopExpiredAlert(tvId)
+            if (newTv.sesiSelesai > 0L) scheduleSleepAfter(newTv, AUTO_SLEEP_AFTER_END_MS)
+        }
         try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after settlePembayaran: ${e.message}") }
         return true
     }
@@ -4090,25 +4114,48 @@ fun bersihkanTransaksi() {
                 metode = if (metode.isNotBlank()) metode else old.metode,
                 kasir = if (sudahBayar) _state.value.currentUser else old.kasir,
             )
+            val sessionEnded = list[idx].sesiSelesai > 0L
             val tv = _state.value.tvList.firstOrNull {
                 it.id == old.tvId || (old.tvId.isBlank() && it.nama == kota)
             }
+            var allPaid = false
             val tvs = if (tv != null) {
                 val (paketLunas, fnbLunas) = statusPembayaran(tv, list)
+                allPaid = paketLunas && fnbLunas
                 _state.value.tvList.map {
-                    if (it.id == tv.id) it.copy(
-                        paketSudahBayar = paketLunas,
-                        fnbSudahBayar = fnbLunas,
-                        sudahBayar = paketLunas && fnbLunas,
-                    ) else it
+                    if (it.id != tv.id) it else {
+                        val updated = it.copy(
+                            paketSudahBayar = paketLunas,
+                            fnbSudahBayar = fnbLunas,
+                            sudahBayar = allPaid,
+                        )
+                        if (allPaid && updated.sesiSelesai > 0L) {
+                            updated.copy(
+                                paketAktif = "",
+                                paketHarga = 0,
+                                totalPesanan = 0,
+                                pesanan = emptyMap(),
+                                pesananHarga = emptyMap(),
+                                bebasPesananTotal = 0,
+                            )
+                        } else updated
+                    }
                 }
             } else _state.value.tvList
             _state.value = _state.value.copy(transaksiList = list, tvList = tvs)
             StorageUtil.saveTransaksi(list)
             StorageUtil.saveTvList(tvs)
-            if (tv != null) {
-                _state.value.tvList.firstOrNull { it.id == tv.id }?.let(TvHubManager::sendSyncTimer)
+            val updatedTv = if (tv != null) tvs.firstOrNull { it.id == tv.id } else null
+            if (updatedTv != null) {
+                TvHubManager.sendSyncTimer(updatedTv)
+                if (allPaid) {
+                    stopExpiredAlert(updatedTv.id)
+                    if (sessionEnded || updatedTv.sesiSelesai > 0L) {
+                        scheduleSleepAfter(updatedTv, AUTO_SLEEP_AFTER_END_MS)
+                    }
+                }
             }
+            refreshTimerService()
             try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after setTransaksiSudahBayar: ${e.message}") }
         }
     }
@@ -4178,22 +4225,45 @@ fun bersihkanTransaksi() {
                     } else tx.sesiSelesai,
                 )
             }
+            val sessionEnded = list.any { it.id in sessionIds && it.sesiSelesai > 0L }
+            var allPaid = false
             val tvs = if (tv != null) {
                 val (paketLunas, fnbLunas) = statusPembayaran(tv, list)
+                allPaid = paketLunas && fnbLunas
                 _state.value.tvList.map {
-                    if (it.id == tv.id) it.copy(
-                        paketSudahBayar = paketLunas,
-                        fnbSudahBayar = fnbLunas,
-                        sudahBayar = paketLunas && fnbLunas,
-                    ) else it
+                    if (it.id != tv.id) it else {
+                        val updated = it.copy(
+                            paketSudahBayar = paketLunas,
+                            fnbSudahBayar = fnbLunas,
+                            sudahBayar = allPaid,
+                        )
+                        if (allPaid && updated.sesiSelesai > 0L) {
+                            updated.copy(
+                                paketAktif = "",
+                                paketHarga = 0,
+                                totalPesanan = 0,
+                                pesanan = emptyMap(),
+                                pesananHarga = emptyMap(),
+                                bebasPesananTotal = 0,
+                            )
+                        } else updated
+                    }
                 }
             } else _state.value.tvList
             _state.value = _state.value.copy(transaksiList = list, tvList = tvs)
             StorageUtil.saveTransaksi(list)
             StorageUtil.saveTvList(tvs)
-            if (tv != null) {
-                _state.value.tvList.firstOrNull { it.id == tv.id }?.let(TvHubManager::sendSyncTimer)
+            val updatedTv = if (tv != null) tvs.firstOrNull { it.id == tv.id } else null
+            if (updatedTv != null) {
+                TvHubManager.sendSyncTimer(updatedTv)
+                if (allPaid) {
+                    stopExpiredAlert(updatedTv.id)
+                    if (sessionEnded || updatedTv.sesiSelesai > 0L) {
+                        scheduleSleepAfter(updatedTv, AUTO_SLEEP_AFTER_END_MS)
+                    }
+                }
             }
+            refreshTimerService()
             try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after settleTransaksi: ${e.message}") }
         }
     }
@@ -4903,12 +4973,18 @@ fun bersihkanTransaksi() {
     }
 
     override fun onCleared() {
+        timerReceiver?.let {
+            try { getApplication<Application>().unregisterReceiver(it) } catch (_: Exception) {}
+        }
+        timerReceiver = null
         connectivityObserver.stop()
         firebaseAuth.removeAuthStateListener(deviceAuthListener)
         stopLicenseListener()
         stopPromoListener()
         stopNotifListener()
         stopDeviceSessionListener()
+        stopClientStatusListeners()
+        TvHubManager.setLogUploader(null)
         super.onCleared()
     }
 }

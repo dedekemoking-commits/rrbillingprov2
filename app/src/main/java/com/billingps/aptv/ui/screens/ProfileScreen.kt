@@ -38,9 +38,13 @@ import androidx.compose.ui.unit.dp
 import com.billingps.aptv.models.*
 import com.billingps.aptv.ui.theme.*
 import com.billingps.aptv.ui.theme.ThemeOption
+import com.billingps.aptv.utils.TimeUtils
 import kotlinx.coroutines.launch
 import android.bluetooth.BluetoothDevice
 import android.util.Log
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 @Composable
 fun ProfileScreen(
@@ -69,7 +73,7 @@ fun ProfileScreen(
 
     LaunchedEffect(state.shiftConfig) { shiftDraft = state.shiftConfig }
     LaunchedEffect(state.currentRole) {
-        if (state.currentRole == "admin") viewModel.refreshShiftConfig()
+        if (state.currentRole.isNotBlank()) viewModel.refreshShiftConfig()
     }
 
 
@@ -441,6 +445,9 @@ fun ProfileScreen(
                     )
                 }
                 }
+
+            // Laporan Shift (read-only untuk semua role)
+            ShiftReportCard(state)
 
             // Theme Display
             Card(shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = DarkSurface), border = BorderStroke(1.dp, DarkSurfaceV3)) {
@@ -978,6 +985,151 @@ fun ProfileScreen(
             }
 
             Spacer(Modifier.height(30.dp))
+        }
+    }
+}
+
+private data class ShiftSummary(
+    val label: String,
+    val transaksi: Int,
+    val total: Int,
+    val lunas: Int,
+)
+
+@Composable
+private fun ShiftReportCard(state: AppUiState) {
+    val config = state.shiftConfig
+    val today = remember(config) { config.tanggalOperasional(ZonedDateTime.now(TimeUtils.WIB)) }
+    var reportDate by remember(config) { mutableStateOf(today) }
+    val dateFormatter = remember { DateTimeFormatter.ofPattern("dd MMM yyyy", Locale("id", "ID")) }
+
+    val rows = remember(state.transaksiList, config, reportDate) {
+        state.transaksiList.mapNotNull { trx ->
+            val zoned = TimeUtils.parseInstant(trx.waktu)?.atZone(TimeUtils.WIB)
+            val tanggal = trx.tanggalOperasional.ifBlank {
+                zoned?.let { config.tanggalOperasional(it).toString() }.orEmpty()
+            }
+            if (tanggal != reportDate.toString()) return@mapNotNull null
+            val shift = trx.jenisShift.ifBlank {
+                zoned?.let { config.jenisShift(it) } ?: "Luar Shift"
+            }
+            trx to shift
+        }
+    }
+    val summaries = listOf("Pagi", "Malam", "Luar Shift").map { label ->
+        val items = rows.filter { it.second == label }.map { it.first }
+        ShiftSummary(
+            label = label,
+            transaksi = items.size,
+            total = items.sumOf { it.total },
+            lunas = items.filter { it.sudahBayar }.sumOf { it.total },
+        )
+    }
+    val grandTotal = summaries.sumOf { it.total }
+    val grandLunas = summaries.sumOf { it.lunas }
+    val nowMinutes = ZonedDateTime.now(TimeUtils.WIB).let { it.hour * 60 + it.minute }
+    val currentShift = config.labelShift(nowMinutes)
+
+    Card(
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+        border = BorderStroke(1.dp, DarkSurfaceV3),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Filled.DateRange, contentDescription = null, tint = NeonCyan, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("LAPORAN SHIFT", style = MaterialTheme.typography.labelLarge, color = NeonCyan, modifier = Modifier.weight(1f))
+                Surface(shape = RoundedCornerShape(50), color = NeonCyan.copy(alpha = 0.12f)) {
+                    Text(
+                        "Sekarang: $currentShift",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = NeonCyan,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (state.currentRole == "admin") {
+                    "Rekap transaksi per shift. Hanya untuk dilihat; pengaturan shift ada di atas."
+                } else {
+                    "Rekap transaksi per shift. Hanya untuk dilihat; hubungi admin untuk mengubah jadwal."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = TextDim,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Pagi ${config.pagiLabel()}  •  Malam ${config.malamLabel()}  •  Batas hari ${ShiftConfig.formatTime(config.batasHari)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { reportDate = reportDate.minusDays(1) }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = "Hari sebelumnya", tint = TextPrimary)
+                }
+                Text(
+                    dateFormatter.format(reportDate),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.Center,
+                )
+                IconButton(
+                    onClick = { if (reportDate < today) reportDate = reportDate.plusDays(1) },
+                    enabled = reportDate < today,
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.KeyboardArrowRight,
+                        contentDescription = "Hari berikutnya",
+                        tint = if (reportDate < today) TextPrimary else TextDim,
+                    )
+                }
+                if (reportDate != today) {
+                    TextButton(onClick = { reportDate = today }, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                        Text("Hari ini", style = MaterialTheme.typography.labelSmall, color = NeonCyan)
+                    }
+                }
+            }
+
+            HorizontalDivider(color = DarkSurfaceV3.copy(alpha = 0.5f), thickness = 0.5.dp)
+            summaries.forEach { summary ->
+                val color = when (summary.label) {
+                    "Pagi" -> NeonYellow
+                    "Malam" -> NeonPurple
+                    else -> TextDim
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(Modifier.size(8.dp).background(color, RoundedCornerShape(50)))
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(summary.label, style = MaterialTheme.typography.bodySmall, color = TextPrimary, fontWeight = FontWeight.Bold)
+                        Text(
+                            "${summary.transaksi} transaksi • Lunas ${fmtRp(summary.lunas)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextDim,
+                        )
+                    }
+                    Text(fmtRp(summary.total), style = MaterialTheme.typography.bodySmall, color = color, fontWeight = FontWeight.Bold)
+                }
+            }
+            HorizontalDivider(color = DarkSurfaceV3.copy(alpha = 0.5f), thickness = 0.5.dp)
+            Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("TOTAL", style = MaterialTheme.typography.bodySmall, color = TextPrimary, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(fmtRp(grandTotal), style = MaterialTheme.typography.titleSmall, color = NeonGreen, fontWeight = FontWeight.Bold)
+                    Text("Lunas ${fmtRp(grandLunas)}", style = MaterialTheme.typography.bodySmall, color = TextDim)
+                }
+            }
         }
     }
 }

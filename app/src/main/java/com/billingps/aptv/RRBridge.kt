@@ -18,6 +18,7 @@ import com.billingps.aptv.models.LicenseCatalog
 import com.billingps.aptv.models.LicenseRecord
 import com.billingps.aptv.models.MainViewModel
 import com.billingps.aptv.models.PrayerConfig
+import com.billingps.aptv.models.ShiftConfig
 import com.billingps.aptv.models.Transaksi
 import com.billingps.aptv.models.TvData
 import com.billingps.aptv.models.UserData
@@ -29,10 +30,13 @@ import com.billingps.aptv.tv.TvHubManager
 import com.billingps.aptv.ui.theme.BackgroundOption
 import com.billingps.aptv.ui.theme.ThemeOption
 import com.billingps.aptv.utils.PrayerTimes
+import com.billingps.aptv.utils.SessionSound
 import com.billingps.aptv.utils.ThermalPrinter
+import com.billingps.aptv.utils.TimeUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -61,6 +65,7 @@ class RRBridge(
     }
 
     fun onPageFinished() {
+        mainViewModel.refreshShiftConfig()
         emitState(force = true)
     }
 
@@ -1008,6 +1013,66 @@ class RRBridge(
                     sendResult(id, true)
                 }
 
+                "profile.shift.refresh" -> {
+                    mainViewModel.refreshShiftConfig()
+                    sendResult(id, true, JSONObject().put("shift", shiftJson(mainViewModel.state.value.shiftConfig)))
+                }
+
+                "profile.shift.save" -> {
+                    if (mainViewModel.state.value.currentRole == "kasir") {
+                        sendResult(id, false, error = "Hanya admin yang dapat mengubah pengaturan shift")
+                        return
+                    }
+                    val current = mainViewModel.state.value.shiftConfig
+                    val config = ShiftConfig(
+                        pagiMulai = ShiftConfig.parseTime(payload.optString("pagiMulai")) ?: current.pagiMulai,
+                        pagiSelesai = ShiftConfig.parseTime(payload.optString("pagiSelesai")) ?: current.pagiSelesai,
+                        malamMulai = ShiftConfig.parseTime(payload.optString("malamMulai")) ?: current.malamMulai,
+                        malamSelesai = ShiftConfig.parseTime(payload.optString("malamSelesai")) ?: current.malamSelesai,
+                        batasHari = ShiftConfig.parseTime(payload.optString("batasHari")) ?: current.batasHari,
+                    )
+                    val error = config.validasi()
+                    if (error != null) {
+                        sendResult(id, false, error = error)
+                        return
+                    }
+                    activity.lifecycleScope.launch {
+                        val ok = mainViewModel.updateShiftConfig(config)
+                        sendResult(
+                            id,
+                            ok,
+                            data = JSONObject().put("shift", shiftJson(config)),
+                            error = if (ok) null else mainViewModel.state.value.statusMessage,
+                        )
+                    }
+                }
+
+                "profile.expiredSound.get" -> {
+                    sendResult(id, true, expiredSoundJson())
+                }
+
+                "profile.expiredSound.pick" -> {
+                    activity.pickExpiredSound { uri -> installExpiredSound(id, uri) }
+                }
+
+                "profile.expiredSound.pickFile" -> {
+                    activity.pickDocument(arrayOf("audio/*")) { uri -> installExpiredSound(id, uri) }
+                }
+
+                "profile.expiredSound.test" -> {
+                    val played = SessionSound.play(activity) != null
+                    sendResult(
+                        id,
+                        true,
+                        expiredSoundJson().put("played", played),
+                    )
+                }
+
+                "profile.expiredSound.reset" -> {
+                    SessionSound.reset(activity)
+                    sendResult(id, true, expiredSoundJson(changed = true))
+                }
+
                 "profile.rental.save" -> {
                     if (mainViewModel.state.value.currentRole == "kasir") {
                         sendResult(id, false, error = "Hanya admin yang dapat mengubah data rental")
@@ -1101,6 +1166,40 @@ class RRBridge(
             sendResult(id, false, error = e.message ?: "Perintah gagal")
         }
     }
+
+    private fun installExpiredSound(id: String, uri: Uri?) {
+        if (uri == null) {
+            sendResult(id, true, expiredSoundJson())
+            return
+        }
+        activity.lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                SessionSound.install(activity, uri)
+            }
+            if (ok) {
+                sendResult(id, true, expiredSoundJson(changed = true))
+            } else {
+                sendResult(id, false, error = "Gagal menyalin suara. Pilih file audio lain.")
+            }
+        }
+    }
+
+    private fun expiredSoundJson(changed: Boolean = false): JSONObject =
+        JSONObject()
+            .put("changed", changed)
+            .put("name", SessionSound.currentName())
+            .put("custom", SessionSound.isCustom())
+
+    private fun shiftJson(config: ShiftConfig): JSONObject =
+        JSONObject()
+            .put("pagiMulai", config.pagiMulai)
+            .put("pagiSelesai", config.pagiSelesai)
+            .put("malamMulai", config.malamMulai)
+            .put("malamSelesai", config.malamSelesai)
+            .put("batasHari", config.batasHari)
+            .put("pagiLabel", config.pagiLabel())
+            .put("malamLabel", config.malamLabel())
+            .put("batasHariLabel", ShiftConfig.formatTime(config.batasHari))
 
     private fun prayerJson(): JSONObject {
         val state = mainViewModel.state.value
@@ -1215,6 +1314,7 @@ class RRBridge(
                     .put("themeOption", state.themeOption.name)
                     .put("backgroundOption", state.backgroundOption.name)
                     .put("tvPasswordSet", state.tvPasswordHash.isNotBlank())
+                    .put("shift", shiftJson(state.shiftConfig))
                     .put(
                         "printer",
                         JSONObject()
@@ -1381,11 +1481,19 @@ class RRBridge(
 
     private fun transactionsJson(items: List<Transaksi>): JSONArray {
         val array = JSONArray()
+        val shiftConfig = mainViewModel.state.value.shiftConfig
         items.forEach { item ->
+            val zoned = TimeUtils.parseInstant(item.waktu)?.atZone(TimeUtils.WIB)
             array.put(
                 JSONObject()
                     .put("id", item.id)
                     .put("waktu", item.waktu)
+                    .put("tanggalOperasional", item.tanggalOperasional.ifBlank {
+                        zoned?.let { shiftConfig.tanggalOperasional(it).toString() } ?: item.waktu.take(10)
+                    })
+                    .put("jenisShift", item.jenisShift.ifBlank {
+                        zoned?.let { shiftConfig.jenisShift(it) } ?: ""
+                    })
                     .put("kasir", item.kasir)
                     .put("kota", item.kota)
                     .put("paket", item.paket)

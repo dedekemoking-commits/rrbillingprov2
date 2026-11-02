@@ -145,4 +145,50 @@ object MonitorRepository {
             .addOnSuccessListener { onResult(true, "") }
             .addOnFailureListener { onResult(false, it.message ?: "Gagal mengirim perintah") }
     }
+
+    // Called by Activity/ViewModel with a lifecycle-aware scope
+    fun startPeriodicLogSync(
+        scope: kotlinx.coroutines.CoroutineScope,
+        username: String,
+        tvIds: List<String>,
+        onLogReady: (List<TvLogDoc>) -> Unit,
+        onError: (String) -> Unit,
+    ) {
+        // Cancel any existing sync job by returning its job
+        scope.launch {
+            try {
+                while (isActive) {
+                    delay(60_000) // every 60 seconds
+                    for (tvId in tvIds) {
+                        if (tvId.isBlank()) continue
+                        sendCommand(username, tvId, "REPORT_LOGS") { ok, msg ->
+                            if (!ok) onError("Failed REPORT_LOGS: $msg")
+                        }
+                    }
+                    // Read logs after sending
+                    val docs = db.collection("billingps_users")
+                        .document(username)
+                        .collection("tvLogs")
+                        .orderBy("lastReportMs", Query.Direction.DESCENDING)
+                        .get()
+                        .await()
+                        .documents
+                        .mapNotNull { doc ->
+                            TvLogDoc(
+                                tvId = doc.id,
+                                app = doc.getString("app") ?: "",
+                                version = doc.getString("version") ?: "",
+                                errorCount = (doc.getLong("errorCount") ?: 0L).toInt(),
+                                totalLines = (doc.getLong("totalLines") ?: 0L).toInt(),
+                                lastReportMs = doc.getLong("lastReportMs") ?: 0L,
+                                lines = (doc.get("lines") as? List<*>)?.mapNotNull { it as? String } ?: emptyList(),
+                            )
+                        }
+                    onLogReady(docs)
+                }
+            } catch (e: Exception) {
+                onError(e.message ?: "Periodic log sync error")
+            }
+        }
+    }
 }

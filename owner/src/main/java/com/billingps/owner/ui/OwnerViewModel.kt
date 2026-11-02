@@ -38,6 +38,7 @@ data class OwnerUiState(
     val period: ReportPeriod = ReportPeriod.WEEK,
     val search: String = "",
     val dataSource: String = "",
+    val localTimer: Map<String, Long> = emptyMap(),
 )
 
 class OwnerViewModel(application: Application) : AndroidViewModel(application) {
@@ -53,10 +54,15 @@ class OwnerViewModel(application: Application) : AndroidViewModel(application) {
     )
     val state = _state.asStateFlow()
 
+    // Local timer for TV session remaining time (realtime, independent of Firestore)
+    private val _localTimer = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val localTimer = _localTimer.asStateFlow()
+
     private var rentalListener: ListenerRegistration? = null
     private val clientListeners = mutableMapOf<String, ListenerRegistration>()
     private var reportJob: Job? = null
     private var autoRefreshJob: Job? = null
+    private var timerJob: Job? = null
 
     init {
         val saved = prefs.username
@@ -123,6 +129,7 @@ class OwnerViewModel(application: Application) : AndroidViewModel(application) {
             attachRentalListener(username)
             refreshTransactions(showSpinner = false)
             startAutoRefresh()
+            startLocalTimer()
         }
     }
 
@@ -187,14 +194,21 @@ class OwnerViewModel(application: Application) : AndroidViewModel(application) {
             clientListeners.remove(id)?.remove()
         }
         _state.update {
-            it.copy(clientStatus = it.clientStatus.filterKeys { id -> id in ids })
+            it.copy(
+                clientStatus = it.clientStatus.filterKeys { id -> id in ids },
+                localTimer = it.localTimer + _localTimer.value,
+            )
         }
 
         tvs.forEach { tv ->
             if (tv.id.isBlank() || clientListeners.containsKey(tv.id)) return@forEach
             val registration = repo.listenClientStatus(username, tv.id) { status ->
                 _state.update { current ->
-                    current.copy(clientStatus = current.clientStatus + (tv.id to status))
+                    val elapsed = calculateRemaining(tv, System.currentTimeMillis())
+                    current.copy(
+                        clientStatus = current.clientStatus + (tv.id to status),
+                        localTimer = current.localTimer + (tv.id to elapsed),
+                    )
                 }
             }
             if (registration != null) clientListeners[tv.id] = registration
@@ -247,6 +261,31 @@ class OwnerViewModel(application: Application) : AndroidViewModel(application) {
                 refreshTransactions(showSpinner = false)
             }
         }
+    }
+
+    private fun startLocalTimer() {
+        timerJob?.cancel()
+        timerJob = viewModelScope.launch {
+            while (isActive) {
+                delay(1000)
+                val currentTime = System.currentTimeMillis()
+                val updated = _state.value.tvs.associate { tv ->
+                    tv.id to calculateRemaining(tv, currentTime)
+                }
+                _localTimer.update { updated }
+            }
+        }
+    }
+
+    private fun calculateRemaining(tv: OwnerTv, now: Long): Long {
+        if (tv.timerStart <= 0L || tv.timerDurasi <= 0L) return tv.sisaDetik
+        // If timer is active, count down from timerDurasi
+        if (tv.timerActive) {
+            val elapsed = now - tv.timerStart
+            return (tv.timerDurasi - elapsed).coerceAtLeast(0L)
+        }
+        // Otherwise use stored sisaDetik as last known value
+        return tv.sisaDetik
     }
 
     fun setPeriod(period: ReportPeriod) {

@@ -92,7 +92,7 @@ object TvHubManager {
         logUploader = uploader
     }
 
-    fun updateConfig(tvs: List<TvData>, rentalName: String, clientEnabled: Boolean = true) {
+    fun updateConfig(tvs: List<TvData>, rentalName: String, clientEnabled: Boolean = true): Boolean {
         val old = config
         val updated = HubConfig(
             tvs = tvs.toList(),
@@ -101,6 +101,7 @@ object TvHubManager {
         )
         config = updated
         if (old.clientEnabled != clientEnabled) {
+            if (!clientEnabled) server?.clearLocks()
             server?.disconnectClients()
         }
         val endpointsChanged = old.tvs.size != updated.tvs.size ||
@@ -110,6 +111,11 @@ object TvHubManager {
         if (endpointsChanged) {
             server?.refreshAll()
         }
+        return endpointsChanged
+    }
+
+    fun refreshAll() {
+        server?.refreshAll()
     }
 
     fun isServerRunning(): Boolean = server != null

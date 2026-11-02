@@ -705,6 +705,28 @@ fun loadUsers(): Map<String, UserData> {
         }
     }
 
+    // ── Session Expiry Sound ────────────────────────────────
+    private const val EXPIRED_SOUND_URI_KEY = "expiredSoundUri"
+    private const val EXPIRED_SOUND_NAME_KEY = "expiredSoundName"
+
+    fun saveExpiredSound(uri: String, name: String) {
+        prefs.edit()
+            .putString(EXPIRED_SOUND_URI_KEY, uri)
+            .putString(EXPIRED_SOUND_NAME_KEY, name)
+            .apply()
+    }
+
+    fun clearExpiredSound() {
+        prefs.edit()
+            .remove(EXPIRED_SOUND_URI_KEY)
+            .remove(EXPIRED_SOUND_NAME_KEY)
+            .apply()
+    }
+
+    fun loadExpiredSoundUri(): String = prefs.getString(EXPIRED_SOUND_URI_KEY, "") ?: ""
+
+    fun loadExpiredSoundName(): String = prefs.getString(EXPIRED_SOUND_NAME_KEY, "") ?: ""
+
     // ── TV Password ─────────────────────────────────────────
     fun saveTvPassword(hash: String) {
         securePrefs.edit().putString("tvPasswordHash", hash).apply()
@@ -878,6 +900,8 @@ fun loadUsers(): Map<String, UserData> {
         val keepNotifications = prefs.getString("notifications", null)
         val keepPromo = prefs.getString("promo", null)
         val keepShiftConfig = prefs.getString(SHIFT_CONFIG_GLOBAL_KEY, null)
+        val keepExpiredSoundUri = prefs.getString(EXPIRED_SOUND_URI_KEY, null)
+        val keepExpiredSoundName = prefs.getString(EXPIRED_SOUND_NAME_KEY, null)
         val keepSmtp = prefs.getString("smtp", null)
         val keepLicStatus = prefs.getString("licenseStatus", null)
         val keepLicPesan = prefs.getString("licensePesan", null)
@@ -907,6 +931,8 @@ fun loadUsers(): Map<String, UserData> {
         if (keepNotifications != null) editor.putString("notifications", keepNotifications)
         if (keepPromo != null) editor.putString("promo", keepPromo)
         if (keepShiftConfig != null) editor.putString(SHIFT_CONFIG_GLOBAL_KEY, keepShiftConfig)
+        if (keepExpiredSoundUri != null) editor.putString(EXPIRED_SOUND_URI_KEY, keepExpiredSoundUri)
+        if (keepExpiredSoundName != null) editor.putString(EXPIRED_SOUND_NAME_KEY, keepExpiredSoundName)
         if (keepSmtp != null) editor.putString("smtp", keepSmtp)
         if (keepLicStatus != null) editor.putString("licenseStatus", keepLicStatus)
         if (keepLicPesan != null) editor.putString("licensePesan", keepLicPesan)

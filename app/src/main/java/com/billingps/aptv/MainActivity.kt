@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -64,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     private var pendingCreateDocument: ((Uri?) -> Unit)? = null
     private var pendingBluetoothPermission: ((Boolean) -> Unit)? = null
     private var pendingLocationPermission: ((Boolean) -> Unit)? = null
+    private var pendingRingtonePick: ((Uri?) -> Unit)? = null
 
     private val documentPicker = registerForActivityResult(
         ActivityResultContracts.OpenDocument(),
@@ -101,6 +103,24 @@ class MainActivity : AppCompatActivity() {
         callback?.invoke(granted)
     }
 
+    private val ringtonePicker = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val callback = pendingRingtonePick
+        pendingRingtonePick = null
+        val uri = if (result.resultCode == android.app.Activity.RESULT_OK) {
+            if (Build.VERSION.SDK_INT >= 33) {
+                result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI, Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+            }
+        } else {
+            null
+        }
+        callback?.invoke(uri)
+    }
+
     fun pickDocument(mimeTypes: Array<String>, onResult: (Uri?) -> Unit) {
         pendingDocumentPick?.invoke(null)
         pendingDocumentPick = onResult
@@ -121,6 +141,28 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Log.e("MainActivity", "createDocument gagal: ${e.message}")
             pendingCreateDocument = null
+            onResult(null)
+        }
+    }
+
+    fun pickExpiredSound(onResult: (Uri?) -> Unit) {
+        pendingRingtonePick?.invoke(null)
+        pendingRingtonePick = onResult
+        val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+            putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_NOTIFICATION)
+            putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Pilih suara sesi habis")
+            putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false)
+            putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+            putExtra(
+                RingtoneManager.EXTRA_RINGTONE_DEFAULT_URI,
+                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
+            )
+        }
+        try {
+            ringtonePicker.launch(intent)
+        } catch (e: Exception) {
+            Log.e("MainActivity", "pickExpiredSound gagal: ${e.message}")
+            pendingRingtonePick = null
             onResult(null)
         }
     }
@@ -185,6 +227,11 @@ class MainActivity : AppCompatActivity() {
         tvViewModel = ViewModelProvider(this)[TvViewModel::class.java]
 
         createNotificationChannel()
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1002)
+        }
         TvHubManager.ensureStarted(this)
         // Init Python di background agar tidak blokir UI thread (fix ANR)
         CoroutineScope(Dispatchers.IO).launch {

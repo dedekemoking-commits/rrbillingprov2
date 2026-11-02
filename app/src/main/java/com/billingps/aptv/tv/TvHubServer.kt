@@ -250,10 +250,15 @@ class TvHubServer(
         val config = configProvider()
         val tv = TvHubProtocol.findTv(config.tvs, mejaId)
         val key = TvHubProtocol.normalizeId(mejaId)
+        val active = tv != null && (tv.timerActive || tv.bebas)
         val expired = tv != null && !tv.timerActive && !tv.bebas &&
             tv.timerDurasi > 0 && tv.sisaDetik <= 0
-        val isLocked = lockedByTv[key] == true || expired
-        if (expired) lockedByTv[key] = true
+        if (active) {
+            lockedByTv.remove(key)
+        } else if (expired) {
+            lockedByTv[key] = true
+        }
+        val isLocked = !active && (lockedByTv[key] == true || expired)
         session.locked = isLocked
         val commands = snapshotCommands(tv, mejaId, config.rentalName, isLocked)
         val state = JSONArray()
@@ -388,14 +393,25 @@ class TvHubServer(
         sessions.values.filter { it.mejaId.isNotBlank() }.forEach { session ->
             val tv = TvHubProtocol.findTv(config.tvs, session.mejaId)
             val key = TvHubProtocol.normalizeId(session.mejaId)
+            val active = tv != null && (tv.timerActive || tv.bebas)
             val expired = tv != null && !tv.timerActive && !tv.bebas &&
                 tv.timerDurasi > 0 && tv.sisaDetik <= 0
-            if (expired) lockedByTv[key] = true
-            val isLocked = lockedByTv[key] == true || expired
+            if (active) {
+                lockedByTv.remove(key)
+            } else if (expired) {
+                lockedByTv[key] = true
+            }
+            val isLocked = !active && (lockedByTv[key] == true || expired)
             session.locked = isLocked
             snapshotCommands(tv, session.mejaId, config.rentalName, isLocked)
                 .forEach { send(session.socket, it) }
         }
+    }
+
+    fun clearLocks() {
+        lockedByTv.clear()
+        sessions.values.forEach { it.locked = false }
+        publishConnections()
     }
 
     fun connectedTvs(): Map<String, TvConnection> {

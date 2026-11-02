@@ -70,7 +70,12 @@ class OwnerRepository {
         onUpdate: (ClientStatus) -> Unit,
     ): ListenerRegistration? {
         if (username.isBlank() || tvId.isBlank()) return null
-        return db.collection("billingps_users").document(username)
+        // TV client ditulis ke path: billingps_users/<username>/tvCommands/<tvId>
+        // Dimana <username> adalah Prefs.username() (default: tv-arduino jika kosong).
+        // Gunakan "tv-arduino" sebagai username Firestore tetap agar path konsisten
+        // dengan apa yang ditulis TV client (bukan session username kasir).
+        val firestoreUsername = "tv-arduino"
+        return db.collection("billingps_users").document(firestoreUsername)
             .collection("tvCommands").document(tvId)
             .addSnapshotListener { snap, error ->
                 if (error != null) {
@@ -186,7 +191,8 @@ class OwnerRepository {
             pesanan = jsonIntMap(o.optJSONObject("pesanan")),
             pesananHarga = jsonIntMap(o.optJSONObject("pesananHarga")),
             tvJenisPs = o.optString("tvJenisPs", ""),
-            sudahBayar = o.optBoolean("sudahBayar", false),
+            // Map paid (legacy) -> sudahBayar (new schema)
+            sudahBayar = o.optBoolean("sudahBayar", o.optBoolean("paid", false)),
             metode = o.optString("metode", ""),
         )
 

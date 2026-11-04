@@ -37,6 +37,7 @@ object TvHubProtocol {
     const val ACTION_UPDATE_RENTAL = "UPDATE_RENTAL"
     const val ACTION_SHOW_MEDIA = "SHOW_MEDIA"
     const val ACTION_HIDE_MEDIA = "HIDE_MEDIA"
+    const val ACTION_DELETE_MEDIA = "DELETE_MEDIA"
     const val ACTION_UPDATE_LOCK_BG = "UPDATE_LOCK_BG"
     const val ACTION_OVERLAY_SETTINGS = "OVERLAY_SETTINGS"
     const val ACTION_SHOW_MESSAGE = "SHOW_MESSAGE"
@@ -159,6 +160,13 @@ object TvHubProtocol {
 
     fun hideMedia(mejaId: String): JSONObject =
         JSONObject().put("action", ACTION_HIDE_MEDIA).put("meja_id", mejaId)
+
+    fun deleteMedia(mejaId: String, local: String, mediaType: String = "promo"): JSONObject =
+        JSONObject()
+            .put("action", ACTION_DELETE_MEDIA)
+            .put("meja_id", mejaId)
+            .put("local", local)
+            .put("type", mediaType)
 
     fun updateLockBg(mejaId: String, local: String = "", url: String = ""): JSONObject =
         JSONObject()

@@ -282,6 +282,10 @@ class CloudRepository(private val app: Application) {
                     "sesiSelesai" to t.sesiSelesai,
                     "cash" to t.cash,
                     "kembalian" to t.kembalian,
+                    "tanggalOperasional" to t.tanggalOperasional,
+                    "jenisShift" to t.jenisShift,
+                    "waktuBayar" to t.waktuBayar,
+                    "shiftId" to t.shiftId,
                 )
             }
 
@@ -409,7 +413,11 @@ class CloudRepository(private val app: Application) {
                                         sesiMulai = (item["sesiMulai"] as? Number)?.toLong() ?: 0L,
                                         sesiSelesai = (item["sesiSelesai"] as? Number)?.toLong() ?: 0L,
                                         cash = (item["cash"] as? Number)?.toInt() ?: 0,
-                                        kembalian = (item["kembalian"] as? Number)?.toInt() ?: 0))
+                                        kembalian = (item["kembalian"] as? Number)?.toInt() ?: 0,
+                                        tanggalOperasional = item["tanggalOperasional"] as? String ?: "",
+                                        jenisShift = item["jenisShift"] as? String ?: "",
+                                        waktuBayar = item["waktuBayar"] as? String ?: "",
+                                        shiftId = item["shiftId"] as? String ?: ""))
                                 }
                             }
                             Log.i("CloudRepo", "fetchTransaksiForUser: got ${list.size} items for $username")

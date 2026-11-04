@@ -388,6 +388,8 @@ fun loadUsers(): Map<String, UserData> {
                 put("kembalian", t.kembalian)
                 put("tanggalOperasional", t.tanggalOperasional)
                 put("jenisShift", t.jenisShift)
+                put("waktuBayar", t.waktuBayar)
+                put("shiftId", t.shiftId)
                 val pesananObj = JSONObject()
                 t.pesanan.forEach { (k, v) -> pesananObj.put(k, v) }
                 put("pesanan", pesananObj)
@@ -433,6 +435,116 @@ fun loadUsers(): Map<String, UserData> {
                 kembalian = o.optInt("kembalian"),
                 tanggalOperasional = o.optString("tanggalOperasional"),
                 jenisShift = o.optString("jenisShift"),
+                waktuBayar = o.optString("waktuBayar"),
+                shiftId = o.optString("shiftId"),
+            ))
+        }
+        return list
+    }
+
+    fun saveKasirShiftList(list: List<ShiftKasir>) {
+        val arr = JSONArray()
+        list.forEach { s ->
+            arr.put(JSONObject().apply {
+                put("id", s.id)
+                put("username", s.username)
+                put("mulai", s.mulai)
+                put("selesai", s.selesai)
+                put("kasAwal", s.kasAwal)
+                put("kasAkhir", s.kasAkhir)
+                put("kasSeharusnya", s.kasSeharusnya)
+                put("selisih", s.selisih)
+                put("totalPenjualanTunai", s.totalPenjualanTunai)
+                put("totalTransaksi", s.totalTransaksi)
+                put("totalPaket", s.totalPaket)
+                put("totalFnb", s.totalFnb)
+                put("totalQris", s.totalQris)
+                put("kasMasuk", s.kasMasuk)
+                put("kasKeluar", s.kasKeluar)
+                put("status", s.status)
+                put("catatan", s.catatan)
+                put("tanggalOperasional", s.tanggalOperasional)
+                put("jenisShift", s.jenisShift)
+                put("ditutupOleh", s.ditutupOleh)
+                put("rentalUsername", s.rentalUsername)
+                put("previousShiftId", s.previousShiftId)
+                put("totalAdminWithdraw", s.totalAdminWithdraw)
+            })
+        }
+        prefs.edit().putString("kasirShiftList", arr.toString()).apply()
+    }
+
+    fun loadKasirShiftList(): List<ShiftKasir> {
+        val raw = prefs.getString("kasirShiftList", "[]") ?: "[]"
+        val arr = JSONArray(raw)
+        val list = mutableListOf<ShiftKasir>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            list.add(ShiftKasir(
+                id = o.optString("id"),
+                username = o.optString("username"),
+                mulai = o.optLong("mulai"),
+                selesai = o.optLong("selesai"),
+                kasAwal = o.optInt("kasAwal"),
+                kasAkhir = o.optInt("kasAkhir"),
+                kasSeharusnya = o.optInt("kasSeharusnya"),
+                selisih = o.optInt("selisih"),
+                totalPenjualanTunai = o.optInt("totalPenjualanTunai"),
+                totalTransaksi = o.optInt("totalTransaksi"),
+                totalPaket = o.optInt("totalPaket"),
+                totalFnb = o.optInt("totalFnb"),
+                totalQris = o.optInt("totalQris"),
+                kasMasuk = o.optInt("kasMasuk"),
+                kasKeluar = o.optInt("kasKeluar"),
+                status = o.optString("status", "AKTIF"),
+                catatan = o.optString("catatan"),
+                tanggalOperasional = o.optString("tanggalOperasional"),
+                jenisShift = o.optString("jenisShift"),
+                ditutupOleh = o.optString("ditutupOleh"),
+                rentalUsername = o.optString("rentalUsername"),
+                previousShiftId = o.optString("previousShiftId"),
+                totalAdminWithdraw = o.optInt("totalAdminWithdraw"),
+            ))
+        }
+        return list
+    }
+
+    fun savePergerakanKasList(list: List<PergerakanKas>) {
+        val arr = JSONArray()
+        list.forEach { p ->
+            arr.put(JSONObject().apply {
+                put("id", p.id)
+                put("shiftId", p.shiftId)
+                put("username", p.username)
+                put("waktu", p.waktu)
+                put("tipe", p.tipe)
+                put("nominal", p.nominal)
+                put("keterangan", p.keterangan)
+                put("kategori", p.kategori)
+                put("referenceId", p.referenceId)
+                put("saldoSetelah", p.saldoSetelah)
+            })
+        }
+        prefs.edit().putString("pergerakanKasList", arr.toString()).apply()
+    }
+
+    fun loadPergerakanKasList(): List<PergerakanKas> {
+        val raw = prefs.getString("pergerakanKasList", "[]") ?: "[]"
+        val arr = JSONArray(raw)
+        val list = mutableListOf<PergerakanKas>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            list.add(PergerakanKas(
+                id = o.optString("id"),
+                shiftId = o.optString("shiftId"),
+                username = o.optString("username"),
+                waktu = o.optLong("waktu"),
+                tipe = o.optString("tipe", "MASUK"),
+                nominal = o.optInt("nominal"),
+                keterangan = o.optString("keterangan"),
+                kategori = o.optString("kategori", "MANUAL"),
+                referenceId = o.optString("referenceId"),
+                saldoSetelah = o.optInt("saldoSetelah"),
             ))
         }
         return list
@@ -517,7 +629,7 @@ fun loadUsers(): Map<String, UserData> {
                 put("dibayar", inv.dibayar)
                 put("confirmedBy", inv.confirmedBy)
                 put("kodeLisensi", inv.kodeLisensi)
-                put("buktiBase64", inv.buktiBase64)
+                put("buktiBase64", if (inv.status == "CONFIRMED") "" else inv.buktiBase64)
                 put("jumlahTv", inv.jumlahTv)
                 put("mode", inv.mode)
                 put("baseMaxTv", inv.baseMaxTv)
@@ -806,6 +918,20 @@ fun loadUsers(): Map<String, UserData> {
 
     fun loadLoginMethod(): String = prefs.getString("loginMethod", "password") ?: "password"
 
+    private fun adminPinKey(username: String): String =
+        "adminPinHash:${username.trim().lowercase(Locale.US)}"
+
+    fun saveAdminPinHash(username: String, hash: String) {
+        securePrefs.edit().putString(adminPinKey(username), hash).apply()
+    }
+
+    fun loadAdminPinHash(username: String): String =
+        securePrefs.getString(adminPinKey(username), "") ?: ""
+
+    fun clearAdminPinHash(username: String) {
+        securePrefs.edit().remove(adminPinKey(username)).apply()
+    }
+
     // ── FCM Service Account (encrypted, not bundled in APK) ──
     fun saveFcmServiceAccount(json: String) {
         securePrefs.edit().putString("fcmServiceAccount", json).apply()
@@ -900,6 +1026,8 @@ fun loadUsers(): Map<String, UserData> {
         val keepNotifications = prefs.getString("notifications", null)
         val keepPromo = prefs.getString("promo", null)
         val keepShiftConfig = prefs.getString(SHIFT_CONFIG_GLOBAL_KEY, null)
+        val keepKasirShift = prefs.getString("kasirShiftList", null)
+        val keepPergerakanKas = prefs.getString("pergerakanKasList", null)
         val keepExpiredSoundUri = prefs.getString(EXPIRED_SOUND_URI_KEY, null)
         val keepExpiredSoundName = prefs.getString(EXPIRED_SOUND_NAME_KEY, null)
         val keepSmtp = prefs.getString("smtp", null)
@@ -931,6 +1059,8 @@ fun loadUsers(): Map<String, UserData> {
         if (keepNotifications != null) editor.putString("notifications", keepNotifications)
         if (keepPromo != null) editor.putString("promo", keepPromo)
         if (keepShiftConfig != null) editor.putString(SHIFT_CONFIG_GLOBAL_KEY, keepShiftConfig)
+        if (keepKasirShift != null) editor.putString("kasirShiftList", keepKasirShift)
+        if (keepPergerakanKas != null) editor.putString("pergerakanKasList", keepPergerakanKas)
         if (keepExpiredSoundUri != null) editor.putString(EXPIRED_SOUND_URI_KEY, keepExpiredSoundUri)
         if (keepExpiredSoundName != null) editor.putString(EXPIRED_SOUND_NAME_KEY, keepExpiredSoundName)
         if (keepSmtp != null) editor.putString("smtp", keepSmtp)

@@ -34,8 +34,8 @@ import com.billingps.aptv.cloud.SupabaseRepository
 import com.billingps.aptv.tv.TvHubManager
 import com.billingps.aptv.tv.TvHubProtocol
 import com.billingps.aptv.tv.TvConnection
+import com.billingps.aptv.tv.TvMediaServer
 import com.billingps.aptv.tv.TvMediaStore
-import com.billingps.aptv.tv.TvMediaUploader
 import com.billingps.aptv.tv.TvRemotePower
 import com.billingps.aptv.ui.theme.BackgroundOption
 import com.billingps.aptv.ui.theme.ThemeOption
@@ -86,6 +86,8 @@ data class AppUiState(
     val users: Map<String, UserData> = emptyMap(),
     val tvList: List<TvData> = emptyList(),
     val transaksiList: List<Transaksi> = emptyList(),
+    val kasirShiftList: List<ShiftKasir> = emptyList(),
+    val pergerakanKasList: List<PergerakanKas> = emptyList(),
     val jenisPsList: List<String> = listOf("PS3", "PS4", "PS5"),
     val paketMain: Map<String, Map<String, Int>> = defaultPaketMain(listOf("PS3", "PS4", "PS5")),
     val paketDurasi: Map<String, Int> = defaultPaketDurasi(),
@@ -123,6 +125,8 @@ data class AppUiState(
     val shiftConfig: ShiftConfig = ShiftConfig(),
     val promo: PromoSettings = PromoSettings(),
     val loginMethod: String = "password", // "password" or "google"
+    val adminPinSet: Boolean = false,
+    val adminPinUnlocked: Boolean = true,
     val printerAddress: String = "",
     val printerName: String = "",
     val printerConnected: Boolean = false,
@@ -461,6 +465,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             users = users,
             tvList = StorageUtil.loadTvList(),
             transaksiList = StorageUtil.loadTransaksi(),
+            kasirShiftList = StorageUtil.loadKasirShiftList(),
+            pergerakanKasList = StorageUtil.loadPergerakanKasList(),
             jenisPsList = groups,
             paketMain = StorageUtil.loadPaketMain().ifEmpty { defaultPaketMain(groups) },
             paketDurasi = StorageUtil.loadPaketDurasi().ifEmpty { defaultPaketDurasi() },
@@ -480,9 +486,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             prayerConfig = StorageUtil.loadPrayerConfig(),
         )
         val savedNotifications = StorageUtil.loadNotifications()
+        val savedLoginMethod = StorageUtil.loadLoginMethod()
+        val savedAdminPinSet = cu.isNotBlank() && StorageUtil.loadAdminPinHash(cu).isNotBlank()
+        val savedPinGate = cr == "admin" && savedLoginMethod == "google"
         _state.value = _state.value.copy(
             pendingInvoiceCount = _state.value.invoices.count { it.status == "WAITING_CONFIRMATION" },
-            loginMethod = StorageUtil.loadLoginMethod(),
+            loginMethod = savedLoginMethod,
+            adminPinSet = savedAdminPinSet,
+            adminPinUnlocked = !savedPinGate,
             printerAddress = StorageUtil.getSecurePreference("printerAddress") ?: "",
             printerName = StorageUtil.getSecurePreference("printerName") ?: "",
             notifications = savedNotifications,
@@ -816,12 +827,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val claim = claimDeviceForLogin(sessionUser, "password")
                 if (!claim.success) return claim
                 StorageUtil.saveCurrentSession(sessionUser.username, sessionUser.role)
+                StorageUtil.saveLoginMethod("password")
                 val smtp = _state.value.smtp
-                _state.value = _state.value.copy(
-                    isLoggedIn = true,
-                    currentUser = sessionUser.username,
-                    currentRole = sessionUser.role,
-                    needsSmtpSetup = smtp.user.isBlank() || smtp.pass.isBlank(),
+                _state.value = applyAdminPinGate(
+                    _state.value.copy(
+                        isLoggedIn = true,
+                        currentUser = sessionUser.username,
+                        currentRole = sessionUser.role,
+                        loginMethod = "password",
+                        needsSmtpSetup = smtp.user.isBlank() || smtp.pass.isBlank(),
+                    ),
+                    sessionUser.username, sessionUser.role, "password",
                 )
                 restoreLocalDataAfterLogin()
                 restoreLicenseAndTrial(sessionUser.username)
@@ -843,12 +859,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val claim = claimDeviceForLogin(fallbackUser, "password")
                         if (!claim.success) return claim
                         StorageUtil.saveCurrentSession(fallbackUser.username, fallbackUser.role)
+                        StorageUtil.saveLoginMethod("password")
                         val smtp = _state.value.smtp
-                        _state.value = _state.value.copy(
-                            isLoggedIn = true,
-                            currentUser = fallbackUser.username,
-                            currentRole = fallbackUser.role,
-                            needsSmtpSetup = smtp.user.isBlank() || smtp.pass.isBlank(),
+                        _state.value = applyAdminPinGate(
+                            _state.value.copy(
+                                isLoggedIn = true,
+                                currentUser = fallbackUser.username,
+                                currentRole = fallbackUser.role,
+                                loginMethod = "password",
+                                needsSmtpSetup = smtp.user.isBlank() || smtp.pass.isBlank(),
+                            ),
+                            fallbackUser.username, fallbackUser.role, "password",
                         )
                         restoreLocalDataAfterLogin()
                         restoreLicenseAndTrial(fallbackUser.username)
@@ -872,12 +893,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!claim.success) return claim
         addActivityLog("Login")
         StorageUtil.saveCurrentSession(localUser.username, localUser.role)
+        StorageUtil.saveLoginMethod("password")
         val smtp = _state.value.smtp
-        _state.value = _state.value.copy(
-            isLoggedIn = true,
-            currentUser = localUser.username,
-            currentRole = localUser.role,
-            needsSmtpSetup = smtp.user.isBlank() || smtp.pass.isBlank(),
+        _state.value = applyAdminPinGate(
+            _state.value.copy(
+                isLoggedIn = true,
+                currentUser = localUser.username,
+                currentRole = localUser.role,
+                loginMethod = "password",
+                needsSmtpSetup = smtp.user.isBlank() || smtp.pass.isBlank(),
+            ),
+            localUser.username, localUser.role, "password",
         )
         restoreLocalDataAfterLogin()
         // After successful login, pull remote transaksi & sync local
@@ -935,16 +961,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             pendingDeviceUser = null
             StorageUtil.saveCurrentSession(user.username, user.role)
+            StorageUtil.saveLoginMethod(pendingDeviceLoginMethod)
             StorageUtil.saveDeviceSessionId(result.sessionId)
-            _state.value = _state.value.copy(
-                isLoggedIn = true,
-                currentUser = user.username,
-                currentRole = user.role,
-                loginMethod = pendingDeviceLoginMethod,
-                deviceConflict = null,
-                deviceSessionId = result.sessionId,
-                isBusy = false,
-                statusMessage = "",
+            _state.value = applyAdminPinGate(
+                _state.value.copy(
+                    isLoggedIn = true,
+                    currentUser = user.username,
+                    currentRole = user.role,
+                    loginMethod = pendingDeviceLoginMethod,
+                    deviceConflict = null,
+                    deviceSessionId = result.sessionId,
+                    isBusy = false,
+                    statusMessage = "",
+                ),
+                user.username, user.role, pendingDeviceLoginMethod,
             )
             startDeviceSessionListener(user.username, result.sessionId)
             addActivityLog("Login ambil alih perangkat")
@@ -1063,10 +1093,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     addActivityLog("Login via Google")
                     StorageUtil.saveCurrentSession(existing.username, existing.role)
                     StorageUtil.saveLoginMethod("google")
-                    _state.value = _state.value.copy(
-                        isLoggedIn = true, currentUser = existing.username, currentRole = existing.role,
-                        needsSmtpSetup = _state.value.smtp.user.isEmpty(),
-                        isBusy = false, statusMessage = "", loginMethod = "google",
+                    _state.value = applyAdminPinGate(
+                        _state.value.copy(
+                            isLoggedIn = true, currentUser = existing.username, currentRole = existing.role,
+                            needsSmtpSetup = _state.value.smtp.user.isEmpty(),
+                            isBusy = false, statusMessage = "", loginMethod = "google",
+                        ),
+                        existing.username, existing.role, "google",
                     )
                     restoreLocalDataAfterLogin()
                     restoreLicenseAndTrial(existing.username)
@@ -1087,9 +1120,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         StorageUtil.saveUsers(updatedUsers)
                         StorageUtil.saveCurrentSession(remoteUsername, "admin")
                         StorageUtil.saveLoginMethod("google")
-                        _state.value = _state.value.copy(
-                            users = updatedUsers, isLoggedIn = true, currentUser = remoteUsername, currentRole = "admin",
-                            isBusy = false, statusMessage = "", loginMethod = "google",
+                        _state.value = applyAdminPinGate(
+                            _state.value.copy(
+                                users = updatedUsers, isLoggedIn = true, currentUser = remoteUsername, currentRole = "admin",
+                                isBusy = false, statusMessage = "", loginMethod = "google",
+                            ),
+                            remoteUsername, "admin", "google",
                         )
                         restoreLocalDataAfterLogin()
                         restoreLicenseAndTrial(remoteUsername)
@@ -1164,10 +1200,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             StorageUtil.saveUsers(updatedUsers)
             StorageUtil.saveCurrentSession(username, "admin")
             StorageUtil.saveLoginMethod("google")
-            _state.value = _state.value.copy(
-                users = updatedUsers, isLoggedIn = true, currentUser = username, currentRole = "admin",
-                pendingGoogleRegistration = false, pendingGoogleEmail = "", pendingGoogleDisplayName = "", pendingGoogleIdToken = "",
-                isBusy = false, statusMessage = "", loginMethod = "google",
+            _state.value = applyAdminPinGate(
+                _state.value.copy(
+                    users = updatedUsers, isLoggedIn = true, currentUser = username, currentRole = "admin",
+                    pendingGoogleRegistration = false, pendingGoogleEmail = "", pendingGoogleDisplayName = "", pendingGoogleIdToken = "",
+                    isBusy = false, statusMessage = "", loginMethod = "google",
+                ),
+                username, "admin", "google",
             )
             if (_state.value.trialBatas == 0L && _state.value.licenseStatus.status != "active") {
                 // Rate limit trial to once per device
@@ -1275,17 +1314,241 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return ok
     }
 
-    fun isDalamShiftSekarang(): Boolean {
-        if (_state.value.currentRole == "admin") return true
-        val now = java.time.ZonedDateTime.now(TimeUtils.WIB)
-        return _state.value.shiftConfig.isDalamShift(now.getHour() * 60 + now.getMinute())
-    }
+    fun isDalamShiftSekarang(): Boolean = shiftAktifSekarang() != null
 
     fun shiftBlockMessage(): String {
         val config = _state.value.shiftConfig
-        return "Sesi hanya bisa dimulai pada shift Pagi (${config.pagiLabel()}) " +
-            "atau Malam (${config.malamLabel()})."
+        val now = java.time.ZonedDateTime.now(TimeUtils.WIB)
+        if (!config.isDalamShift(now.getHour() * 60 + now.getMinute())) {
+            return "Sesi hanya bisa dimulai pada shift Pagi (${config.pagiLabel()}) " +
+                "atau Malam (${config.malamLabel()})."
+        }
+        return "Shift belum dibuka. Buka shift kasir terlebih dahulu sebelum memulai sesi."
     }
+
+    fun shiftAktifSekarang(): ShiftKasir? {
+        shiftAktif(_state.value.currentUser)?.let { return it }
+        if (_state.value.currentRole == "admin") return shiftAktifGlobal()
+        return null
+    }
+
+    fun shiftAktifGlobal(): ShiftKasir? {
+        val rental = shiftConfigUsername()
+        return _state.value.kasirShiftList.firstOrNull {
+            it.aktif && CashDrawerEngine.sameRental(it, rental)
+        }
+    }
+
+    fun lastClosedShiftGlobal(): ShiftKasir? {
+        val rental = shiftConfigUsername()
+        return _state.value.kasirShiftList
+            .filter { !it.aktif && CashDrawerEngine.sameRental(it, rental) }
+            .maxByOrNull { it.selesai }
+    }
+
+    fun isTransaksiShiftTerkunci(t: Transaksi): Boolean {
+        if (t.shiftId.isBlank()) return false
+        val shift = _state.value.kasirShiftList.firstOrNull { it.id == t.shiftId } ?: return false
+        return !shift.aktif
+    }
+
+    fun shiftAktif(username: String): ShiftKasir? {
+        val key = username.trim()
+        if (key.isBlank()) return null
+        return _state.value.kasirShiftList
+            .firstOrNull { it.aktif && it.username.equals(key, ignoreCase = true) }
+    }
+
+    fun requireShiftAktif(): Boolean {
+        if (shiftAktifSekarang() != null) return true
+        _state.value = _state.value.copy(statusMessage = shiftBlockMessage())
+        return false
+    }
+
+    fun bukaShift(kasAwal: Int? = null, catatan: String = ""): String? {
+        val s = _state.value
+        val result = CashDrawerEngine.startShift(
+            shifts = s.kasirShiftList,
+            config = s.shiftConfig,
+            rentalUsername = shiftConfigUsername(),
+            username = s.currentUser,
+            role = s.currentRole,
+            now = java.time.ZonedDateTime.now(TimeUtils.WIB),
+            openingCash = kasAwal,
+            catatan = catatan,
+        )
+        result.error?.let { return it }
+        val start = result.data ?: return "Shift gagal dibuka"
+        val list = s.kasirShiftList + start.shift
+        val movements = s.pergerakanKasList + start.movement
+        _state.value = s.copy(
+            kasirShiftList = list,
+            pergerakanKasList = movements,
+            statusMessage = "Shift ${start.shift.jenisShift} dibuka. Kas awal ${formatRupiah(start.shift.kasAwal)}",
+        )
+        StorageUtil.saveKasirShiftList(list)
+        StorageUtil.savePergerakanKasList(movements)
+        addActivityLog(
+            "Buka shift ${start.shift.jenisShift} oleh ${start.shift.username}, " +
+                "kas awal ${formatRupiah(start.shift.kasAwal)}"
+        )
+        syncCashDrawer()
+        return null
+    }
+
+    fun catatPergerakanKas(tipe: String, nominal: Int, keterangan: String = ""): String? {
+        val shift = shiftAktifSekarang() ?: return "Shift belum dibuka"
+        val jenis = tipe.trim().uppercase(Locale.US)
+        if (jenis != "MASUK" && jenis != "KELUAR") return "Jenis kas tidak valid"
+        if (nominal <= 0) return "Nominal harus lebih dari 0"
+        val metrics = CashDrawerEngine.metrics(
+            shift,
+            _state.value.transaksiList,
+            _state.value.pergerakanKasList,
+            0,
+        )
+        val saldoSetelah = if (jenis == "MASUK") {
+            metrics.kasSeharusnya + nominal
+        } else {
+            metrics.kasSeharusnya - nominal
+        }
+        val movement = PergerakanKas(
+            id = "KAS-${System.currentTimeMillis()}-${(100..999).random()}",
+            shiftId = shift.id,
+            username = _state.value.currentUser,
+            waktu = System.currentTimeMillis(),
+            tipe = jenis,
+            nominal = nominal,
+            keterangan = keterangan.trim(),
+            kategori = CashDrawerEngine.KATEGORI_MANUAL,
+            saldoSetelah = saldoSetelah,
+        )
+        val list = _state.value.pergerakanKasList + movement
+        _state.value = _state.value.copy(
+            pergerakanKasList = list,
+            statusMessage = "Kas ${jenis.lowercase(Locale.US)} ${formatRupiah(nominal)} dicatat",
+        )
+        StorageUtil.savePergerakanKasList(list)
+        addActivityLog("Kas ${jenis.lowercase(Locale.US)} ${formatRupiah(nominal)}: ${keterangan.trim()}")
+        syncCashDrawer()
+        return null
+    }
+
+    fun adminWithdraw(
+        nominal: Int,
+        keterangan: String = "",
+        shiftId: String? = null,
+    ): String? {
+        val s = _state.value
+        val result = CashDrawerEngine.adminWithdraw(
+            shifts = s.kasirShiftList,
+            transactions = s.transaksiList,
+            movements = s.pergerakanKasList,
+            shiftId = shiftId,
+            rentalUsername = shiftConfigUsername(),
+            adminUsername = s.currentUser,
+            role = s.currentRole,
+            nominal = nominal,
+            nowMillis = System.currentTimeMillis(),
+            keterangan = keterangan,
+        )
+        result.error?.let { return it }
+        val movement = result.data ?: return "Gagal menarik uang laci"
+        val list = s.pergerakanKasList + movement
+        _state.value = s.copy(
+            pergerakanKasList = list,
+            statusMessage = "Admin menarik ${formatRupiah(nominal)} dari uang laci",
+        )
+        StorageUtil.savePergerakanKasList(list)
+        addActivityLog(
+            "Admin ${s.currentUser} menarik ${formatRupiah(nominal)} dari shift ${movement.shiftId}: " +
+                keterangan.trim()
+        )
+        syncCashDrawer()
+        return null
+    }
+
+    fun tutupShift(
+        uangFisik: Int,
+        catatan: String = "",
+        shiftId: String? = null,
+        username: String? = null,
+        paksa: Boolean = false,
+    ): String? {
+        val s = _state.value
+        val target = when {
+            !shiftId.isNullOrBlank() -> s.kasirShiftList.firstOrNull { it.id == shiftId }
+            !username.isNullOrBlank() -> shiftAktif(username)
+            else -> shiftAktifSekarang()
+        } ?: return "Shift aktif tidak ditemukan"
+        if (!target.aktif) return "Shift sudah ditutup"
+        if (!s.currentRole.equals("admin", ignoreCase = true) && paksa) {
+            return "Tutup paksa hanya untuk admin"
+        }
+        val result = CashDrawerEngine.endShift(
+            shifts = s.kasirShiftList,
+            transactions = s.transaksiList,
+            movements = s.pergerakanKasList,
+            shiftId = target.id,
+            uangFisik = uangFisik,
+            closedBy = s.currentUser,
+            role = s.currentRole,
+            nowMillis = System.currentTimeMillis(),
+            catatan = catatan,
+        )
+        result.error?.let { return it }
+        val close = result.data ?: return "Shift gagal ditutup"
+        val list = s.kasirShiftList.map { if (it.id == close.shift.id) close.shift else it }
+        val movements = s.pergerakanKasList + close.movement
+        _state.value = s.copy(
+            kasirShiftList = list,
+            pergerakanKasList = movements,
+            statusMessage = "Shift ${close.shift.jenisShift} ditutup. " +
+                "Selisih ${formatRupiah(close.shift.selisih)} (${close.shift.statusSelisih})",
+        )
+        StorageUtil.saveKasirShiftList(list)
+        StorageUtil.savePergerakanKasList(movements)
+        addActivityLog(
+            "Tutup shift ${close.shift.jenisShift} ${close.shift.username} oleh ${s.currentUser}, " +
+                "selisih ${formatRupiah(close.shift.selisih)} (${close.shift.statusSelisih})"
+        )
+        syncCashDrawer()
+        return null
+    }
+
+    fun hitungShiftMetrics(shift: ShiftKasir, uangFisik: Int = shift.kasAkhir): ShiftMetrics =
+        CashDrawerEngine.metrics(
+            shift,
+            _state.value.transaksiList,
+            _state.value.pergerakanKasList,
+            uangFisik,
+        )
+
+    private fun enrichShiftForPayment(t: Transaksi, paidAtIso: String = TimeUtils.nowUtcIso()): Transaksi {
+        if (!t.sudahBayar) return t.copy(shiftId = "")
+        if (t.shiftId.isNotBlank()) return t
+        val waktuBayar = t.waktuBayar.ifBlank { paidAtIso }
+        val zoned = TimeUtils.parseInstant(waktuBayar)?.atZone(TimeUtils.WIB)
+            ?: java.time.ZonedDateTime.now(TimeUtils.WIB)
+        val config = _state.value.shiftConfig
+        val base = t.copy(
+            tanggalOperasional = config.tanggalOperasional(zoned).toString(),
+            jenisShift = config.jenisShift(zoned),
+            waktuBayar = waktuBayar,
+        )
+        val result = CashDrawerEngine.addTransaction(
+            tx = base,
+            shifts = _state.value.kasirShiftList,
+            config = config,
+            rentalUsername = shiftConfigUsername(),
+            username = _state.value.currentUser,
+            now = zoned,
+        )
+        return result.data ?: base
+    }
+
+    private fun formatRupiah(value: Int): String =
+        "Rp " + String.format(Locale("id", "ID"), "%,d", value)
 
     private fun shiftConfigUsername(): String {
         val snapshot = _state.value
@@ -1343,7 +1606,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         StorageUtil.saveLoginMethod("password")
         _state.value = _state.value.copy(
             isLoggedIn = false, currentUser = "", currentRole = "", loginMethod = "password",
+            adminPinSet = false, adminPinUnlocked = true,
             transaksiList = emptyList(), tvList = emptyList(), invoices = emptyList(),
+            kasirShiftList = emptyList(), pergerakanKasList = emptyList(),
             notifications = emptyList(), unreadNotifCount = 0,
             promo = PromoSettings(), licenseStatus = LicenseStatus(), trialBatas = 0L, maxTv = 0,
             deviceConflict = null, deviceSessionId = "", isBusy = false,
@@ -1358,6 +1623,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(
             tvList = StorageUtil.loadTvList(),
             transaksiList = StorageUtil.loadTransaksi(),
+            kasirShiftList = StorageUtil.loadKasirShiftList(),
+            pergerakanKasList = StorageUtil.loadPergerakanKasList(),
             licenseStatus = lic,
             trialBatas = StorageUtil.loadTrialBatas(),
             maxTv = if (lic.status == "active") (if (lic.promoAddTv > 0) lic.promoAddTv else lic.maxTv) else 0,
@@ -1816,11 +2083,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
-        invoicesListener = cloudRepo.listenUserInvoices(username) { cloudInv ->
+        invoicesListener = cloudRepo.listenUserInvoices(username) { rawCloudInv ->
+            val cloudInv = rawCloudInv.copy(buktiBase64 = if (rawCloudInv.status == "CONFIRMED") "" else rawCloudInv.buktiBase64)
             val currentInvs = _state.value.invoices.toMutableList()
             val idx = currentInvs.indexOfFirst { it.id == cloudInv.id }
             if (idx >= 0) {
                 val existing = currentInvs[idx]
+                if (existing == cloudInv) return@listenUserInvoices
                 // Cloud is source of truth for CONFIRMED status
                 if (cloudInv.status == "CONFIRMED") {
                     // Always accept cloud CONFIRMED status
@@ -2208,10 +2477,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val claim = claimDeviceForLogin(user, "password")
         if (!claim.success) return false
         StorageUtil.saveCurrentSession(user.username, user.role)
-        _state.value = _state.value.copy(
-            isLoggedIn = true,
-            currentUser = user.username,
-            currentRole = user.role,
+        StorageUtil.saveLoginMethod("password")
+        _state.value = applyAdminPinGate(
+            _state.value.copy(
+                isLoggedIn = true,
+                currentUser = user.username,
+                currentRole = user.role,
+                loginMethod = "password",
+            ),
+            user.username, user.role, "password",
         )
         restoreLocalDataAfterLogin()
         addActivityLog("Login kasir")
@@ -2326,6 +2600,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 put("jumlah", t.jumlah); put("sesiMulai", t.sesiMulai); put("sesiSelesai", t.sesiSelesai)
                 put("cash", t.cash); put("kembalian", t.kembalian)
                 put("tanggalOperasional", t.tanggalOperasional); put("jenisShift", t.jenisShift)
+                put("waktuBayar", t.waktuBayar); put("shiftId", t.shiftId)
+            }
+        }))
+        obj.put("kasirShiftList", org.json.JSONArray(s.kasirShiftList.map { shift ->
+            org.json.JSONObject().apply {
+                put("id", shift.id); put("username", shift.username)
+                put("mulai", shift.mulai); put("selesai", shift.selesai)
+                put("kasAwal", shift.kasAwal); put("kasAkhir", shift.kasAkhir)
+                put("kasSeharusnya", shift.kasSeharusnya); put("selisih", shift.selisih)
+                put("totalPenjualanTunai", shift.totalPenjualanTunai)
+                put("totalTransaksi", shift.totalTransaksi); put("totalPaket", shift.totalPaket)
+                put("totalFnb", shift.totalFnb); put("totalQris", shift.totalQris)
+                put("kasMasuk", shift.kasMasuk); put("kasKeluar", shift.kasKeluar)
+                put("status", shift.status); put("catatan", shift.catatan)
+                put("tanggalOperasional", shift.tanggalOperasional)
+                put("jenisShift", shift.jenisShift); put("ditutupOleh", shift.ditutupOleh)
+                put("rentalUsername", shift.rentalUsername)
+                put("previousShiftId", shift.previousShiftId)
+                put("totalAdminWithdraw", shift.totalAdminWithdraw)
+            }
+        }))
+        obj.put("pergerakanKasList", org.json.JSONArray(s.pergerakanKasList.map { movement ->
+            org.json.JSONObject().apply {
+                put("id", movement.id); put("shiftId", movement.shiftId)
+                put("username", movement.username); put("waktu", movement.waktu)
+                put("tipe", movement.tipe); put("nominal", movement.nominal)
+                put("keterangan", movement.keterangan)
+                put("kategori", movement.kategori)
+                put("referenceId", movement.referenceId)
+                put("saldoSetelah", movement.saldoSetelah)
             }
         }))
         obj.put("paketMain", org.json.JSONObject(s.paketMain.mapValues { (_, v) -> org.json.JSONObject(v) }))
@@ -2453,10 +2757,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         kembalian = o.optInt("kembalian"),
                         tanggalOperasional = o.optString("tanggalOperasional"),
                         jenisShift = o.optString("jenisShift"),
+                        waktuBayar = o.optString("waktuBayar"),
+                        shiftId = o.optString("shiftId"),
                     ))
                 }
                 StorageUtil.saveTransaksi(list)
                 _state.value = _state.value.copy(transaksiList = list)
+            }
+
+            // Restore shift cashier data
+            if (obj.has("kasirShiftList")) {
+                val arr = obj.getJSONArray("kasirShiftList")
+                val list = mutableListOf<ShiftKasir>()
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    list.add(ShiftKasir(
+                        id = o.optString("id"), username = o.optString("username"),
+                        mulai = o.optLong("mulai"), selesai = o.optLong("selesai"),
+                        kasAwal = o.optInt("kasAwal"), kasAkhir = o.optInt("kasAkhir"),
+                        kasSeharusnya = o.optInt("kasSeharusnya"), selisih = o.optInt("selisih"),
+                        totalPenjualanTunai = o.optInt("totalPenjualanTunai"),
+                        totalTransaksi = o.optInt("totalTransaksi"),
+                        totalPaket = o.optInt("totalPaket"), totalFnb = o.optInt("totalFnb"),
+                        totalQris = o.optInt("totalQris"),
+                        kasMasuk = o.optInt("kasMasuk"), kasKeluar = o.optInt("kasKeluar"),
+                        status = o.optString("status", "AKTIF"),
+                        catatan = o.optString("catatan"),
+                        tanggalOperasional = o.optString("tanggalOperasional"),
+                        jenisShift = o.optString("jenisShift"),
+                        ditutupOleh = o.optString("ditutupOleh"),
+                        rentalUsername = o.optString("rentalUsername"),
+                        previousShiftId = o.optString("previousShiftId"),
+                        totalAdminWithdraw = o.optInt("totalAdminWithdraw"),
+                    ))
+                }
+                StorageUtil.saveKasirShiftList(list)
+                _state.value = _state.value.copy(kasirShiftList = list)
+            }
+            if (obj.has("pergerakanKasList")) {
+                val arr = obj.getJSONArray("pergerakanKasList")
+                val list = mutableListOf<PergerakanKas>()
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    list.add(PergerakanKas(
+                        id = o.optString("id"), shiftId = o.optString("shiftId"),
+                        username = o.optString("username"), waktu = o.optLong("waktu"),
+                        tipe = o.optString("tipe", "MASUK"), nominal = o.optInt("nominal"),
+                        keterangan = o.optString("keterangan"),
+                        kategori = o.optString("kategori", "MANUAL"),
+                        referenceId = o.optString("referenceId"),
+                        saldoSetelah = o.optInt("saldoSetelah"),
+                    ))
+                }
+                StorageUtil.savePergerakanKasList(list)
+                _state.value = _state.value.copy(pergerakanKasList = list)
             }
 
             obj.optJSONObject("prayerConfig")?.let { o ->
@@ -2490,6 +2844,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = _state.value.copy(
             currentUser = user.username,
             currentRole = user.role,
+            adminPinSet = user.role == "admin" && StorageUtil.loadAdminPinHash(user.username).isNotBlank(),
+            adminPinUnlocked = true,
         )
         // Pull remote transaksi for new user
         viewModelScope.launch {
@@ -3720,29 +4076,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onDone(false, "TV tidak ditemukan")
             return
         }
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch {
             try {
-                val file = TvMediaStore.saveMedia(getApplication(), tv.id, kind, uri)
-                val remoteName = TvMediaStore.remoteName(kind, file)
-                TvMediaUploader.upload(tv, file, kind) { ok, message ->
-                    if (ok) {
-                        if (kind == "lockscreen") {
-                            updateTV(tv.id, mapOf("lockscreenVideoPath" to file.absolutePath))
-                            TvHubManager.sendUpdateLockBg(
-                                tv.copy(lockscreenVideoPath = file.absolutePath),
-                                local = remoteName,
-                            )
-                        } else {
-                            updateTV(tv.id, mapOf("promoVideoPath" to file.absolutePath))
-                            TvHubManager.sendShowMedia(
-                                tv.copy(promoVideoPath = file.absolutePath),
-                                mediaType = "video",
-                                local = remoteName,
-                            )
-                        }
-                    }
-                    onDone(ok, message)
+                val normalizedKind = if (kind == "lockscreen") "lockscreen" else "promo"
+                val file = withContext(Dispatchers.IO) {
+                    TvMediaStore.saveMedia(getApplication(), tv.id, normalizedKind, uri)
                 }
+                val url = withContext(Dispatchers.IO) {
+                    TvMediaServer.urlFor(getApplication(), file)
+                } ?: throw IllegalStateException("Tidak bisa menyiapkan server media. Periksa koneksi WiFi.")
+                val mediaType = if (TvMediaStore.isImage(file)) "image" else "video"
+                val oldPath = if (normalizedKind == "lockscreen") {
+                    tv.lockscreenVideoPath
+                } else {
+                    tv.promoVideoPath
+                }
+
+                val sent = if (normalizedKind == "lockscreen") {
+                    listOf("lockscreen.mp4", "lockscreen.jpg", "lockscreen.png").forEach {
+                        TvHubManager.sendDeleteMedia(tv, it, "lockscreen")
+                    }
+                    updateTV(tv.id, mapOf("lockscreenVideoPath" to file.absolutePath))
+                    TvHubManager.sendUpdateLockBg(
+                        tv.copy(lockscreenVideoPath = file.absolutePath),
+                        local = "",
+                        url = url,
+                    )
+                } else {
+                    listOf("promo.mp4", "promo.jpg", "promo.png").forEach {
+                        TvHubManager.sendDeleteMedia(tv, it, "promo")
+                    }
+                    updateTV(tv.id, mapOf("promoVideoPath" to file.absolutePath))
+                    TvHubManager.sendShowMedia(
+                        tv.copy(promoVideoPath = file.absolutePath),
+                        mediaType = mediaType,
+                        local = "",
+                        url = url,
+                    )
+                }
+
+                if (!sent) {
+                    onDone(false, "TV tidak terhubung. Media tersimpan, coba lagi saat TV online.")
+                    return@launch
+                }
+                if (oldPath.isNotBlank() && oldPath != file.absolutePath) {
+                    withContext(Dispatchers.IO) { TvMediaStore.delete(oldPath) }
+                }
+                onDone(true, "Upload berhasil (${file.length() / 1024} KB)")
             } catch (e: Exception) {
                 Log.e("MainVM", "uploadTvMedia($kind) gagal: ${e.message}", e)
                 onDone(false, e.message ?: "Gagal menyimpan media")
@@ -3839,8 +4219,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun pindahTV(sourceId: String, targetId: String) {
+    fun pindahTV(sourceId: String, targetId: String): String? {
+        if (sourceId == targetId) return "TV sumber dan tujuan sama"
+        val sourceTv = _state.value.tvList.firstOrNull { it.id == sourceId }
+            ?: return "TV sumber tidak ditemukan"
+        val targetTv = _state.value.tvList.firstOrNull { it.id == targetId }
+            ?: return "TV tujuan tidak ditemukan"
+        if (!targetTv.jenisPs.equals(sourceTv.jenisPs, ignoreCase = true)) {
+            return "${targetTv.nama} beda grup dengan TV aktif"
+        }
+        if (targetTv.timerActive || targetTv.bebas || targetTv.trxId.isNotBlank() || targetTv.sesiMulai > 0L) {
+            return "TV tujuan masih memiliki sesi aktif"
+        }
         try {
+            val sessionActive = sourceTv.timerActive || sourceTv.bebas ||
+                sourceTv.trxId.isNotBlank() || sourceTv.sesiMulai > 0L
             val list = _state.value.tvList.map { tv ->
                 if (tv.id == sourceId) {
                     tv.copy(
@@ -3852,26 +4245,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         sesiMulai = 0L, sesiSelesai = 0L, sesiPaused = false, bebasTertundaMs = 0L,
                         paketSudahBayar = false, fnbSudahBayar = false,
                         cashDiterima = 0, kembalian = 0,
+                        trxId = "", pesanan = emptyMap(), pesananHarga = emptyMap(),
                     )
                 } else if (tv.id == targetId) {
-                    val src = _state.value.tvList.find { it.id == sourceId } ?: return@map tv
                     val now = System.currentTimeMillis()
                     tv.copy(
-                        paketAktif = src.paketAktif, sisaDetik = src.sisaDetik,
-                        timerStart = now, timerDurasi = src.timerDurasi, timerActive = src.timerActive,
-                        bebas = src.bebas, bebasMulai = src.bebasMulai, bebasHargaPerJam = src.bebasHargaPerJam, bebasPesananTotal = src.bebasPesananTotal,
-                        paketHarga = src.paketHarga, totalPesanan = src.totalPesanan,
-                        cancelBatas = src.cancelBatas,
-                        sudahBayar = src.sudahBayar,
-                        sesiMulai = src.sesiMulai, sesiSelesai = src.sesiSelesai,
-                        sesiPaused = src.sesiPaused, bebasTertundaMs = src.bebasTertundaMs,
-                        paketSudahBayar = src.paketSudahBayar, fnbSudahBayar = src.fnbSudahBayar,
-                        cashDiterima = src.cashDiterima, kembalian = src.kembalian,
+                        paketAktif = sourceTv.paketAktif, sisaDetik = sourceTv.sisaDetik,
+                        timerStart = now, timerDurasi = sourceTv.timerDurasi, timerActive = sourceTv.timerActive,
+                        bebas = sourceTv.bebas, bebasMulai = sourceTv.bebasMulai, bebasHargaPerJam = sourceTv.bebasHargaPerJam, bebasPesananTotal = sourceTv.bebasPesananTotal,
+                        paketHarga = sourceTv.paketHarga, totalPesanan = sourceTv.totalPesanan,
+                        cancelBatas = sourceTv.cancelBatas,
+                        sudahBayar = sourceTv.sudahBayar,
+                        sesiMulai = sourceTv.sesiMulai, sesiSelesai = sourceTv.sesiSelesai,
+                        sesiPaused = sourceTv.sesiPaused, bebasTertundaMs = sourceTv.bebasTertundaMs,
+                        paketSudahBayar = sourceTv.paketSudahBayar, fnbSudahBayar = sourceTv.fnbSudahBayar,
+                        cashDiterima = sourceTv.cashDiterima, kembalian = sourceTv.kembalian,
+                        trxId = sourceTv.trxId,
+                        pesanan = sourceTv.pesanan,
+                        pesananHarga = sourceTv.pesananHarga,
                     )
                 } else tv
             }
-            _state.value = _state.value.copy(tvList = list)
+            val previousTrx = _state.value.transaksiList
+            val trxList = if (sessionActive) {
+                previousTrx.map { tx ->
+                    val belongsToSource = tx.tvId == sourceId ||
+                        (tx.tvId.isBlank() && tx.kota == sourceTv.nama)
+                    val sameSession = (sourceTv.sesiMulai > 0L && tx.sesiMulai == sourceTv.sesiMulai) ||
+                        (sourceTv.trxId.isNotBlank() && tx.id == sourceTv.trxId)
+                    if (belongsToSource && sameSession) {
+                        tx.copy(tvId = targetId, kota = targetTv.nama)
+                    } else {
+                        tx
+                    }
+                }
+            } else {
+                previousTrx
+            }
+            _state.value = _state.value.copy(tvList = list, transaksiList = trxList)
             StorageUtil.saveTvList(list)
+            if (trxList != previousTrx) StorageUtil.saveTransaksi(trxList)
             refreshHubConfig()
             _state.value.tvList.firstOrNull { it.id == sourceId }?.let { TvHubManager.sendStopTimer(it) }
             _state.value.tvList.firstOrNull { it.id == targetId }?.let {
@@ -3879,8 +4292,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             refreshTimerService()
             try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after pindahTV: ${e.message}") }
+            return null
         } catch (e: Exception) {
             Log.e("MainViewModel", "pindahTV error: ${e.message}", e)
+            return "Gagal memindahkan TV: ${e.message ?: "unknown"}"
         }
     }
 
@@ -3914,19 +4329,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val zoned = TimeUtils.transactionZoned(id, waktu)
             ?: java.time.ZonedDateTime.now(TimeUtils.WIB)
         val shiftConfig = _state.value.shiftConfig
-        return t.copy(
+        val waktuBayar = if (t.sudahBayar) {
+            t.waktuBayar.ifBlank { TimeUtils.toUtcIso(zoned.toInstant()) }
+        } else t.waktuBayar
+        val enriched = t.copy(
             id = id,
             waktu = waktu,
             tanggalOperasional = t.tanggalOperasional.ifBlank {
                 shiftConfig.tanggalOperasional(zoned).toString()
             },
             jenisShift = t.jenisShift.ifBlank { shiftConfig.jenisShift(zoned) },
+            waktuBayar = waktuBayar,
         )
+        if (!enriched.sudahBayar) return enriched.copy(shiftId = "")
+        if (enriched.shiftId.isNotBlank()) return enriched
+        val result = CashDrawerEngine.addTransaction(
+            tx = enriched,
+            shifts = _state.value.kasirShiftList,
+            config = shiftConfig,
+            rentalUsername = shiftConfigUsername(),
+            username = _state.value.currentUser,
+            now = zoned,
+        )
+        return result.data ?: enriched
     }
 
     fun tambahTransaksi(t: Transaksi) {
+        if (t.sudahBayar && !requireShiftAktif()) return
         val tx = enrichShift(t)
-        val isNew = _state.value.transaksiList.none { it.id == tx.id }
+        val existing = _state.value.transaksiList.firstOrNull { it.id == tx.id }
+        if (existing != null && isTransaksiShiftTerkunci(existing)) return
+        val isNew = existing == null
         val list = (_state.value.transaksiList + tx)
         _state.value = _state.value.copy(transaksiList = list)
         StorageUtil.saveTransaksi(list)
@@ -3991,6 +4424,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         cash: Int = 0,
         kembalian: Int = 0,
     ): Boolean {
+        if (lunas && !requireShiftAktif()) return false
         val tv = _state.value.tvList.firstOrNull { it.id == tvId } ?: return false
         val ids = transactionIds.toSet()
         if (ids.isEmpty()) return false
@@ -4001,14 +4435,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (old.id !in ids) return@forEach
             val writeCash = lunas && !cashWritten
             cashWritten = cashWritten || writeCash
-            list[i] = old.copy(
+            val updated = old.copy(
                 sudahBayar = lunas,
                 metode = if (lunas) metode else old.metode,
                 kasir = if (lunas) _state.value.currentUser.ifBlank { old.kasir } else old.kasir,
                 cash = if (writeCash) cash else old.cash,
                 kembalian = if (writeCash) kembalian else old.kembalian,
                 sesiSelesai = if (lunas && tv.sesiSelesai > 0L) tv.sesiSelesai else old.sesiSelesai,
+                waktuBayar = if (lunas) old.waktuBayar else "",
+                shiftId = if (lunas) old.shiftId else "",
             )
+            list[i] = if (lunas) enrichShiftForPayment(updated) else updated
         }
         val (paketLunas, fnbLunas) = statusPembayaran(tv, list)
         val allLunas = paketLunas && fnbLunas
@@ -4066,18 +4503,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return paketLunas to fnbLunas
     }
 
-fun bersihkanTransaksi() {
-        _state.value = _state.value.copy(transaksiList = emptyList())
-        StorageUtil.saveTransaksi(emptyList())
-        addActivityLog("Bersihkan semua transaksi")
+    fun bersihkanTransaksi() {
+        val locked = _state.value.transaksiList.filter { isTransaksiShiftTerkunci(it) }
+        _state.value = _state.value.copy(
+            transaksiList = locked,
+            statusMessage = if (locked.isNotEmpty()) {
+                "Transaksi milik shift selesai dipertahankan"
+            } else {
+                "Semua transaksi dibersihkan"
+            },
+        )
+        StorageUtil.saveTransaksi(locked)
+        addActivityLog(
+            if (locked.isNotEmpty()) "Bersihkan transaksi, ${locked.size} transaksi shift selesai dipertahankan"
+            else "Bersihkan semua transaksi"
+        )
         try { syncToCloud() } catch (e: Exception) { Log.e("MainVM", "syncToCloud after bersihkanTransaksi: ${e.message}") }
     }
 
     fun upsertTransaksi(t: Transaksi) {
+        if (t.sudahBayar && !requireShiftAktif()) return
         val txId = t.id.ifBlank { "tx_${System.currentTimeMillis()}" }
         val list = _state.value.transaksiList.toMutableList()
         val idx = list.indexOfFirst { it.id == txId }
-        val tx = if (idx >= 0) t.copy(id = txId) else enrichShift(t.copy(id = txId))
+        if (idx >= 0 && isTransaksiShiftTerkunci(list[idx])) return
+        val tx = enrichShift(t.copy(id = txId))
         val previousPesanan = if (idx >= 0) list[idx].pesanan else emptyMap()
         if (idx >= 0) {
             list[idx] = tx
@@ -4101,6 +4551,7 @@ fun bersihkanTransaksi() {
     }
 
     fun setTransaksiSudahBayar(kota: String, sudahBayar: Boolean, metode: String = "", id: String = "") {
+        if (sudahBayar && !requireShiftAktif()) return
         val list = _state.value.transaksiList.toMutableList()
         val idx = if (id.isNotBlank()) {
             list.indexOfFirst { it.id == id }
@@ -4109,11 +4560,14 @@ fun bersihkanTransaksi() {
         }
         if (idx >= 0) {
             val old = list[idx]
-            list[idx] = old.copy(
+            val updated = old.copy(
                 sudahBayar = sudahBayar,
                 metode = if (metode.isNotBlank()) metode else old.metode,
                 kasir = if (sudahBayar) _state.value.currentUser else old.kasir,
+                waktuBayar = if (sudahBayar) old.waktuBayar else "",
+                shiftId = if (sudahBayar) old.shiftId else "",
             )
+            list[idx] = if (sudahBayar) enrichShiftForPayment(updated) else updated
             val sessionEnded = list[idx].sesiSelesai > 0L
             val tv = _state.value.tvList.firstOrNull {
                 it.id == old.tvId || (old.tvId.isBlank() && it.nama == kota)
@@ -4173,6 +4627,7 @@ fun bersihkanTransaksi() {
         cash: Int = 0,
         kembalian: Int = 0,
     ) {
+        if (sudahBayar && !requireShiftAktif()) return
         val list = _state.value.transaksiList.toMutableList()
         var idx = -1
         if (id.isNotBlank()) {
@@ -4210,7 +4665,7 @@ fun bersihkanTransaksi() {
                 val tx = list[i]
                 if (tx.id !in sessionIds) return@forEach
                 val isAnchor = tx.id == old.id
-                list[i] = tx.copy(
+                val updated = tx.copy(
                     total = if (isAnchor) anchorTotal else tx.total,
                     paketHarga = if (isAnchor) anchorPaketHarga else tx.paketHarga,
                     metode = if (sudahBayar) metode else tx.metode,
@@ -4223,7 +4678,10 @@ fun bersihkanTransaksi() {
                     sesiSelesai = if (sudahBayar && tv != null && tv.sesiSelesai > 0L) {
                         tv.sesiSelesai
                     } else tx.sesiSelesai,
+                    waktuBayar = if (sudahBayar) tx.waktuBayar else "",
+                    shiftId = if (sudahBayar) tx.shiftId else "",
                 )
+                list[i] = if (sudahBayar) enrichShiftForPayment(updated) else updated
             }
             val sessionEnded = list.any { it.id in sessionIds && it.sesiSelesai > 0L }
             var allPaid = false
@@ -4335,6 +4793,7 @@ fun bersihkanTransaksi() {
         cash: Int = 0,
         kembalian: Int = 0,
     ): FnbSaleResult {
+        if (!requireShiftAktif()) return FnbSaleResult(false, shiftBlockMessage())
         val makanan = itemsMakanan.filterValues { it > 0 }
         val minuman = itemsMinuman.filterValues { it > 0 }
         if (makanan.isEmpty() && minuman.isEmpty()) {
@@ -4749,6 +5208,39 @@ fun bersihkanTransaksi() {
         return sha256(password) == hash
     }
 
+    fun setAdminPin(pin: String): String? {
+        val s = _state.value
+        if (s.currentRole != "admin" || s.currentUser.isBlank()) return "Hanya admin yang dapat mengatur PIN."
+        val clean = pin.trim()
+        if (!clean.matches(Regex("\\d{4,6}"))) return "PIN harus 4-6 digit angka."
+        val hash = pbkdf2Hash(clean, generateSalt())
+        StorageUtil.saveAdminPinHash(s.currentUser, hash)
+        _state.value = _state.value.copy(adminPinSet = true, adminPinUnlocked = true)
+        return null
+    }
+
+    fun verifyAdminPin(pin: String): Boolean {
+        val s = _state.value
+        val hash = StorageUtil.loadAdminPinHash(s.currentUser)
+        if (hash.isBlank()) return false
+        val valid = verifyPbkdf2(pin.trim(), hash)
+        if (valid) _state.value = _state.value.copy(adminPinUnlocked = true)
+        return valid
+    }
+
+    private fun applyAdminPinGate(
+        state: AppUiState,
+        username: String,
+        role: String,
+        method: String,
+    ): AppUiState {
+        val gate = role == "admin" && method == "google"
+        return state.copy(
+            adminPinSet = role == "admin" && StorageUtil.loadAdminPinHash(username).isNotBlank(),
+            adminPinUnlocked = !gate,
+        )
+    }
+
     fun saveSmtp(cfg: SmtpConfig) {
         // Only admin can configure SMTP
         if (_state.value.currentRole != "admin") return
@@ -4941,6 +5433,23 @@ fun bersihkanTransaksi() {
         return admin?.let { it.username to it.email }
     }
 
+    private fun syncCashDrawer() {
+        viewModelScope.launch {
+            val snapshot = _state.value
+            supabaseOwnerIdentity() ?: return@launch
+            val rental = shiftConfigUsername()
+            try {
+                withContext(Dispatchers.IO) {
+                    val shiftsOk = supabaseRepo.syncShifts(rental, snapshot.kasirShiftList)
+                    val ledgerOk = supabaseRepo.syncUangLaci(rental, snapshot.pergerakanKasList)
+                    Log.i("MainVM", "cash drawer sync shifts=$shiftsOk ledger=$ledgerOk")
+                }
+            } catch (t: Throwable) {
+                Log.i("MainVM", "cash drawer sync exception: ${t.message}")
+            }
+        }
+    }
+
     fun syncToCloud() {
         Log.i("MainVM", "trigger syncToCloud for user=${_state.value.currentUser}")
         viewModelScope.launch {
@@ -4948,10 +5457,14 @@ fun bersihkanTransaksi() {
             val snapshot = _state.value
             val firestoreOk = try { withContext(Dispatchers.IO) { cloudRepo.syncAll(snapshot, snapshot.currentUser, snapshot.appVersionName) } } catch (t: Throwable) { Log.i("MainVM", "syncToCloud exception: ${t.message}"); false }
             val owner = supabaseOwnerIdentity()
+            val rental = shiftConfigUsername()
             val supabaseOk = if (owner != null) {
                 try {
                     withContext(Dispatchers.IO) {
-                        supabaseRepo.syncTransactions(owner.second, owner.first, snapshot.transaksiList)
+                        val shiftsOk = supabaseRepo.syncShifts(rental, snapshot.kasirShiftList)
+                        val ledgerOk = supabaseRepo.syncUangLaci(rental, snapshot.pergerakanKasList)
+                        val txOk = supabaseRepo.syncTransactions(owner.second, owner.first, snapshot.transaksiList)
+                        shiftsOk && ledgerOk && txOk
                     }
                 } catch (t: Throwable) {
                     Log.i("MainVM", "supabase sync exception: ${t.message}")

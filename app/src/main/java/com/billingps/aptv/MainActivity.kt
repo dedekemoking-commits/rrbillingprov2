@@ -283,6 +283,7 @@ fun AppRoot(
     tvViewModel: TvViewModel,
 ) {
     val mainState by mainViewModel.state.collectAsStateWithLifecycle()
+    val adminPinGate = mainState.isLoggedIn && mainState.currentRole == "admin" && mainState.loginMethod == "google"
     var smtpEmail by remember { mutableStateOf("") }
     var smtpPass by remember { mutableStateOf("") }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -294,7 +295,7 @@ fun AppRoot(
         }
     }
 
-    if (showNotifDialog) {
+    if (showNotifDialog && !adminPinGate) {
         NotificationPermissionDialog(onDismiss = {
             showNotifDialog = false
             StorageUtil.saveNotifDialogShown(true)
@@ -302,7 +303,7 @@ fun AppRoot(
     }
 
     // Promo popup with countdown
-    if (mainState.showPromoPopup) {
+    if (mainState.showPromoPopup && !adminPinGate) {
         var remainingText by remember { mutableStateOf("") }
         LaunchedEffect(mainState.promoEndTimeMs) {
             while (isActive) {
@@ -347,7 +348,7 @@ fun AppRoot(
     }
 
     // Admin notification popup
-    if (mainState.showNotifPopup) {
+    if (mainState.showNotifPopup && !adminPinGate) {
         AlertDialog(
             onDismissRequest = { mainViewModel.dismissNotifPopup() },
             containerColor = DarkSurface,
@@ -376,11 +377,15 @@ fun AppRoot(
             viewModel = mainViewModel,
             onLoginSuccess = { /* state akan berubah otomatis */ },
         )
+    } else if (adminPinGate && !mainState.adminPinSet) {
+        AdminPinSetupScreen(mainViewModel)
+    } else if (adminPinGate && !mainState.adminPinUnlocked) {
+        AdminPinLockScreen(mainViewModel)
     } else {
         WebUiScreen(mainViewModel, tvViewModel)
     }
 
-    if (mainState.quotaPopupVisible) {
+    if (mainState.quotaPopupVisible && !adminPinGate) {
         AlertDialog(
             onDismissRequest = { mainViewModel.dismissQuotaPopup() },
             containerColor = DarkSurface,
@@ -398,7 +403,7 @@ fun AppRoot(
         )
     }
 
-    if (mainState.needsSmtpSetup && !StorageUtil.loadSmtpSkipPermanently()) {
+    if (mainState.needsSmtpSetup && !adminPinGate && !StorageUtil.loadSmtpSkipPermanently()) {
         var smtpSkipPermanent by remember { mutableStateOf(false) }
         Box(
             modifier = Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color(0xCC000000)),

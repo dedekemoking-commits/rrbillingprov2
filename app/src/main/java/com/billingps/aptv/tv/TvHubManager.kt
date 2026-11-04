@@ -206,6 +206,9 @@ object TvHubManager {
     fun sendHideMedia(tv: TvData): Boolean =
         send(tv, TvHubProtocol.hideMedia(mejaIdOf(tv)))
 
+    fun sendDeleteMedia(tv: TvData, local: String, mediaType: String = "promo"): Boolean =
+        send(tv, TvHubProtocol.deleteMedia(mejaIdOf(tv), local, mediaType))
+
     fun sendUpdateLockBg(tv: TvData, local: String = "", url: String = ""): Boolean =
         send(tv, TvHubProtocol.updateLockBg(mejaIdOf(tv), local, url))
 
@@ -307,5 +310,6 @@ object TvHubManager {
     fun shutdownAll() {
         stopAdvert()
         stopServer()
+        TvMediaServer.stop()
     }
 }

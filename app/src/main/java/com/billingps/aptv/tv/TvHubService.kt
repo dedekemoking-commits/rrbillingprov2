@@ -36,6 +36,7 @@ class TvHubService : Service() {
         }
         startForeground(NOTIFICATION_ID, buildNotification())
         TvHubManager.startServer(applicationContext)
+        TvMediaServer.start(applicationContext)
         TvHubManager.startAdvert(applicationContext)
         Log.i(TAG, "TV hub service aktif")
         return START_STICKY

@@ -19,6 +19,8 @@ import com.billingps.aptv.models.LicenseRecord
 import com.billingps.aptv.models.MainViewModel
 import com.billingps.aptv.models.PrayerConfig
 import com.billingps.aptv.models.ShiftConfig
+import com.billingps.aptv.models.ShiftKasir
+import com.billingps.aptv.models.ShiftMetrics
 import com.billingps.aptv.models.Transaksi
 import com.billingps.aptv.models.TvData
 import com.billingps.aptv.models.UserData
@@ -219,6 +221,10 @@ class RRBridge(
 
     private fun dispatch(id: String, name: String, payload: JSONObject) {
         try {
+            if (name.startsWith("profile.printer.") && name != "profile.printer.test" && name != "profile.printer.connect" && mainViewModel.state.value.currentRole == "kasir") {
+                sendResult(id, false, error = "Pengaturan printer hanya untuk admin")
+                return
+            }
             when (name) {
                 "app.state" -> {
                     emitState(force = true)
@@ -253,6 +259,15 @@ class RRBridge(
                 "tv.update" -> {
                     val tvId = payload.optString("id")
                     val fields = payload.optJSONObject("fields") ?: JSONObject()
+                    val starting = fields.optBoolean("timerActive") || fields.optBoolean("bebas")
+                    if (starting && !mainViewModel.isDalamShiftSekarang()) {
+                        sendResult(
+                            id,
+                            false,
+                            error = mainViewModel.state.value.statusMessage.ifBlank { "Shift belum dibuka" },
+                        )
+                        return
+                    }
                     mainViewModel.updateTV(tvId, jsonToAnyMap(fields))
                     sendResult(id, true)
                 }
@@ -562,8 +577,8 @@ class RRBridge(
                 }
 
                 "tv.move" -> {
-                    mainViewModel.pindahTV(payload.optString("sourceId"), payload.optString("targetId"))
-                    sendResult(id, true)
+                    val error = mainViewModel.pindahTV(payload.optString("sourceId"), payload.optString("targetId"))
+                    sendResult(id, error == null, error = error)
                 }
 
                 "tv.dismissExpired" -> {
@@ -572,38 +587,9 @@ class RRBridge(
                 }
 
                 "trx.add" -> {
-                    val base = Transaksi(
-                        id = payload.optString("id"),
-                        waktu = payload.optString("waktu"),
-                        kasir = payload.optString("kasir"),
-                        kota = payload.optString("kota"),
-                        paket = payload.optString("paket"),
-                        pesanan = jsonToIntMap(payload.optJSONObject("pesanan")),
-                        total = payload.optInt("total"),
-                        paketHarga = payload.optInt("paketHarga"),
-                        pesananHarga = jsonToIntMap(payload.optJSONObject("pesananHarga")),
-                        tvJenisPs = payload.optString("tvJenisPs"),
-                        sudahBayar = payload.optBoolean("sudahBayar", false),
-                        metode = payload.optString("metode"),
-                        cash = payload.optInt("cash"),
-                        kembalian = payload.optInt("kembalian"),
-                    ).withSession(payload)
-                    val transaction = if (base.kategori.isBlank()) {
-                        base.copy(
-                            kategori = when {
-                                base.paketHarga > 0 && base.pesanan.isEmpty() -> "PAKET"
-                                base.paketHarga <= 0 && base.pesanan.isNotEmpty() -> "FNB"
-                                else -> ""
-                            },
-                        )
-                    } else base
-                    mainViewModel.tambahTransaksi(transaction)
-                    sendResult(id, true)
-                }
-
-                "trx.upsert" -> {
-                    val existing = mainViewModel.state.value.transaksiList.firstOrNull {
-                        it.id == payload.optString("id")
+                    if (payload.optBoolean("sudahBayar", false) && !mainViewModel.requireShiftAktif()) {
+                        sendResult(id, false, error = mainViewModel.state.value.statusMessage.ifBlank { "Shift belum dibuka" })
+                        return
                     }
                     val base = Transaksi(
                         id = payload.optString("id"),
@@ -620,6 +606,60 @@ class RRBridge(
                         metode = payload.optString("metode"),
                         cash = payload.optInt("cash"),
                         kembalian = payload.optInt("kembalian"),
+                    ).withSession(payload)
+                    var transaction = if (base.kategori.isBlank()) {
+                        base.copy(
+                            kategori = when {
+                                base.paketHarga > 0 && base.pesanan.isEmpty() -> "PAKET"
+                                base.paketHarga <= 0 && base.pesanan.isNotEmpty() -> "FNB"
+                                else -> ""
+                            },
+                        )
+                    } else base
+                    if (transaction.paketHarga > 0 && transaction.sesiMulai > 0L &&
+                        !transaction.paket.startsWith("Tambah Waktu", ignoreCase = true)
+                    ) {
+                        val priorPackage = mainViewModel.state.value.transaksiList.any {
+                            it.id != transaction.id && it.sesiMulai == transaction.sesiMulai &&
+                                it.paketHarga > 0 && it.isPaketTx()
+                        }
+                        if (priorPackage) {
+                            transaction = transaction.copy(paket = "Tambah Waktu: ${transaction.paket}")
+                        }
+                    }
+                    mainViewModel.tambahTransaksi(transaction)
+                    sendResult(id, true)
+                }
+
+                "trx.upsert" -> {
+                    val existing = mainViewModel.state.value.transaksiList.firstOrNull {
+                        it.id == payload.optString("id")
+                    }
+                    if (existing != null && mainViewModel.isTransaksiShiftTerkunci(existing)) {
+                        sendResult(id, false, error = "Transaksi milik shift yang sudah ditutup tidak dapat diubah")
+                        return
+                    }
+                    val paidIntent = payload.optBoolean("sudahBayar", existing?.sudahBayar ?: false)
+                    if (paidIntent && !mainViewModel.requireShiftAktif()) {
+                        sendResult(id, false, error = mainViewModel.state.value.statusMessage.ifBlank { "Shift belum dibuka" })
+                        return
+                    }
+                    val base = Transaksi(
+                        id = payload.optString("id"),
+                        waktu = payload.optString("waktu"),
+                        kasir = payload.optString("kasir"),
+                        kota = payload.optString("kota"),
+                        paket = payload.optString("paket"),
+                        pesanan = jsonToIntMap(payload.optJSONObject("pesanan")),
+                        total = payload.optInt("total"),
+                        paketHarga = payload.optInt("paketHarga"),
+                        pesananHarga = jsonToIntMap(payload.optJSONObject("pesananHarga")),
+                        tvJenisPs = payload.optString("tvJenisPs"),
+                        sudahBayar = paidIntent,
+                        metode = payload.optString("metode"),
+                        cash = payload.optInt("cash"),
+                        kembalian = payload.optInt("kembalian"),
+                        shiftId = existing?.shiftId.orEmpty(),
                     ).withSession(payload, existing)
                     val tv = tvForPayload(payload)
                     val sessionTxs = mainViewModel.state.value.transaksiList.filter {
@@ -671,6 +711,17 @@ class RRBridge(
                 }
 
                 "trx.setPaid" -> {
+                    val existing = mainViewModel.state.value.transaksiList.firstOrNull {
+                        it.id == payload.optString("id")
+                    }
+                    if (existing != null && mainViewModel.isTransaksiShiftTerkunci(existing)) {
+                        sendResult(id, false, error = "Transaksi milik shift yang sudah ditutup tidak dapat diubah")
+                        return
+                    }
+                    if (payload.optBoolean("sudahBayar", true) && !mainViewModel.requireShiftAktif()) {
+                        sendResult(id, false, error = mainViewModel.state.value.statusMessage.ifBlank { "Shift belum dibuka" })
+                        return
+                    }
                     mainViewModel.setTransaksiSudahBayar(
                         payload.optString("kota"),
                         payload.optBoolean("sudahBayar", true),
@@ -681,10 +732,16 @@ class RRBridge(
                 }
 
                 "trx.edit" -> {
+                    if (!mainViewModel.requireShiftAktif()) {
+                        sendResult(id, false, error = mainViewModel.state.value.statusMessage.ifBlank { "Shift belum dibuka" })
+                        return
+                    }
                     val state = mainViewModel.state.value
                     val existing = state.transaksiList.firstOrNull { it.id == payload.optString("id") }
                     if (existing == null) {
                         sendResult(id, false, error = "Transaksi tidak ditemukan")
+                    } else if (mainViewModel.isTransaksiShiftTerkunci(existing)) {
+                        sendResult(id, false, error = "Transaksi milik shift yang sudah ditutup tidak dapat diubah")
                     } else if (state.currentRole == "kasir" && existing.kasir != state.currentUser) {
                         sendResult(id, false, error = "Hanya laporan Anda yang dapat diedit")
                     } else {
@@ -724,6 +781,17 @@ class RRBridge(
                 }
 
                 "trx.settle" -> {
+                    val existing = mainViewModel.state.value.transaksiList.firstOrNull {
+                        it.id == payload.optString("id")
+                    }
+                    if (existing != null && mainViewModel.isTransaksiShiftTerkunci(existing)) {
+                        sendResult(id, false, error = "Transaksi milik shift yang sudah ditutup tidak dapat diubah")
+                        return
+                    }
+                    if (payload.optBoolean("sudahBayar", true) && !mainViewModel.requireShiftAktif()) {
+                        sendResult(id, false, error = mainViewModel.state.value.statusMessage.ifBlank { "Shift belum dibuka" })
+                        return
+                    }
                     mainViewModel.settleTransaksi(
                         kota = payload.optString("kota"),
                         total = payload.optInt("total"),
@@ -951,6 +1019,11 @@ class RRBridge(
                     )
                 }
 
+                "profile.pin.set" -> {
+                    val error = mainViewModel.setAdminPin(payload.optString("pin"))
+                    sendResult(id, error == null, error = error)
+                }
+
                 "profile.user.add" -> {
                     val username = payload.optString("username")
                     if (mainViewModel.cekUsername(username)) {
@@ -1045,6 +1118,68 @@ class RRBridge(
                             error = if (ok) null else mainViewModel.state.value.statusMessage,
                         )
                     }
+                }
+
+                "kasirshift.start" -> {
+                    val openingCash = if (payload.has("kasAwal") && !payload.isNull("kasAwal")) {
+                        payload.optInt("kasAwal")
+                    } else {
+                        null
+                    }
+                    val error = mainViewModel.bukaShift(
+                        kasAwal = openingCash,
+                        catatan = payload.optString("catatan"),
+                    )
+                    sendResult(
+                        id,
+                        error == null,
+                        data = shiftStateJson(),
+                        error = error,
+                    )
+                }
+
+                "kasirshift.cash" -> {
+                    val error = mainViewModel.catatPergerakanKas(
+                        tipe = payload.optString("tipe", "MASUK"),
+                        nominal = payload.optInt("nominal", 0),
+                        keterangan = payload.optString("keterangan"),
+                    )
+                    sendResult(
+                        id,
+                        error == null,
+                        data = shiftStateJson(),
+                        error = error,
+                    )
+                }
+
+                "kasirshift.withdraw" -> {
+                    val error = mainViewModel.adminWithdraw(
+                        nominal = payload.optInt("nominal", 0),
+                        keterangan = payload.optString("keterangan"),
+                        shiftId = payload.optString("shiftId").ifBlank { null },
+                    )
+                    sendResult(
+                        id,
+                        error == null,
+                        data = shiftStateJson(),
+                        error = error,
+                    )
+                }
+
+                "kasirshift.close" -> {
+                    val error = mainViewModel.tutupShift(
+                        uangFisik = payload.optInt("uangFisik", 0),
+                        catatan = payload.optString("catatan"),
+                        shiftId = payload.optString("shiftId").ifBlank { null },
+                        username = payload.optString("username").ifBlank { null },
+                        paksa = payload.optBoolean("paksa", false),
+                    )
+                    sendResult(
+                        id,
+                        error == null,
+                        data = shiftStateJson(),
+                        error = error,
+                    )
                 }
 
                 "profile.expiredSound.get" -> {
@@ -1201,6 +1336,91 @@ class RRBridge(
             .put("malamLabel", config.malamLabel())
             .put("batasHariLabel", ShiftConfig.formatTime(config.batasHari))
 
+    private fun shiftStateJson(): JSONObject {
+        val state = mainViewModel.state.value
+        val mine = mainViewModel.shiftAktifSekarang()
+        val globalActive = mainViewModel.shiftAktifGlobal()
+        val lastClosed = mainViewModel.lastClosedShiftGlobal()
+        val active = state.kasirShiftList.filter { it.aktif }
+        val visible = if (state.currentRole == "admin") state.kasirShiftList else {
+            state.kasirShiftList.filter { it.username.equals(state.currentUser, ignoreCase = true) }
+        }
+        val metrics = mine?.let {
+            val current = mainViewModel.hitungShiftMetrics(it, 0)
+            current.copy(uangFisik = current.kasSeharusnya, selisih = 0)
+        }
+        return JSONObject()
+            .put("mine", mine?.let { shiftKasirJson(it) } ?: JSONObject.NULL)
+            .put("globalActive", globalActive?.let { shiftKasirJson(it) } ?: JSONObject.NULL)
+            .put("lastClosed", lastClosed?.let { shiftKasirJson(it) } ?: JSONObject.NULL)
+            .put("carryKasAwal", lastClosed?.kasAkhir ?: 0)
+            .put("active", shiftListJson(active))
+            .put("list", shiftListJson(visible.takeLast(100)))
+            .put("metrics", metrics?.let { shiftMetricsJson(it) } ?: JSONObject.NULL)
+            .put("canManage", state.currentRole == "admin")
+            .put("currentUser", state.currentUser)
+            .put("currentRole", state.currentRole)
+    }
+
+    private fun shiftListJson(items: List<ShiftKasir>): JSONArray {
+        val arr = JSONArray()
+        items.forEach { arr.put(shiftKasirJson(it)) }
+        return arr
+    }
+
+    private fun shiftKasirJson(shift: ShiftKasir): JSONObject =
+        JSONObject()
+            .put("id", shift.id)
+            .put("username", shift.username)
+            .put("mulai", shift.mulai)
+            .put("selesai", shift.selesai)
+            .put("kasAwal", shift.kasAwal)
+            .put("kasAkhir", shift.kasAkhir)
+            .put("kasSeharusnya", shift.kasSeharusnya)
+            .put("selisih", shift.selisih)
+            .put("totalPenjualanTunai", shift.totalPenjualanTunai)
+            .put("totalTransaksi", shift.totalTransaksi)
+            .put("totalPaket", shift.totalPaket)
+            .put("totalFnb", shift.totalFnb)
+            .put("totalQris", shift.totalQris)
+            .put("kasMasuk", shift.kasMasuk)
+            .put("kasKeluar", shift.kasKeluar)
+            .put("status", shift.status)
+            .put("aktif", shift.aktif)
+            .put("catatan", shift.catatan)
+            .put("tanggalOperasional", shift.tanggalOperasional)
+            .put("jenisShift", shift.jenisShift)
+            .put("ditutupOleh", shift.ditutupOleh)
+            .put("rentalUsername", shift.rentalUsername)
+            .put("previousShiftId", shift.previousShiftId)
+            .put("totalAdminWithdraw", shift.totalAdminWithdraw)
+            .put("mulaiLabel", shiftTimeLabel(shift.mulai))
+            .put("selesaiLabel", shiftTimeLabel(shift.selesai))
+
+    private fun shiftMetricsJson(metrics: ShiftMetrics): JSONObject =
+        JSONObject()
+            .put("shiftId", metrics.shiftId)
+            .put("kasAwal", metrics.kasAwal)
+            .put("penjualanTunai", metrics.penjualanTunai)
+            .put("kasMasuk", metrics.kasMasuk)
+            .put("kasKeluar", metrics.kasKeluar)
+            .put("kasSeharusnya", metrics.kasSeharusnya)
+            .put("totalTransaksi", metrics.totalTransaksi)
+            .put("totalPaket", metrics.totalPaket)
+            .put("totalFnb", metrics.totalFnb)
+            .put("totalQris", metrics.totalQris)
+            .put("uangFisik", metrics.uangFisik)
+            .put("selisih", metrics.selisih)
+            .put("adminWithdrawals", metrics.adminWithdrawals)
+            .put("statusSelisih", metrics.statusSelisih)
+
+    private fun shiftTimeLabel(millis: Long): String {
+        if (millis <= 0L) return ""
+        return java.text.SimpleDateFormat("dd MMM HH:mm", Locale("id", "ID"))
+            .apply { timeZone = java.util.TimeZone.getTimeZone("Asia/Jakarta") }
+            .format(java.util.Date(millis))
+    }
+
     private fun prayerJson(): JSONObject {
         val state = mainViewModel.state.value
         val config = state.prayerConfig
@@ -1250,11 +1470,7 @@ class RRBridge(
         val hasTrial = state.trialBatas > System.currentTimeMillis()
         val isLocked = state.licenseStatus.status != "active" && !hasTrial
 
-        val baseTabs = if (state.currentRole == "kasir") {
-            listOf("TV", "KASIR", "RIWAYAT", "LISENSI", "PROFILE")
-        } else {
-            listOf("TV", "KASIR", "STOK", "RIWAYAT", "HARGA", "CLIENT", "LISENSI", "PROFILE")
-        }
+        val baseTabs = listOf("TV", "KASIR", "RIWAYAT", "LAINNYA")
         val tabs = if (mainViewModel.isClientFeatureEnabled()) baseTabs
         else baseTabs.filter { it != "CLIENT" }
 
@@ -1314,7 +1530,9 @@ class RRBridge(
                     .put("themeOption", state.themeOption.name)
                     .put("backgroundOption", state.backgroundOption.name)
                     .put("tvPasswordSet", state.tvPasswordHash.isNotBlank())
+                    .put("adminPinSet", state.adminPinSet)
                     .put("shift", shiftJson(state.shiftConfig))
+                    .put("kasirShift", shiftStateJson())
                     .put(
                         "printer",
                         JSONObject()
@@ -1510,7 +1728,9 @@ class RRBridge(
                     .put("sesiMulai", item.sesiMulai)
                     .put("sesiSelesai", item.sesiSelesai)
                     .put("cash", item.cash)
-                    .put("kembalian", item.kembalian),
+                    .put("kembalian", item.kembalian)
+                    .put("shiftId", item.shiftId)
+                    .put("waktuBayar", item.waktuBayar),
             )
         }
         return array

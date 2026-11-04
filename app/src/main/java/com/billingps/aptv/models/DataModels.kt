@@ -71,6 +71,8 @@ data class Transaksi(
     val kembalian: Int = 0,
     val tanggalOperasional: String = "",
     val jenisShift: String = "",
+    val waktuBayar: String = "",
+    val shiftId: String = "",
 )
 
 fun Transaksi.fnbTotal(): Int =
@@ -192,6 +194,74 @@ data class ShiftConfig(
             if (jam !in 0..23 || menit !in 0..59) return null
             return jam * 60 + menit
         }
+    }
+}
+
+data class ShiftKasir(
+    val id: String = "",
+    val username: String = "",
+    val mulai: Long = 0L,
+    val selesai: Long = 0L,
+    val kasAwal: Int = 0,
+    val kasAkhir: Int = 0,
+    val kasSeharusnya: Int = 0,
+    val selisih: Int = 0,
+    val totalPenjualanTunai: Int = 0,
+    val totalTransaksi: Int = 0,
+    val totalPaket: Int = 0,
+    val totalFnb: Int = 0,
+    val totalQris: Int = 0,
+    val kasMasuk: Int = 0,
+    val kasKeluar: Int = 0,
+    val status: String = "AKTIF",
+    val catatan: String = "",
+    val tanggalOperasional: String = "",
+    val jenisShift: String = "",
+    val ditutupOleh: String = "",
+    val rentalUsername: String = "",
+    val previousShiftId: String = "",
+    val totalAdminWithdraw: Int = 0,
+) : Serializable {
+    val aktif: Boolean get() = status == "AKTIF"
+    val statusSelisih: String get() = when {
+        selisih == 0 -> "PAS"
+        selisih < 0 -> "KURANG"
+        else -> "LEBIH"
+    }
+}
+
+data class PergerakanKas(
+    val id: String = "",
+    val shiftId: String = "",
+    val username: String = "",
+    val waktu: Long = 0L,
+    val tipe: String = "MASUK",
+    val nominal: Int = 0,
+    val keterangan: String = "",
+    val kategori: String = "MANUAL",
+    val referenceId: String = "",
+    val saldoSetelah: Int = 0,
+) : Serializable
+
+data class ShiftMetrics(
+    val shiftId: String = "",
+    val kasAwal: Int = 0,
+    val penjualanTunai: Int = 0,
+    val kasMasuk: Int = 0,
+    val kasKeluar: Int = 0,
+    val kasSeharusnya: Int = 0,
+    val totalTransaksi: Int = 0,
+    val totalPaket: Int = 0,
+    val totalFnb: Int = 0,
+    val totalQris: Int = 0,
+    val uangFisik: Int = 0,
+    val selisih: Int = 0,
+    val adminWithdrawals: Int = 0,
+) : Serializable {
+    val statusSelisih: String get() = when {
+        selisih == 0 -> "PAS"
+        selisih < 0 -> "KURANG"
+        else -> "LEBIH"
     }
 }
 

@@ -3,7 +3,9 @@ package com.billingps.aptv.cloud
 import android.util.Log
 import com.billingps.aptv.models.Invoice
 import com.billingps.aptv.models.LicenseStatus
+import com.billingps.aptv.models.PergerakanKas
 import com.billingps.aptv.models.ShiftConfig
+import com.billingps.aptv.models.ShiftKasir
 import com.billingps.aptv.models.Transaksi
 import com.billingps.aptv.utils.TimeUtils
 import org.json.JSONArray
@@ -11,6 +13,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.time.Instant
 import java.util.Locale
 
 class SupabaseRepository {
@@ -35,6 +38,113 @@ class SupabaseRepository {
         }
     }
 
+    fun syncShifts(rentalUsername: String, shifts: List<ShiftKasir>): Boolean {
+        val owner = rentalUsername.trim()
+        if (owner.isBlank()) {
+            Log.w(TAG, "syncShifts skipped: rental username is blank")
+            return true
+        }
+        val rows = shifts.filter { it.id.isNotBlank() }
+        if (rows.isEmpty()) {
+            Log.i(TAG, "syncShifts skipped: no shifts")
+            return true
+        }
+        return try {
+            rows.chunked(200).all { chunk -> upsertShiftChunk(owner, chunk) }
+        } catch (e: Exception) {
+            Log.e(TAG, "syncShifts failed: ${e.message}")
+            false
+        }
+    }
+
+    private fun upsertShiftChunk(rentalUsername: String, shifts: List<ShiftKasir>): Boolean {
+        val body = JSONArray()
+        shifts.forEach { s ->
+            body.put(
+                JSONObject().apply {
+                    put("id", s.id)
+                    put("rental_username", s.rentalUsername.ifBlank { rentalUsername })
+                    put("username", s.username)
+                    put("previous_shift_id", s.previousShiftId.ifBlank { JSONObject.NULL })
+                    put("mulai", epochIso(s.mulai))
+                    put("selesai", epochIso(s.selesai))
+                    put("kas_awal", s.kasAwal)
+                    put("kas_akhir", s.kasAkhir)
+                    put("kas_seharusnya", s.kasSeharusnya)
+                    put("selisih", s.selisih)
+                    put("total_penjualan_tunai", s.totalPenjualanTunai)
+                    put("total_transaksi", s.totalTransaksi)
+                    put("total_paket", s.totalPaket)
+                    put("total_fnb", s.totalFnb)
+                    put("total_qris", s.totalQris)
+                    put("kas_masuk", s.kasMasuk)
+                    put("kas_keluar", s.kasKeluar)
+                    put("total_admin_withdraw", s.totalAdminWithdraw)
+                    put("status", s.status)
+                    put("catatan", s.catatan)
+                    put("tanggal_operasional", s.tanggalOperasional)
+                    put("jenis_shift", s.jenisShift)
+                    put("ditutup_oleh", s.ditutupOleh)
+                    put("updated_at", TimeUtils.nowUtcIso())
+                },
+            )
+        }
+        return httpPost(
+            "shifts?on_conflict=id",
+            body.toString(),
+            "resolution=merge-duplicates,return=minimal",
+        )
+    }
+
+    fun syncUangLaci(rentalUsername: String, movements: List<PergerakanKas>): Boolean {
+        val owner = rentalUsername.trim()
+        if (owner.isBlank()) {
+            Log.w(TAG, "syncUangLaci skipped: rental username is blank")
+            return true
+        }
+        val rows = movements.filter { it.id.isNotBlank() && it.shiftId.isNotBlank() }
+        if (rows.isEmpty()) {
+            Log.i(TAG, "syncUangLaci skipped: no movements")
+            return true
+        }
+        return try {
+            rows.chunked(200).all { chunk -> upsertUangLaciChunk(owner, chunk) }
+        } catch (e: Exception) {
+            Log.e(TAG, "syncUangLaci failed: ${e.message}")
+            false
+        }
+    }
+
+    private fun upsertUangLaciChunk(rentalUsername: String, movements: List<PergerakanKas>): Boolean {
+        val body = JSONArray()
+        movements.forEach { m ->
+            body.put(
+                JSONObject().apply {
+                    put("id", m.id)
+                    put("shift_id", m.shiftId)
+                    put("rental_username", rentalUsername)
+                    put("username", m.username)
+                    put("waktu", epochIso(m.waktu))
+                    put("tipe", m.tipe)
+                    put("kategori", m.kategori)
+                    put("nominal", m.nominal)
+                    put("saldo_setelah", m.saldoSetelah)
+                    put("keterangan", m.keterangan)
+                    put("reference_id", m.referenceId.ifBlank { JSONObject.NULL })
+                    put("updated_at", TimeUtils.nowUtcIso())
+                },
+            )
+        }
+        return httpPost(
+            "uang_laci?on_conflict=id",
+            body.toString(),
+            "resolution=merge-duplicates,return=minimal",
+        )
+    }
+
+    private fun epochIso(ms: Long): Any =
+        if (ms > 0L) Instant.ofEpochMilli(ms).toString() else JSONObject.NULL
+
     private fun upsertChunk(email: String, username: String, transactions: List<Transaksi>): Boolean {
         val body = JSONArray()
         transactions.forEach { t ->
@@ -54,6 +164,10 @@ class SupabaseRepository {
                     put("pesananharga", JSONObject(t.pesananHarga))
                     put("paketharga", t.paketHarga.coerceAtLeast(0))
                     put("diskoni", 0)
+                    put("shift_id", t.shiftId.ifBlank { JSONObject.NULL })
+                    put("metode", t.metode)
+                    put("cash", t.cash)
+                    put("kembalian", t.kembalian)
                 },
             )
         }

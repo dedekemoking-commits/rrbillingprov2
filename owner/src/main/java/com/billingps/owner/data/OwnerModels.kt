@@ -70,6 +70,36 @@ data class RentalInfo(
     val alamat: String = "",
 )
 
+data class OwnerCashDrawer(
+    val status: String = "TUTUP",
+    val shiftId: String = "",
+    val shiftUsername: String = "",
+    val jenisShift: String = "",
+    val startedAt: Long = 0L,
+    val openingCash: Int = 0,
+    val cashExpected: Int = 0,
+    val cashSales: Int = 0,
+    val cashIn: Int = 0,
+    val cashOut: Int = 0,
+    val updatedAt: Long = 0L,
+) {
+    val aktif: Boolean get() = status.equals("AKTIF", ignoreCase = true)
+}
+
+data class CashDrawerRequest(
+    val id: String = "",
+    val nominal: Int = 0,
+    val note: String = "",
+    val status: String = "pending",
+    val createdAt: Long = 0L,
+    val processedAt: Long = 0L,
+    val appliedBy: String = "",
+    val reason: String = "",
+) {
+    val pending: Boolean get() = status.equals("pending", ignoreCase = true)
+    val applied: Boolean get() = status.equals("applied", ignoreCase = true)
+}
+
 data class RentalSnapshot(
     val exists: Boolean = false,
     val tvList: List<OwnerTv> = emptyList(),
@@ -77,5 +107,44 @@ data class RentalSnapshot(
     val lastSync: Long = 0L,
     val appVersion: String = "",
     val currentUser: String = "",
+    val menuMakanan: Map<String, Int> = emptyMap(),
+    val menuMinuman: Map<String, Int> = emptyMap(),
+    val stokMakanan: Map<String, Int> = emptyMap(),
+    val stokMinuman: Map<String, Int> = emptyMap(),
+    val jenisPsList: List<String> = emptyList(),
+    val paketMain: Map<String, Map<String, Int>> = emptyMap(),
+    val paketDurasi: Map<String, Int> = emptyMap(),
+    val cashDrawer: OwnerCashDrawer = OwnerCashDrawer(),
     val error: String? = null,
+)
+
+data class StockOpnameItem(
+    val name: String,
+    val category: String,
+    val expected: Int?,
+    val quantity: Int,
+)
+
+data class FnbItemInput(
+    val category: String,
+    val name: String,
+    val price: Int,
+    val initialStock: Int,
+)
+
+data class PackageInput(
+    val action: String,
+    val groupName: String,
+    val name: String,
+    val price: Int,
+    val durationMinutes: Int,
+)
+
+data class GroupInput(
+    val name: String,
+)
+
+data class OwnerAuthResult(
+    val success: Boolean,
+    val message: String = "",
 )

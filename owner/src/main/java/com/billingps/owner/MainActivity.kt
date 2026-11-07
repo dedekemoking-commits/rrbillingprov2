@@ -20,23 +20,38 @@ class MainActivity : ComponentActivity() {
             OwnerTheme {
                 val vm: OwnerViewModel = viewModel()
                 val state by vm.state.collectAsStateWithLifecycle()
+                val localTimer by vm.localTimer.collectAsStateWithLifecycle()
 
                 if (!state.isLoggedIn) {
                     LoginScreen(
+                        savedEmail = state.savedEmail,
                         savedUsername = state.savedUsername,
-                        pinRequired = state.pinRequired,
+                        unlockMode = state.unlockMode,
                         loading = state.isLoading,
                         error = state.error,
                         onLogin = vm::login,
+                        onGoogleLogin = vm::loginWithGoogle,
+                        onUnlock = vm::unlock,
                         onReset = vm::logout,
                         onDismissError = vm::clearError,
                     )
                 } else {
                     OwnerMainScreen(
                         state = state,
+                        localTimer = localTimer,
                         onRefresh = { vm.refreshTransactions(true) },
                         onPeriodChange = vm::setPeriod,
                         onSearchChange = vm::setSearch,
+                        onSubmitOpname = vm::submitStockOpname,
+                        onClearOpnameNotice = vm::clearOpnameNotice,
+                        onSubmitCashRequest = vm::submitCashDrawerRequest,
+                        onClearCashRequestNotice = vm::clearCashRequestNotice,
+                        onSubmitFnbItem = vm::submitFnbItem,
+                        onClearFnbItemNotice = vm::clearFnbItemNotice,
+                        onSubmitPackage = vm::submitPackage,
+                        onClearPackageNotice = vm::clearPackageNotice,
+                        onSubmitGroup = vm::submitGroup,
+                        onClearGroupNotice = vm::clearGroupNotice,
                         onLogout = vm::logout,
                         onDismissError = vm::clearError,
                     )

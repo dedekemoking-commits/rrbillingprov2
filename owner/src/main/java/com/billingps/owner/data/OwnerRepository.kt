@@ -2,8 +2,12 @@ package com.billingps.owner.data
 
 import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
+import com.google.firebase.auth.FirebaseAuthInvalidUserException
+import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.Query
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -18,19 +22,135 @@ class OwnerRepository {
     private val auth: FirebaseAuth = FirebaseAuth.getInstance()
     private val db: FirebaseFirestore = FirebaseFirestore.getInstance()
 
-    suspend fun ensureSignedIn(): Boolean {
-        if (auth.currentUser != null) return true
+    fun hasRealSession(): Boolean {
+        val user = auth.currentUser ?: return false
+        return !user.isAnonymous
+    }
+
+    fun currentEmail(): String = auth.currentUser?.email.orEmpty()
+
+    fun currentUid(): String = auth.currentUser?.uid.orEmpty()
+
+    suspend fun signIn(email: String, password: String): OwnerAuthResult {
+        val normalizedEmail = email.trim()
+        if (normalizedEmail.isBlank() || password.isBlank()) {
+            return OwnerAuthResult(false, "Email dan password wajib diisi.")
+        }
         return suspendCancellableCoroutine { cont ->
-            auth.signInAnonymously()
+            auth.signInWithEmailAndPassword(normalizedEmail, password)
                 .addOnSuccessListener {
-                    Log.i(TAG, "Anonymous auth success: ${it.user?.uid}")
-                    if (!cont.isCompleted) cont.resume(true)
+                    Log.i(TAG, "Owner sign-in success: ${it.user?.uid}")
+                    if (!cont.isCompleted) cont.resume(OwnerAuthResult(true))
                 }
                 .addOnFailureListener { error ->
-                    Log.e(TAG, "Anonymous auth failed: ${error.message}")
+                    Log.e(TAG, "Owner sign-in failed: ${error.message}")
+                    if (!cont.isCompleted) {
+                        cont.resume(OwnerAuthResult(false, friendlyAuthError(error)))
+                    }
+                }
+        }
+    }
+
+    suspend fun signInWithGoogle(idToken: String): OwnerAuthResult {
+        if (idToken.isBlank()) {
+            return OwnerAuthResult(false, "Token Google tidak valid. Coba lagi.")
+        }
+        val credential = GoogleAuthProvider.getCredential(idToken, null)
+        return suspendCancellableCoroutine { cont ->
+            auth.signInWithCredential(credential)
+                .addOnSuccessListener {
+                    Log.i(TAG, "Owner Google sign-in success: ${it.user?.uid}")
+                    if (!cont.isCompleted) cont.resume(OwnerAuthResult(true))
+                }
+                .addOnFailureListener { error ->
+                    Log.e(TAG, "Owner Google sign-in failed: ${error.message}")
+                    if (!cont.isCompleted) {
+                        cont.resume(OwnerAuthResult(false, friendlyAuthError(error)))
+                    }
+                }
+        }
+    }
+
+    fun signOut() {
+        try {
+            auth.signOut()
+        } catch (t: Throwable) {
+            Log.e(TAG, "Owner sign-out failed: ${t.message}", t)
+        }
+    }
+
+    /**
+     * Menentukan username rental dari akun Firebase yang sedang login.
+     * Sumber utama: mapping `owner_accounts/{uid}` yang ditulis aplikasi billing.
+     * Fallback: dokumen `_user_<username>` dengan email yang sama.
+     */
+    suspend fun resolveRentalUsername(email: String): String? {
+        val user = auth.currentUser ?: return null
+        if (user.isAnonymous) return null
+        val normalizedEmail = email.trim()
+        val mapped = fetchOwnerAccountRental(user.uid)
+        if (!mapped.isNullOrBlank() && verifyRentalEmail(mapped, normalizedEmail)) {
+            return mapped
+        }
+        if (!mapped.isNullOrBlank()) {
+            Log.w(TAG, "owner_accounts mapping mismatch for uid=${user.uid}, rental=$mapped")
+        }
+        return queryRentalByEmail(normalizedEmail)
+    }
+
+    private suspend fun fetchOwnerAccountRental(uid: String): String? =
+        suspendCancellableCoroutine { cont ->
+            db.collection("owner_accounts").document(uid).get()
+                .addOnSuccessListener { snap ->
+                    if (!cont.isCompleted) cont.resume(snap.getString("rentalUsername"))
+                }
+                .addOnFailureListener { error ->
+                    Log.e(TAG, "fetchOwnerAccountRental failed: ${error.message}")
+                    if (!cont.isCompleted) cont.resume(null)
+                }
+        }
+
+    private suspend fun verifyRentalEmail(rentalUsername: String, email: String): Boolean =
+        suspendCancellableCoroutine { cont ->
+            db.collection("billingps_users").document("_user_$rentalUsername").get()
+                .addOnSuccessListener { snap ->
+                    val docEmail = snap.getString("email").orEmpty()
+                    if (!cont.isCompleted) {
+                        cont.resume(snap.exists() && docEmail.equals(email, ignoreCase = true))
+                    }
+                }
+                .addOnFailureListener { error ->
+                    Log.e(TAG, "verifyRentalEmail failed: ${error.message}")
                     if (!cont.isCompleted) cont.resume(false)
                 }
         }
+
+    private suspend fun queryRentalByEmail(email: String): String? =
+        suspendCancellableCoroutine { cont ->
+            db.collection("billingps_users")
+                .whereEqualTo("email", email)
+                .limit(20)
+                .get()
+                .addOnSuccessListener { snap ->
+                    val rental = snap.documents.firstOrNull { doc ->
+                        val role = doc.getString("role").orEmpty()
+                        role.equals("admin", ignoreCase = true) || role.equals("owner", ignoreCase = true)
+                    }?.let { doc ->
+                        doc.getString("username")?.takeIf { it.isNotBlank() }
+                            ?: doc.id.removePrefix("_user_")
+                    }
+                    if (!cont.isCompleted) cont.resume(rental)
+                }
+                .addOnFailureListener { error ->
+                    Log.e(TAG, "queryRentalByEmail failed: ${error.message}")
+                    if (!cont.isCompleted) cont.resume(null)
+                }
+        }
+
+    private fun friendlyAuthError(error: Exception): String = when (error) {
+        is FirebaseAuthInvalidCredentialsException -> "Email atau password salah."
+        is FirebaseAuthInvalidUserException -> "Akun owner tidak ditemukan."
+        else -> error.message?.takeIf { it.isNotBlank() } ?: "Gagal login ke Firebase."
     }
 
     fun listenRental(username: String, onUpdate: (RentalSnapshot) -> Unit): ListenerRegistration? {
@@ -55,6 +175,14 @@ class OwnerRepository {
                             lastSync = (snap.get("lastSync") as? Number)?.toLong() ?: 0L,
                             appVersion = snap.getString("appVersion") ?: "",
                             currentUser = snap.getString("currentUser") ?: "",
+                            menuMakanan = parseIntMap(snap.get("menuMakanan")),
+                            menuMinuman = parseIntMap(snap.get("menuMinuman")),
+                            stokMakanan = parseIntMap(snap.get("stokMakanan")),
+                            stokMinuman = parseIntMap(snap.get("stokMinuman")),
+                            jenisPsList = parseStringList(snap.get("jenisPsList")),
+                            paketMain = parseNestedIntMap(snap.get("paketMain")),
+                            paketDurasi = parseIntMap(snap.get("paketDurasi")),
+                            cashDrawer = parseCashDrawer(snap.get("cashDrawer")),
                         ),
                     )
                 } catch (t: Throwable) {
@@ -67,22 +195,21 @@ class OwnerRepository {
     fun listenClientStatus(
         username: String,
         tvId: String,
-        onUpdate: (ClientStatus) -> Unit,
+        onUpdate: (ClientStatus?) -> Unit,
     ): ListenerRegistration? {
         if (username.isBlank() || tvId.isBlank()) return null
-        // TV client ditulis ke path: billingps_users/<username>/tvCommands/<tvId>
-        // Dimana <username> adalah Prefs.username() (default: tv-arduino jika kosong).
-        // Gunakan "tv-arduino" sebagai username Firestore tetap agar path konsisten
-        // dengan apa yang ditulis TV client (bukan session username kasir).
-        val firestoreUsername = "tv-arduino"
-        return db.collection("billingps_users").document(firestoreUsername)
+        // TV client menulis heartbeat ke billingps_users/<username-rental>/tvCommands/<tvId>
+        return db.collection("billingps_users").document(username)
             .collection("tvCommands").document(tvId)
             .addSnapshotListener { snap, error ->
                 if (error != null) {
                     Log.e(TAG, "listenClientStatus $tvId error: ${error.message}")
                     return@addSnapshotListener
                 }
-                if (snap == null) return@addSnapshotListener
+                if (snap == null || !snap.exists()) {
+                    onUpdate(null)
+                    return@addSnapshotListener
+                }
                 onUpdate(
                     ClientStatus(
                         online = snap.getBoolean("clientOnline") ?: false,
@@ -91,6 +218,325 @@ class OwnerRepository {
                     ),
                 )
             }
+    }
+
+    suspend fun submitStockOpname(
+        rentalUsername: String,
+        email: String,
+        items: List<StockOpnameItem>,
+        note: String,
+    ): OwnerAuthResult {
+        if (rentalUsername.isBlank()) {
+            return OwnerAuthResult(false, "Rental belum dikenali. Login ulang.")
+        }
+        if (items.isEmpty()) {
+            return OwnerAuthResult(false, "Belum ada tambahan stok.")
+        }
+        val submitterEmail = currentEmail().ifBlank { email.trim() }
+        val payload = mapOf<String, Any?>(
+            "status" to "pending",
+            "rentalUsername" to rentalUsername,
+            "submittedByEmail" to submitterEmail,
+            "submittedByUid" to currentUid(),
+            "note" to note.trim(),
+            "createdAt" to System.currentTimeMillis(),
+            "items" to items.map { item ->
+                mapOf(
+                    "name" to item.name,
+                    "category" to item.category,
+                    "expected" to item.expected,
+                    "quantity" to item.quantity,
+                )
+            },
+        )
+        return suspendCancellableCoroutine { cont ->
+            db.collection("billingps_users").document(rentalUsername)
+                .collection("stockOpnames")
+                .add(payload)
+                .addOnSuccessListener { ref ->
+                    Log.i(TAG, "Stock addition submitted: ${ref.id}")
+                    if (!cont.isCompleted) {
+                        cont.resume(OwnerAuthResult(true, "Tambah stok terkirim."))
+                    }
+                }
+                .addOnFailureListener { error ->
+                    Log.e(TAG, "Stock addition submit failed: ${error.message}")
+                    if (!cont.isCompleted) {
+                        cont.resume(
+                            OwnerAuthResult(
+                                false,
+                                error.message?.takeIf { it.isNotBlank() }
+                                    ?: "Gagal mengirim tambahan stok.",
+                            ),
+                        )
+                    }
+                }
+        }
+    }
+
+    suspend fun submitFnbItem(
+        rentalUsername: String,
+        email: String,
+        input: FnbItemInput,
+    ): OwnerAuthResult {
+        if (rentalUsername.isBlank()) {
+            return OwnerAuthResult(false, "Rental belum dikenali. Login ulang.")
+        }
+        val name = input.name.trim()
+        if (name.isBlank()) {
+            return OwnerAuthResult(false, "Nama item wajib diisi.")
+        }
+        val category = input.category.lowercase()
+        if (category != "makanan" && category != "minuman") {
+            return OwnerAuthResult(false, "Kategori item tidak valid.")
+        }
+        if (input.price < 0 || input.initialStock < 0) {
+            return OwnerAuthResult(false, "Harga dan stok awal tidak boleh negatif.")
+        }
+        val submitterEmail = currentEmail().ifBlank { email.trim() }
+        val payload = mapOf<String, Any?>(
+            "status" to "pending",
+            "rentalUsername" to rentalUsername,
+            "submittedByEmail" to submitterEmail,
+            "submittedByUid" to currentUid(),
+            "category" to category,
+            "name" to name,
+            "price" to input.price,
+            "initialStock" to input.initialStock,
+            "createdAt" to System.currentTimeMillis(),
+        )
+        return submitOwnerRequest(
+            rentalUsername = rentalUsername,
+            collection = "fnbItemRequests",
+            payload = payload,
+            successMessage = "Item F&B terkirim. Menunggu diproses aplikasi billing.",
+            failureMessage = "Gagal mengirim item F&B.",
+            logTag = "F&B item",
+        )
+    }
+
+    suspend fun submitPackage(
+        rentalUsername: String,
+        email: String,
+        input: PackageInput,
+    ): OwnerAuthResult {
+        if (rentalUsername.isBlank()) {
+            return OwnerAuthResult(false, "Rental belum dikenali. Login ulang.")
+        }
+        val groupName = input.groupName.trim()
+        val name = input.name.trim()
+        if (groupName.isBlank()) {
+            return OwnerAuthResult(false, "Grup paket wajib dipilih.")
+        }
+        if (name.isBlank()) {
+            return OwnerAuthResult(false, "Nama paket wajib diisi.")
+        }
+        if (input.action != "add" && input.action != "update") {
+            return OwnerAuthResult(false, "Aksi paket tidak valid.")
+        }
+        if (input.price < 0 || input.durationMinutes < 0) {
+            return OwnerAuthResult(false, "Harga dan durasi tidak boleh negatif.")
+        }
+        val submitterEmail = currentEmail().ifBlank { email.trim() }
+        val payload = mapOf<String, Any?>(
+            "status" to "pending",
+            "rentalUsername" to rentalUsername,
+            "submittedByEmail" to submitterEmail,
+            "submittedByUid" to currentUid(),
+            "action" to input.action,
+            "groupName" to groupName,
+            "name" to name,
+            "price" to input.price,
+            "durationMinutes" to input.durationMinutes,
+            "createdAt" to System.currentTimeMillis(),
+        )
+        return submitOwnerRequest(
+            rentalUsername = rentalUsername,
+            collection = "packageRequests",
+            payload = payload,
+            successMessage = "Paket terkirim. Menunggu diproses aplikasi billing.",
+            failureMessage = "Gagal mengirim paket.",
+            logTag = "Package",
+        )
+    }
+
+    suspend fun submitGroup(
+        rentalUsername: String,
+        email: String,
+        input: GroupInput,
+    ): OwnerAuthResult {
+        if (rentalUsername.isBlank()) {
+            return OwnerAuthResult(false, "Rental belum dikenali. Login ulang.")
+        }
+        val name = input.name.trim()
+        if (name.isBlank()) {
+            return OwnerAuthResult(false, "Nama grup wajib diisi.")
+        }
+        val submitterEmail = currentEmail().ifBlank { email.trim() }
+        val payload = mapOf<String, Any?>(
+            "status" to "pending",
+            "rentalUsername" to rentalUsername,
+            "submittedByEmail" to submitterEmail,
+            "submittedByUid" to currentUid(),
+            "name" to name,
+            "createdAt" to System.currentTimeMillis(),
+        )
+        return submitOwnerRequest(
+            rentalUsername = rentalUsername,
+            collection = "groupRequests",
+            payload = payload,
+            successMessage = "Grup PS terkirim. Menunggu diproses aplikasi billing.",
+            failureMessage = "Gagal mengirim grup PS.",
+            logTag = "PS group",
+        )
+    }
+
+    private suspend fun submitOwnerRequest(
+        rentalUsername: String,
+        collection: String,
+        payload: Map<String, Any?>,
+        successMessage: String,
+        failureMessage: String,
+        logTag: String,
+    ): OwnerAuthResult = suspendCancellableCoroutine { cont ->
+        db.collection("billingps_users").document(rentalUsername)
+            .collection(collection)
+            .add(payload)
+            .addOnSuccessListener { ref ->
+                Log.i(TAG, "$logTag submitted: ${ref.id}")
+                if (!cont.isCompleted) cont.resume(OwnerAuthResult(true, successMessage))
+            }
+            .addOnFailureListener { error ->
+                Log.e(TAG, "$logTag submit failed: ${error.message}")
+                if (!cont.isCompleted) {
+                    cont.resume(
+                        OwnerAuthResult(
+                            false,
+                            error.message?.takeIf { it.isNotBlank() } ?: failureMessage,
+                        ),
+                    )
+                }
+            }
+    }
+
+    fun listenCashDrawerRequests(
+        rentalUsername: String,
+        onUpdate: (List<CashDrawerRequest>) -> Unit,
+    ): ListenerRegistration? {
+        if (rentalUsername.isBlank()) return null
+        return db.collection("billingps_users").document(rentalUsername)
+            .collection("cashDrawerRequests")
+            .orderBy("createdAt", Query.Direction.DESCENDING)
+            .limit(30)
+            .addSnapshotListener { snap, error ->
+                if (error != null) {
+                    Log.e(TAG, "listenCashDrawerRequests error: ${error.message}")
+                    return@addSnapshotListener
+                }
+                if (snap == null) return@addSnapshotListener
+                val requests = snap.documents.mapNotNull { doc ->
+                    val nominal = (doc.get("nominal") as? Number)?.toInt() ?: return@mapNotNull null
+                    CashDrawerRequest(
+                        id = doc.id,
+                        nominal = nominal,
+                        note = doc.getString("note").orEmpty(),
+                        status = doc.getString("status").orEmpty().ifBlank { "pending" },
+                        createdAt = (doc.get("createdAt") as? Number)?.toLong() ?: 0L,
+                        processedAt = (doc.get("processedAt") as? Number)?.toLong() ?: 0L,
+                        appliedBy = doc.getString("appliedBy").orEmpty(),
+                        reason = doc.getString("reason").orEmpty(),
+                    )
+                }.sortedWith(
+                    compareByDescending<CashDrawerRequest> { it.pending }
+                        .thenByDescending { it.createdAt },
+                )
+                onUpdate(requests)
+            }
+    }
+
+    suspend fun submitCashDrawerRequest(
+        rentalUsername: String,
+        email: String,
+        nominal: Int,
+        note: String,
+    ): OwnerAuthResult {
+        if (rentalUsername.isBlank()) {
+            return OwnerAuthResult(false, "Rental belum dikenali. Login ulang.")
+        }
+        if (nominal <= 0) {
+            return OwnerAuthResult(false, "Nominal penarikan harus lebih dari 0.")
+        }
+        val submitterEmail = currentEmail().ifBlank { email.trim() }
+        val payload = mapOf<String, Any?>(
+            "status" to "pending",
+            "rentalUsername" to rentalUsername,
+            "submittedByEmail" to submitterEmail,
+            "submittedByUid" to currentUid(),
+            "nominal" to nominal,
+            "note" to note.trim(),
+            "createdAt" to System.currentTimeMillis(),
+        )
+        return suspendCancellableCoroutine { cont ->
+            db.collection("billingps_users").document(rentalUsername)
+                .collection("cashDrawerRequests")
+                .add(payload)
+                .addOnSuccessListener { ref ->
+                    Log.i(TAG, "Cash drawer request submitted: ${ref.id}")
+                    if (!cont.isCompleted) {
+                        cont.resume(OwnerAuthResult(true, "Permintaan penarikan terkirim."))
+                    }
+                }
+                .addOnFailureListener { error ->
+                    Log.e(TAG, "Cash drawer request submit failed: ${error.message}")
+                    if (!cont.isCompleted) {
+                        cont.resume(
+                            OwnerAuthResult(
+                                false,
+                                error.message?.takeIf { it.isNotBlank() }
+                                    ?: "Gagal mengirim permintaan penarikan.",
+                            ),
+                        )
+                    }
+                }
+        }
+    }
+
+    private fun parseCashDrawer(raw: Any?): OwnerCashDrawer {
+        val map = raw as? Map<*, *> ?: return OwnerCashDrawer()
+        return OwnerCashDrawer(
+            status = map.str("status", "TUTUP").ifBlank { "TUTUP" },
+            shiftId = map.str("shiftId"),
+            shiftUsername = map.str("shiftUsername"),
+            jenisShift = map.str("jenisShift"),
+            startedAt = map.long("startedAt"),
+            openingCash = map.int("openingCash"),
+            cashExpected = map.int("cashExpected"),
+            cashSales = map.int("cashSales"),
+            cashIn = map.int("cashIn"),
+            cashOut = map.int("cashOut"),
+            updatedAt = map.long("updatedAt"),
+        )
+    }
+
+    private fun parseIntMap(raw: Any?): Map<String, Int> {
+        val map = raw as? Map<*, *> ?: return emptyMap()
+        val out = mutableMapOf<String, Int>()
+        map.forEach { (key, value) ->
+            if (key is String && value is Number) out[key] = value.toInt()
+        }
+        return out
+    }
+
+    private fun parseStringList(raw: Any?): List<String> =
+        (raw as? List<*>)?.mapNotNull { it as? String }?.filter { it.isNotBlank() }.orEmpty()
+
+    private fun parseNestedIntMap(raw: Any?): Map<String, Map<String, Int>> {
+        val map = raw as? Map<*, *> ?: return emptyMap()
+        val out = mutableMapOf<String, Map<String, Int>>()
+        map.forEach { (key, value) ->
+            if (key is String) out[key] = parseIntMap(value)
+        }
+        return out
     }
 
     suspend fun fetchRentalInfo(username: String): RentalInfo {

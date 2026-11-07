@@ -1,5 +1,8 @@
 package com.billingps.owner.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,13 +20,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Store
-import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -40,6 +44,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -48,20 +54,54 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.billingps.owner.BuildConfig
+import com.billingps.owner.R
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
 
 @Composable
 fun LoginScreen(
+    savedEmail: String,
     savedUsername: String,
-    pinRequired: Boolean,
+    unlockMode: Boolean,
     loading: Boolean,
     error: String?,
-    onLogin: (String, String) -> Unit,
+    onLogin: (String, String, String) -> Unit,
+    onGoogleLogin: (String, String, String) -> Unit,
+    onUnlock: (String) -> Unit,
     onReset: () -> Unit,
     onDismissError: () -> Unit,
 ) {
-    var username by remember(savedUsername) { mutableStateOf(savedUsername) }
+    var email by remember(savedEmail) { mutableStateOf(savedEmail) }
+    var password by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
     var pinVisible by remember { mutableStateOf(false) }
+    var googleError by remember { mutableStateOf<String?>(null) }
+
+    val context = LocalContext.current
+    val googleLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        try {
+            val account = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+                .getResult(ApiException::class.java)
+            val idToken = account.idToken
+            val googleEmail = account.email.orEmpty()
+            if (idToken.isNullOrBlank() || googleEmail.isBlank()) {
+                googleError = "Google tidak mengembalikan token/email. Coba lagi."
+            } else {
+                googleError = null
+                onGoogleLogin(idToken, googleEmail, pin)
+            }
+        } catch (e: ApiException) {
+            googleError = if (e.statusCode == 12501) {
+                "Login Google dibatalkan."
+            } else {
+                "Google Sign-In gagal (${e.statusCode})."
+            }
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -83,15 +123,15 @@ fun LoginScreen(
         ) {
             Box(
                 modifier = Modifier
-                    .size(84.dp)
-                    .background(OwnerGreen.copy(alpha = 0.12f), RoundedCornerShape(24.dp)),
+                    .size(116.dp)
+                    .background(Color.White, RoundedCornerShape(28.dp))
+                    .padding(12.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(
-                    Icons.Default.Tv,
-                    contentDescription = null,
-                    tint = OwnerGreen,
-                    modifier = Modifier.size(46.dp),
+                Image(
+                    painter = painterResource(R.drawable.rr_owner_logo),
+                    contentDescription = "RR Owner",
+                    modifier = Modifier.fillMaxSize(),
                 )
             }
             Spacer(Modifier.height(20.dp))
@@ -104,7 +144,11 @@ fun LoginScreen(
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                "Monitor kartu TV, client, dan laporan rental",
+                if (unlockMode) {
+                    "Masukkan PIN untuk membuka aplikasi"
+                } else {
+                    "Masuk dengan akun Google admin RR Billing Pro"
+                },
                 color = OwnerMuted,
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
@@ -116,89 +160,255 @@ fun LoginScreen(
                 Spacer(Modifier.height(12.dp))
             }
 
-            OutlinedTextField(
-                value = username,
-                onValueChange = { if (!pinRequired) username = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Username Rental") },
-                leadingIcon = {
-                    Icon(Icons.Default.Store, contentDescription = null, tint = OwnerPurpleLight)
-                },
-                singleLine = true,
-                enabled = !pinRequired && !loading,
-                shape = RoundedCornerShape(12.dp),
-            )
-            Spacer(Modifier.height(12.dp))
-
-            OutlinedTextField(
-                value = pin,
-                onValueChange = { value ->
-                    pin = value.filter { it.isDigit() }.take(8)
-                },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text(if (pinRequired) "PIN Owner" else "PIN Owner (opsional)") },
-                leadingIcon = {
-                    Icon(Icons.Default.Lock, contentDescription = null, tint = OwnerPurpleLight)
-                },
-                trailingIcon = {
-                    IconButton(onClick = { pinVisible = !pinVisible }) {
-                        Icon(
-                            if (pinVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                            contentDescription = null,
-                            tint = OwnerMuted,
+            if (unlockMode) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = OwnerPanel),
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text(
+                            savedEmail,
+                            color = OwnerText,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "Rental: ${savedUsername.ifBlank { "-" }}",
+                            color = OwnerMuted,
+                            style = MaterialTheme.typography.bodySmall,
                         )
                     }
-                },
-                visualTransformation = if (pinVisible) {
-                    VisualTransformation.None
-                } else {
-                    PasswordVisualTransformation()
-                },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                singleLine = true,
-                enabled = !loading,
-                shape = RoundedCornerShape(12.dp),
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                if (pinRequired) {
-                    "Masukkan PIN yang sudah dibuat untuk membuka data rental."
-                } else {
-                    "PIN opsional. Jika diisi, PIN diperlukan saat aplikasi dibuka lagi."
-                },
-                modifier = Modifier.fillMaxWidth(),
-                color = OwnerMuted,
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Spacer(Modifier.height(20.dp))
-
-            Button(
-                onClick = { onLogin(username, pin) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp),
-                enabled = !loading,
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = OwnerGreen,
-                    contentColor = Color(0xFF06281D),
-                ),
-            ) {
-                if (loading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
-                        color = Color(0xFF06281D),
-                    )
-                } else {
-                    Text("MASUK", fontWeight = FontWeight.Black, letterSpacing = 1.sp)
                 }
-            }
+                Spacer(Modifier.height(12.dp))
 
-            if (savedUsername.isNotBlank()) {
+                OutlinedTextField(
+                    value = pin,
+                    onValueChange = { value ->
+                        pin = value.filter { it.isDigit() }.take(8)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("PIN Aplikasi") },
+                    leadingIcon = {
+                        Icon(Icons.Default.Lock, contentDescription = null, tint = OwnerPurpleLight)
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { pinVisible = !pinVisible }) {
+                            Icon(
+                                if (pinVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = null,
+                                tint = OwnerMuted,
+                            )
+                        }
+                    },
+                    visualTransformation = if (pinVisible) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    singleLine = true,
+                    enabled = !loading,
+                    shape = RoundedCornerShape(12.dp),
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "PIN ini hanya tersimpan di perangkat ini.",
+                    modifier = Modifier.fillMaxWidth(),
+                    color = OwnerMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(20.dp))
+
+                Button(
+                    onClick = { onUnlock(pin) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                    enabled = !loading && pin.length >= 4,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = OwnerGreen,
+                        contentColor = Color(0xFF06281D),
+                    ),
+                ) {
+                    if (loading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = Color(0xFF06281D),
+                        )
+                    } else {
+                        Text("BUKA APLIKASI", fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+                    }
+                }
+
                 Spacer(Modifier.height(10.dp))
                 TextButton(onClick = onReset, enabled = !loading) {
-                    Text("Ganti / reset rental", color = OwnerMuted)
+                    Text("Lupa PIN / ganti rental", color = OwnerMuted)
+                }
+            } else {
+                OutlinedTextField(
+                    value = pin,
+                    onValueChange = { value ->
+                        pin = value.filter { it.isDigit() }.take(8)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("PIN Aplikasi (4-8 digit)") },
+                    leadingIcon = {
+                        Icon(Icons.Default.Lock, contentDescription = null, tint = OwnerPurpleLight)
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { pinVisible = !pinVisible }) {
+                            Icon(
+                                if (pinVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = null,
+                                tint = OwnerMuted,
+                            )
+                        }
+                    },
+                    visualTransformation = if (pinVisible) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    singleLine = true,
+                    enabled = !loading,
+                    shape = RoundedCornerShape(12.dp),
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "PIN baru dipakai untuk membuka aplikasi berikutnya. Minimal 4 digit.",
+                    modifier = Modifier.fillMaxWidth(),
+                    color = OwnerMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(12.dp))
+
+                Button(
+                    onClick = {
+                        googleError = null
+                        val options = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                            .requestIdToken(context.getString(R.string.default_web_client_id))
+                            .requestEmail()
+                            .build()
+                        googleLauncher.launch(GoogleSignIn.getClient(context, options).signInIntent)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                    enabled = !loading && pin.length >= 4,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.White,
+                        contentColor = Color(0xFF1F1F1F),
+                    ),
+                ) {
+                    Text("MASUK DENGAN GOOGLE", fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+                }
+                if (googleError != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        googleError.orEmpty(),
+                        modifier = Modifier.fillMaxWidth(),
+                        color = OwnerRed,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Login sekali di aplikasi billing dengan akun ini agar akses owner aktif.",
+                    modifier = Modifier.fillMaxWidth(),
+                    color = OwnerMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(18.dp))
+                Text(
+                    "ATAU MASUK DENGAN EMAIL & PASSWORD",
+                    modifier = Modifier.fillMaxWidth(),
+                    color = OwnerMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(10.dp))
+
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = { email = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Email Owner") },
+                    leadingIcon = {
+                        Icon(Icons.Default.Email, contentDescription = null, tint = OwnerPurpleLight)
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    singleLine = true,
+                    enabled = !loading,
+                    shape = RoundedCornerShape(12.dp),
+                )
+                Spacer(Modifier.height(12.dp))
+
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Password") },
+                    leadingIcon = {
+                        Icon(Icons.Default.Lock, contentDescription = null, tint = OwnerPurpleLight)
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            Icon(
+                                if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = null,
+                                tint = OwnerMuted,
+                            )
+                        }
+                    },
+                    visualTransformation = if (passwordVisible) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    singleLine = true,
+                    enabled = !loading,
+                    shape = RoundedCornerShape(12.dp),
+                )
+                Spacer(Modifier.height(12.dp))
+
+                Button(
+                    onClick = { onLogin(email, password, pin) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                    enabled = !loading &&
+                        email.isNotBlank() &&
+                        password.isNotBlank() &&
+                        pin.length >= 4,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = OwnerGreen,
+                        contentColor = Color(0xFF06281D),
+                    ),
+                ) {
+                    if (loading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = Color(0xFF06281D),
+                        )
+                    } else {
+                        Text("MASUK DENGAN EMAIL", fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+                    }
+                }
+
+                if (savedEmail.isNotBlank() || savedUsername.isNotBlank()) {
+                    Spacer(Modifier.height(10.dp))
+                    TextButton(onClick = onReset, enabled = !loading) {
+                        Text("Ganti / reset rental", color = OwnerMuted)
+                    }
                 }
             }
 
@@ -211,7 +421,7 @@ fun LoginScreen(
                 )
                 Text("  •  ", color = OwnerBorder)
                 Text(
-                    "Laporan: Supabase",
+                    "Login: Firebase",
                     color = OwnerMuted,
                     style = MaterialTheme.typography.bodySmall,
                 )

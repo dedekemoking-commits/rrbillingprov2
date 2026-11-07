@@ -16,6 +16,55 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import java.util.UUID
 
+data class PendingStockOpnameItem(
+    val name: String,
+    val category: String,
+    val quantity: Int,
+)
+
+data class PendingStockOpname(
+    val id: String,
+    val note: String,
+    val submittedByEmail: String,
+    val items: List<PendingStockOpnameItem>,
+)
+
+data class PendingCashDrawerRequest(
+    val id: String,
+    val nominal: Int,
+    val note: String,
+    val submittedByEmail: String,
+    val submittedByUid: String,
+)
+
+data class PendingFnbItemRequest(
+    val id: String,
+    val category: String,
+    val name: String,
+    val price: Int,
+    val initialStock: Int,
+    val submittedByEmail: String,
+    val submittedByUid: String,
+)
+
+data class PendingPackageRequest(
+    val id: String,
+    val action: String,
+    val groupName: String,
+    val name: String,
+    val price: Int,
+    val durationMinutes: Int,
+    val submittedByEmail: String,
+    val submittedByUid: String,
+)
+
+data class PendingGroupRequest(
+    val id: String,
+    val name: String,
+    val submittedByEmail: String,
+    val submittedByUid: String,
+)
+
 /**
  * Simple Firebase-backed repository for syncing app state to Firestore.
  * Uses anonymous sign-in as fallback for device-level sync, but
@@ -179,6 +228,402 @@ class CloudRepository(private val app: Application) {
         }
     }
 
+    fun listenPendingStockOpnames(
+        username: String,
+        onUpdate: (List<PendingStockOpname>) -> Unit,
+    ): ListenerRegistration? {
+        if (username.isBlank()) return null
+        if (auth.currentUser == null) return null
+        return firestore.collection("billingps_users").document(username)
+            .collection("stockOpnames")
+            .whereEqualTo("status", "pending")
+            .addSnapshotListener { snap, error ->
+                if (error != null) {
+                    Log.e("CloudRepo", "listenPendingStockOpnames error: ${error.message}")
+                    return@addSnapshotListener
+                }
+                if (snap == null) return@addSnapshotListener
+                val opnames = snap.documents.mapNotNull docLoop@{ doc ->
+                    val items = (doc.get("items") as? List<*>)?.mapNotNull itemLoop@{ raw ->
+                        val map = raw as? Map<*, *> ?: return@itemLoop null
+                        val name = map["name"] as? String ?: return@itemLoop null
+                        val category = map["category"] as? String ?: return@itemLoop null
+                        val quantity = (map["quantity"] as? Number)?.toInt()
+                            ?: return@itemLoop null
+                        if (quantity <= 0) return@itemLoop null
+                        PendingStockOpnameItem(
+                            name = name,
+                            category = category,
+                            quantity = quantity,
+                        )
+                    }.orEmpty()
+                    if (items.isEmpty()) return@docLoop null
+                    PendingStockOpname(
+                        id = doc.id,
+                        note = doc.getString("note").orEmpty(),
+                        submittedByEmail = doc.getString("submittedByEmail").orEmpty(),
+                        items = items,
+                    )
+                }
+                onUpdate(opnames)
+            }
+    }
+
+    suspend fun markStockOpnameApplied(
+        username: String,
+        opnameId: String,
+        appliedBy: String,
+    ): Boolean {
+        if (username.isBlank() || opnameId.isBlank()) return false
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("billingps_users").document(username)
+                .collection("stockOpnames").document(opnameId)
+                .update(
+                    mapOf(
+                        "status" to "applied",
+                        "appliedAt" to System.currentTimeMillis(),
+                        "appliedBy" to appliedBy,
+                    ),
+                )
+                .addOnSuccessListener {
+                    Log.i("CloudRepo", "Stock opname $opnameId applied")
+                    if (!cont.isCompleted) cont.resume(true)
+                }
+                .addOnFailureListener { ex ->
+                    Log.i("CloudRepo", "markStockOpnameApplied failed: ${ex.message}")
+                    if (!cont.isCompleted) cont.resume(false)
+                }
+        }
+    }
+
+    fun listenPendingCashDrawerRequests(
+        username: String,
+        onUpdate: (List<PendingCashDrawerRequest>) -> Unit,
+    ): ListenerRegistration? {
+        if (username.isBlank()) return null
+        if (auth.currentUser == null) return null
+        return firestore.collection("billingps_users").document(username)
+            .collection("cashDrawerRequests")
+            .whereEqualTo("status", "pending")
+            .addSnapshotListener { snap, error ->
+                if (error != null) {
+                    Log.e("CloudRepo", "listenPendingCashDrawerRequests error: ${error.message}")
+                    return@addSnapshotListener
+                }
+                if (snap == null) return@addSnapshotListener
+                val requests = snap.documents.mapNotNull { doc ->
+                    val nominal = (doc.get("nominal") as? Number)?.toInt() ?: return@mapNotNull null
+                    if (nominal <= 0) return@mapNotNull null
+                    PendingCashDrawerRequest(
+                        id = doc.id,
+                        nominal = nominal,
+                        note = doc.getString("note").orEmpty(),
+                        submittedByEmail = doc.getString("submittedByEmail").orEmpty(),
+                        submittedByUid = doc.getString("submittedByUid").orEmpty(),
+                    )
+                }
+                onUpdate(requests)
+            }
+    }
+
+    suspend fun markCashDrawerRequestProcessed(
+        username: String,
+        requestId: String,
+        applied: Boolean,
+        appliedBy: String,
+        reason: String = "",
+        movementId: String = "",
+        saldoSetelah: Int = 0,
+    ): Boolean {
+        if (username.isBlank() || requestId.isBlank()) return false
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("billingps_users").document(username)
+                .collection("cashDrawerRequests").document(requestId)
+                .update(
+                    mapOf(
+                        "status" to if (applied) "applied" else "rejected",
+                        "processedAt" to System.currentTimeMillis(),
+                        "appliedBy" to appliedBy,
+                        "reason" to reason.trim(),
+                        "movementId" to movementId,
+                        "saldoSetelah" to saldoSetelah,
+                    ),
+                )
+                .addOnSuccessListener {
+                    Log.i("CloudRepo", "Cash drawer request $requestId ${
+                        if (applied) "applied" else "rejected"
+                    }")
+                    if (!cont.isCompleted) cont.resume(true)
+                }
+                .addOnFailureListener { ex ->
+                    Log.i("CloudRepo", "markCashDrawerRequestProcessed failed: ${ex.message}")
+                    if (!cont.isCompleted) cont.resume(false)
+                }
+        }
+    }
+
+    fun listenPendingFnbItemRequests(
+        username: String,
+        onUpdate: (List<PendingFnbItemRequest>) -> Unit,
+    ): ListenerRegistration? {
+        if (username.isBlank()) return null
+        if (auth.currentUser == null) return null
+        return firestore.collection("billingps_users").document(username)
+            .collection("fnbItemRequests")
+            .whereEqualTo("status", "pending")
+            .addSnapshotListener { snap, error ->
+                if (error != null) {
+                    Log.e("CloudRepo", "listenPendingFnbItemRequests error: ${error.message}")
+                    return@addSnapshotListener
+                }
+                if (snap == null) return@addSnapshotListener
+                val requests = snap.documents.mapNotNull { doc ->
+                    val category = doc.getString("category").orEmpty().lowercase()
+                    if (category != "makanan" && category != "minuman") return@mapNotNull null
+                    val name = doc.getString("name").orEmpty().trim()
+                    if (name.isBlank()) return@mapNotNull null
+                    val price = (doc.get("price") as? Number)?.toInt() ?: return@mapNotNull null
+                    val initialStock = (doc.get("initialStock") as? Number)?.toInt() ?: 0
+                    if (price < 0 || initialStock < 0) return@mapNotNull null
+                    PendingFnbItemRequest(
+                        id = doc.id,
+                        category = category,
+                        name = name,
+                        price = price,
+                        initialStock = initialStock,
+                        submittedByEmail = doc.getString("submittedByEmail").orEmpty(),
+                        submittedByUid = doc.getString("submittedByUid").orEmpty(),
+                    )
+                }
+                onUpdate(requests)
+            }
+    }
+
+    suspend fun markFnbItemRequestProcessed(
+        username: String,
+        requestId: String,
+        applied: Boolean,
+        appliedBy: String,
+        reason: String = "",
+    ): Boolean {
+        if (username.isBlank() || requestId.isBlank()) return false
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("billingps_users").document(username)
+                .collection("fnbItemRequests").document(requestId)
+                .update(
+                    mapOf(
+                        "status" to if (applied) "applied" else "rejected",
+                        "processedAt" to System.currentTimeMillis(),
+                        "appliedBy" to appliedBy,
+                        "reason" to reason.trim(),
+                    ),
+                )
+                .addOnSuccessListener {
+                    Log.i("CloudRepo", "F&B item request $requestId ${if (applied) "applied" else "rejected"}")
+                    if (!cont.isCompleted) cont.resume(true)
+                }
+                .addOnFailureListener { ex ->
+                    Log.i("CloudRepo", "markFnbItemRequestProcessed failed: ${ex.message}")
+                    if (!cont.isCompleted) cont.resume(false)
+                }
+        }
+    }
+
+    fun listenPendingPackageRequests(
+        username: String,
+        onUpdate: (List<PendingPackageRequest>) -> Unit,
+    ): ListenerRegistration? {
+        if (username.isBlank()) return null
+        if (auth.currentUser == null) return null
+        return firestore.collection("billingps_users").document(username)
+            .collection("packageRequests")
+            .whereEqualTo("status", "pending")
+            .addSnapshotListener { snap, error ->
+                if (error != null) {
+                    Log.e("CloudRepo", "listenPendingPackageRequests error: ${error.message}")
+                    return@addSnapshotListener
+                }
+                if (snap == null) return@addSnapshotListener
+                val requests = snap.documents.mapNotNull { doc ->
+                    val action = doc.getString("action").orEmpty().lowercase()
+                    if (action != "add" && action != "update") return@mapNotNull null
+                    val groupName = doc.getString("groupName").orEmpty().trim()
+                    val name = doc.getString("name").orEmpty().trim()
+                    if (groupName.isBlank() || name.isBlank()) return@mapNotNull null
+                    val price = (doc.get("price") as? Number)?.toInt() ?: return@mapNotNull null
+                    val durationMinutes = (doc.get("durationMinutes") as? Number)?.toInt() ?: 0
+                    if (price < 0 || durationMinutes < 0) return@mapNotNull null
+                    PendingPackageRequest(
+                        id = doc.id,
+                        action = action,
+                        groupName = groupName,
+                        name = name,
+                        price = price,
+                        durationMinutes = durationMinutes,
+                        submittedByEmail = doc.getString("submittedByEmail").orEmpty(),
+                        submittedByUid = doc.getString("submittedByUid").orEmpty(),
+                    )
+                }
+                onUpdate(requests)
+            }
+    }
+
+    suspend fun markPackageRequestProcessed(
+        username: String,
+        requestId: String,
+        applied: Boolean,
+        appliedBy: String,
+        reason: String = "",
+    ): Boolean {
+        if (username.isBlank() || requestId.isBlank()) return false
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("billingps_users").document(username)
+                .collection("packageRequests").document(requestId)
+                .update(
+                    mapOf(
+                        "status" to if (applied) "applied" else "rejected",
+                        "processedAt" to System.currentTimeMillis(),
+                        "appliedBy" to appliedBy,
+                        "reason" to reason.trim(),
+                    ),
+                )
+                .addOnSuccessListener {
+                    Log.i("CloudRepo", "Package request $requestId ${if (applied) "applied" else "rejected"}")
+                    if (!cont.isCompleted) cont.resume(true)
+                }
+                .addOnFailureListener { ex ->
+                    Log.i("CloudRepo", "markPackageRequestProcessed failed: ${ex.message}")
+                    if (!cont.isCompleted) cont.resume(false)
+                }
+        }
+    }
+
+    fun listenPendingGroupRequests(
+        username: String,
+        onUpdate: (List<PendingGroupRequest>) -> Unit,
+    ): ListenerRegistration? {
+        if (username.isBlank()) return null
+        if (auth.currentUser == null) return null
+        return firestore.collection("billingps_users").document(username)
+            .collection("groupRequests")
+            .whereEqualTo("status", "pending")
+            .addSnapshotListener { snap, error ->
+                if (error != null) {
+                    Log.e("CloudRepo", "listenPendingGroupRequests error: ${error.message}")
+                    return@addSnapshotListener
+                }
+                if (snap == null) return@addSnapshotListener
+                val requests = snap.documents.mapNotNull { doc ->
+                    val name = doc.getString("name").orEmpty().trim()
+                    if (name.isBlank()) return@mapNotNull null
+                    PendingGroupRequest(
+                        id = doc.id,
+                        name = name,
+                        submittedByEmail = doc.getString("submittedByEmail").orEmpty(),
+                        submittedByUid = doc.getString("submittedByUid").orEmpty(),
+                    )
+                }
+                onUpdate(requests)
+            }
+    }
+
+    suspend fun markGroupRequestProcessed(
+        username: String,
+        requestId: String,
+        applied: Boolean,
+        appliedBy: String,
+        reason: String = "",
+    ): Boolean {
+        if (username.isBlank() || requestId.isBlank()) return false
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("billingps_users").document(username)
+                .collection("groupRequests").document(requestId)
+                .update(
+                    mapOf(
+                        "status" to if (applied) "applied" else "rejected",
+                        "processedAt" to System.currentTimeMillis(),
+                        "appliedBy" to appliedBy,
+                        "reason" to reason.trim(),
+                    ),
+                )
+                .addOnSuccessListener {
+                    Log.i("CloudRepo", "Group request $requestId ${if (applied) "applied" else "rejected"}")
+                    if (!cont.isCompleted) cont.resume(true)
+                }
+                .addOnFailureListener { ex ->
+                    Log.i("CloudRepo", "markGroupRequestProcessed failed: ${ex.message}")
+                    if (!cont.isCompleted) cont.resume(false)
+                }
+        }
+    }
+
+    suspend fun syncCashDrawerSummary(
+        username: String,
+        summary: CashDrawerSummary,
+    ): Boolean {
+        if (username.isBlank()) return false
+        if (!ensureSignedIn()) return false
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("billingps_users").document(username)
+                .set(
+                    mapOf("cashDrawer" to summary.toFirestoreMap()),
+                    SetOptions.merge(),
+                )
+                .addOnSuccessListener {
+                    if (!cont.isCompleted) cont.resume(true)
+                }
+                .addOnFailureListener { ex ->
+                    Log.i("CloudRepo", "syncCashDrawerSummary failed: ${ex.message}")
+                    if (!cont.isCompleted) cont.resume(false)
+                }
+        }
+    }
+
+    suspend fun syncStockToRental(
+        username: String,
+        menuMakanan: Map<String, Int>,
+        menuMinuman: Map<String, Int>,
+        stokMakanan: Map<String, Int>,
+        stokMinuman: Map<String, Int>,
+    ): Boolean {
+        if (username.isBlank()) return false
+        if (!ensureSignedIn()) return false
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("billingps_users").document(username)
+                .set(
+                    mapOf(
+                        "menuMakanan" to menuMakanan,
+                        "menuMinuman" to menuMinuman,
+                        "stokMakanan" to stokMakanan,
+                        "stokMinuman" to stokMinuman,
+                        "lastStockSync" to System.currentTimeMillis(),
+                    ),
+                    SetOptions.merge(),
+                )
+                .addOnSuccessListener {
+                    if (!cont.isCompleted) cont.resume(true)
+                }
+                .addOnFailureListener { ex ->
+                    Log.i("CloudRepo", "syncStockToRental failed: ${ex.message}")
+                    if (!cont.isCompleted) cont.resume(false)
+                }
+        }
+    }
+
+    private fun CashDrawerSummary.toFirestoreMap(): Map<String, Any> = mapOf(
+        "status" to status,
+        "shiftId" to shiftId,
+        "shiftUsername" to shiftUsername,
+        "jenisShift" to jenisShift,
+        "startedAt" to startedAt,
+        "openingCash" to openingCash,
+        "cashExpected" to cashExpected,
+        "cashSales" to cashSales,
+        "cashIn" to cashIn,
+        "cashOut" to cashOut,
+        "updatedAt" to updatedAt,
+    )
+
     /**
      * Require non-anonymous Firebase Auth for sensitive operations.
      * Returns true only if a real (email/password) Firebase Auth session exists.
@@ -296,9 +741,41 @@ class CloudRepository(private val app: Application) {
                 "currentUser" to state.currentUser,
                 "tvList" to tvs,
                 "transaksiList" to txs,
+                "menuMakanan" to state.menuMakanan,
+                "menuMinuman" to state.menuMinuman,
+                "stokMakanan" to state.stokMakanan,
+                "stokMinuman" to state.stokMinuman,
+                "jenisPsList" to state.jenisPsList,
+                "paketMain" to state.paketMain,
+                "paketDurasi" to state.paketDurasi,
+                "cashDrawer" to CashDrawerEngine.summary(
+                    shifts = state.kasirShiftList,
+                    transactions = state.transaksiList,
+                    movements = state.pergerakanKasList,
+                    rentalUsername = username?.takeIf { it.isNotBlank() } ?: state.currentUser,
+                    nowMillis = System.currentTimeMillis(),
+                ).toFirestoreMap(),
                 "appVersion" to appVersion,
                 "lastActive" to System.currentTimeMillis(),
             )
+
+            val authUser = auth.currentUser
+            val ownerUser = authUser?.email?.let { email ->
+                state.users.values.firstOrNull {
+                    it.email.equals(email, ignoreCase = true) &&
+                        (it.role == "admin" || it.role == "owner")
+                }
+            }
+            if (
+                authUser != null &&
+                !authUser.isAnonymous &&
+                ownerUser != null &&
+                !username.isNullOrBlank() &&
+                ownerUser.username.equals(username, ignoreCase = true)
+            ) {
+                payload["ownerEmail"] = ownerUser.email
+                payload["ownerUid"] = authUser.uid
+            }
             if (state.licenseStatus.status.isNotEmpty()) {
                 payload["licenseStatus"] = mapOf(
                     "status" to state.licenseStatus.status,
@@ -314,6 +791,8 @@ class CloudRepository(private val app: Application) {
             // Write individual user docs FIRST (suspend context available here)
             val userDocOk = syncUsersMap(state.users)
             Log.i("CloudRepo", "syncUsersMap result=$userDocOk for ${state.users.size} users")
+            val ownerAccountOk = syncOwnerAccount(state.users)
+            Log.i("CloudRepo", "syncOwnerAccount result=$ownerAccountOk")
 
             return suspendCancellableCoroutine { cont ->
                 val docRef = if (!username.isNullOrBlank()) {
@@ -333,8 +812,10 @@ class CloudRepository(private val app: Application) {
     private suspend fun syncUsersMap(users: Map<String, UserData>): Boolean {
         if (users.isEmpty()) { Log.i("CloudRepo", "syncUsersMap: no users to sync"); return true }
         return suspendCancellableCoroutine { cont ->
+            val authUser = auth.currentUser
+            val authEmail = authUser?.email
             val tasks = users.map { (key, u) ->
-                val doc = mapOf(
+                val doc = mutableMapOf<String, Any>(
                     "username" to key,
                     "role" to u.role,
                     "admin_utama" to u.adminUtama,
@@ -344,6 +825,15 @@ class CloudRepository(private val app: Application) {
                     "alamatRental" to u.alamatRental,
                     "whatsappRental" to u.whatsappRental,
                 )
+                if (
+                    authUser != null &&
+                    !authUser.isAnonymous &&
+                    !authEmail.isNullOrBlank() &&
+                    u.email.equals(authEmail, ignoreCase = true)
+                ) {
+                    doc["firebaseUid"] = authUser.uid
+                    doc["ownerEmail"] = u.email
+                }
                 firestore.collection("billingps_users").document("_user_$key").set(doc)
             }
             com.google.android.gms.tasks.Tasks.whenAll(tasks)
@@ -353,6 +843,36 @@ class CloudRepository(private val app: Application) {
                 }
                 .addOnFailureListener { ex ->
                     Log.i("CloudRepo", "syncUsersMap failed: ${ex.message}")
+                    if (!cont.isCompleted) cont.resume(false)
+                }
+        }
+    }
+
+    private suspend fun syncOwnerAccount(users: Map<String, UserData>): Boolean {
+        val authUser = auth.currentUser ?: return false
+        if (authUser.isAnonymous) return false
+        val email = authUser.email ?: return false
+        val owner = users.values.firstOrNull {
+            it.email.equals(email, ignoreCase = true) &&
+                (it.role == "admin" || it.role == "owner")
+        } ?: return false
+        return suspendCancellableCoroutine { cont ->
+            firestore.collection("owner_accounts").document(authUser.uid)
+                .set(
+                    mapOf(
+                        "email" to owner.email,
+                        "rentalUsername" to owner.username,
+                        "namaRental" to owner.namaRental,
+                        "updatedAt" to System.currentTimeMillis(),
+                    ),
+                    SetOptions.merge(),
+                )
+                .addOnSuccessListener {
+                    Log.i("CloudRepo", "syncOwnerAccount success: ${owner.username}")
+                    if (!cont.isCompleted) cont.resume(true)
+                }
+                .addOnFailureListener { ex ->
+                    Log.i("CloudRepo", "syncOwnerAccount failed: ${ex.message}")
                     if (!cont.isCompleted) cont.resume(false)
                 }
         }

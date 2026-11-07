@@ -2,11 +2,17 @@ package com.billingps.aptv.utils
 
 import android.content.Context
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.util.Log
 import com.chaquo.python.Python
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
+import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
 
 data class AdbPairingResult(
     val success: Boolean,
@@ -14,11 +20,30 @@ data class AdbPairingResult(
     val paired: Boolean = false,
 )
 
+data class ClientApkDownload(
+    val file: File,
+    val versionName: String,
+    val versionCode: Long,
+    val releaseTag: String,
+    val assetName: String,
+)
+
 class ClientApkManager(private val context: Context) {
 
     companion object {
         private const val CLIENT_APK_ASSET = "tv-client.apk"
+        private const val CLIENT_APK_DOWNLOAD = "tv-client-latest.apk"
+        private const val CLIENT_PACKAGE = "com.rrbillingpro.tvclient"
+        private const val TV_APK_ASSET = "RRBillingPro-TV.apk"
+        private const val GITHUB_RELEASES_URL =
+            "https://api.github.com/repos/dedekemoking-commits/rr_billing_pro_windows/releases?per_page=30"
     }
+
+    private data class RemoteClientApk(
+        val releaseTag: String,
+        val assetName: String,
+        val downloadUrl: String,
+    )
 
     private val keyDir: String = File(context.filesDir, "adb").absolutePath
 
@@ -44,6 +69,162 @@ class ClientApkManager(private val context: Context) {
             Log.e("ClientApkManager", "Failed to extract APK: ${e.message}")
             null
         }
+    }
+
+    suspend fun downloadLatestClientApk(
+        onProgress: (downloaded: Long, total: Long) -> Unit = { _, _ -> },
+    ): ClientApkDownload {
+        if (!ApkServer.clientAllowed) {
+            throw IOException("Fitur Client APK tidak aktif pada paket ini")
+        }
+        return withContext(Dispatchers.IO) {
+            val remote = resolveLatestClientApk()
+                ?: throw IOException("APK client TV tidak ditemukan di GitHub release")
+            val target = File(context.cacheDir, CLIENT_APK_DOWNLOAD)
+            val temp = File(context.cacheDir, "$CLIENT_APK_DOWNLOAD.part")
+            if (temp.exists()) temp.delete()
+
+            val conn = URL(remote.downloadUrl).openConnection() as HttpURLConnection
+            conn.instanceFollowRedirects = true
+            conn.connectTimeout = 15_000
+            conn.readTimeout = 60_000
+            conn.setRequestProperty("User-Agent", "RRBillingPro-Android")
+            try {
+                val responseCode = conn.responseCode
+                if (responseCode !in 200..299) {
+                    throw IOException("Download APK gagal (HTTP $responseCode)")
+                }
+
+                val total = conn.contentLength.toLong()
+                var downloaded = 0L
+                var lastPercent = -1
+                var lastReported = 0L
+                conn.inputStream.use { input ->
+                    temp.outputStream().use { output ->
+                        val buffer = ByteArray(8192)
+                        var read: Int
+                        while (input.read(buffer).also { read = it } != -1) {
+                            output.write(buffer, 0, read)
+                            downloaded += read
+                            val shouldReport = if (total > 0) {
+                                val percent = ((downloaded * 100) / total).toInt()
+                                if (percent != lastPercent) {
+                                    lastPercent = percent
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                downloaded - lastReported >= 256 * 1024L
+                            }
+                            if (shouldReport) {
+                                lastReported = downloaded
+                                onProgress(downloaded, total)
+                            }
+                        }
+                    }
+                }
+
+                if (downloaded < 1_000_000L || temp.length() < 1_000_000L) {
+                    throw IOException("File APK tidak valid")
+                }
+
+                if (target.exists()) target.delete()
+                if (!temp.renameTo(target)) {
+                    temp.copyTo(target, overwrite = true)
+                    temp.delete()
+                }
+
+                val info = context.packageManager.getPackageArchiveInfo(target.absolutePath, 0)
+                    ?: throw IOException("APK tidak bisa dibaca")
+                if (info.packageName != CLIENT_PACKAGE) {
+                    throw IOException("APK bukan client TV (${info.packageName})")
+                }
+                val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    info.longVersionCode
+                } else {
+                    @Suppress("DEPRECATION")
+                    val legacyVersionCode = info.versionCode
+                    legacyVersionCode.toLong()
+                }
+
+                Log.i(
+                    "ClientApkManager",
+                    "Downloaded client APK ${remote.releaseTag}/${remote.assetName} " +
+                        "v${info.versionName} ($versionCode) -> ${target.absolutePath}",
+                )
+                ClientApkDownload(
+                    file = target,
+                    versionName = info.versionName ?: "",
+                    versionCode = versionCode,
+                    releaseTag = remote.releaseTag,
+                    assetName = remote.assetName,
+                )
+            } catch (e: Exception) {
+                if (temp.exists()) temp.delete()
+                throw e
+            } finally {
+                conn.disconnect()
+            }
+        }
+    }
+
+    private fun resolveLatestClientApk(): RemoteClientApk? {
+        val conn = URL(GITHUB_RELEASES_URL).openConnection() as HttpURLConnection
+        conn.requestMethod = "GET"
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 20_000
+        conn.setRequestProperty("Accept", "application/vnd.github+json")
+        conn.setRequestProperty("User-Agent", "RRBillingPro-Android")
+        try {
+            val responseCode = conn.responseCode
+            if (responseCode != 200) {
+                Log.w("ClientApkManager", "GitHub releases API HTTP $responseCode")
+                return null
+            }
+
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            val releases = JSONArray(body)
+            for (i in 0 until releases.length()) {
+                val release = releases.optJSONObject(i) ?: continue
+                val tag = release.optString("tag_name", "latest")
+                val assets = release.optJSONArray("assets") ?: continue
+                var asset = findApkAsset(assets, exact = true)
+                    ?: findApkAsset(assets, exact = false)
+                    ?: continue
+                val url = asset.optString("browser_download_url", "")
+                if (url.isNotBlank()) {
+                    return RemoteClientApk(
+                        releaseTag = tag,
+                        assetName = asset.optString("name", TV_APK_ASSET),
+                        downloadUrl = url,
+                    )
+                }
+            }
+
+            Log.w("ClientApkManager", "No TV APK asset found in GitHub releases")
+            return null
+        } catch (e: Exception) {
+            Log.w("ClientApkManager", "Resolve latest client APK failed: ${e.message}")
+            return null
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun findApkAsset(assets: JSONArray, exact: Boolean): JSONObject? {
+        for (i in 0 until assets.length()) {
+            val asset = assets.optJSONObject(i) ?: continue
+            val name = asset.optString("name", "")
+            val matches = if (exact) {
+                name.equals(TV_APK_ASSET, ignoreCase = true)
+            } else {
+                name.endsWith(".apk", ignoreCase = true) &&
+                    name.contains("tv", ignoreCase = true)
+            }
+            if (matches) return asset
+        }
+        return null
     }
 
     /**

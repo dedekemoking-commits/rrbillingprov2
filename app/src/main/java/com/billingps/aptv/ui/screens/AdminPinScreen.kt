@@ -28,6 +28,7 @@ import com.billingps.aptv.ui.theme.TextSecondary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.Locale
 
 @Composable
 fun AdminPinSetupScreen(viewModel: MainViewModel) {
@@ -50,6 +51,13 @@ private fun AdminPinScreen(
     var confirm by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var showLogout by remember { mutableStateOf(false) }
+    var logoutCash by remember { mutableStateOf("") }
+    var logoutNote by remember { mutableStateOf("") }
+    var logoutBusy by remember { mutableStateOf(false) }
+    var logoutError by remember { mutableStateOf("") }
+    val activeShift = viewModel.shiftAktifGlobal()
+    val activeMetrics = activeShift?.let { viewModel.hitungShiftMetrics(it) }
 
     fun submit() {
         if (busy) return
@@ -175,7 +183,12 @@ private fun AdminPinScreen(
                     }
                     Spacer(Modifier.height(6.dp))
                     TextButton(
-                        onClick = { viewModel.logout() },
+                        onClick = {
+                            logoutCash = ""
+                            logoutNote = ""
+                            logoutError = ""
+                            showLogout = true
+                        },
                         enabled = !busy,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
@@ -192,4 +205,143 @@ private fun AdminPinScreen(
             )
         }
     }
+
+    if (showLogout) {
+        AlertDialog(
+            onDismissRequest = { if (!logoutBusy) showLogout = false },
+            containerColor = Color(0xFF111827),
+            title = {
+                Text(
+                    if (activeShift == null) "Keluar Akun?" else "Tutup Kasir & Keluar",
+                    color = Color(0xFFF0F0F0),
+                    fontWeight = FontWeight.Bold,
+                )
+            },
+            text = {
+                Column {
+                    if (activeShift == null) {
+                        Text(
+                            "Keluar dari akun ${state.currentUser}?",
+                            color = Color(0xFFAAAAAA),
+                        )
+                    } else {
+                        Text(
+                            "Shift ${activeShift.jenisShift} oleh ${activeShift.username} masih aktif. " +
+                                "Isi uang fisik dan catatan sebelum keluar.",
+                            color = Color(0xFFAAAAAA),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Kas seharusnya: ${formatRupiah(activeMetrics?.kasSeharusnya ?: 0)}",
+                            color = Color(0xFF94A3B8),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        val fieldColors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color(0xFFF0F0F0),
+                            unfocusedTextColor = Color(0xFFF0F0F0),
+                            cursorColor = NeonGreen,
+                            focusedBorderColor = NeonGreen,
+                            unfocusedBorderColor = Color(0xFF334155),
+                            focusedLabelColor = NeonGreen,
+                            unfocusedLabelColor = Color(0xFF94A3B8),
+                        )
+                        OutlinedTextField(
+                            value = logoutCash,
+                            onValueChange = { value ->
+                                logoutCash = value.filter(Char::isDigit).take(12)
+                                logoutError = ""
+                            },
+                            label = { Text("Uang fisik") },
+                            singleLine = true,
+                            enabled = !logoutBusy,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = fieldColors,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = logoutNote,
+                            onValueChange = { value ->
+                                logoutNote = value.take(200)
+                                logoutError = ""
+                            },
+                            label = { Text("Catatan (opsional)") },
+                            enabled = !logoutBusy,
+                            singleLine = false,
+                            maxLines = 3,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = fieldColors,
+                        )
+                    }
+                    if (logoutError.isNotBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            logoutError,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (logoutBusy) return@Button
+                        val shift = activeShift
+                        if (shift == null) {
+                            logoutBusy = true
+                            showLogout = false
+                            viewModel.logout()
+                            return@Button
+                        }
+                        val cash = logoutCash.trim().toIntOrNull()
+                        if (logoutCash.isBlank() || cash == null) {
+                            logoutError = "Uang fisik wajib diisi."
+                            return@Button
+                        }
+                        logoutBusy = true
+                        val closeError = viewModel.tutupShift(
+                            uangFisik = cash,
+                            catatan = logoutNote,
+                            shiftId = shift.id,
+                        )
+                        if (closeError != null) {
+                            logoutError = closeError
+                            logoutBusy = false
+                        } else {
+                            showLogout = false
+                            viewModel.logout()
+                        }
+                    },
+                    enabled = !logoutBusy,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = NeonGreen,
+                        contentColor = DarkBackground,
+                    ),
+                ) {
+                    Text(
+                        if (logoutBusy) "Memproses..."
+                        else if (activeShift == null) "Keluar"
+                        else "Tutup Shift & Keluar"
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { if (!logoutBusy) showLogout = false },
+                    enabled = !logoutBusy,
+                ) {
+                    Text("Batal", color = Color(0xFF94A3B8))
+                }
+            },
+        )
+    }
 }
+
+private fun formatRupiah(value: Int): String =
+    "Rp " + String.format(Locale("id", "ID"), "%,d", value)

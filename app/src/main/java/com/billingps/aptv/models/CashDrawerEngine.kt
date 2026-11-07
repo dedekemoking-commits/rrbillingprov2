@@ -47,10 +47,6 @@ object CashDrawerEngine {
             return ShiftActionResult(error = "Masih ada shift aktif: ${active.username} (${active.id})")
         }
         val nowMillis = now.toInstant().toEpochMilli()
-        val menit = now.hour * 60 + now.minute
-        if (role.equals("kasir", ignoreCase = true) && !config.isDalamShift(menit)) {
-            return ShiftActionResult(error = "Shift hanya bisa dibuka pada jam shift Pagi atau Malam")
-        }
         val previous = shifts
             .filter { !it.aktif && it.selesai > 0L && sameRental(it, rental) }
             .maxByOrNull { it.selesai }
@@ -215,6 +211,35 @@ object CashDrawerEngine {
             saldoSetelah = expected - nominal,
         )
         return ShiftActionResult(data = movement)
+    }
+
+    fun summary(
+        shifts: List<ShiftKasir>,
+        transactions: List<Transaksi>,
+        movements: List<PergerakanKas>,
+        rentalUsername: String,
+        nowMillis: Long,
+    ): CashDrawerSummary {
+        val rental = rentalUsername.trim()
+        val shift = shifts.firstOrNull { it.aktif && sameRental(it, rental) }
+            ?: return CashDrawerSummary(
+                status = "TUTUP",
+                updatedAt = nowMillis,
+            )
+        val metrics = metrics(shift, transactions, movements, 0)
+        return CashDrawerSummary(
+            status = STATUS_AKTIF,
+            shiftId = shift.id,
+            shiftUsername = shift.username,
+            jenisShift = shift.jenisShift,
+            startedAt = shift.mulai,
+            openingCash = shift.kasAwal,
+            cashExpected = metrics.kasSeharusnya,
+            cashSales = metrics.penjualanTunai,
+            cashIn = metrics.kasMasuk,
+            cashOut = metrics.kasKeluar,
+            updatedAt = nowMillis,
+        )
     }
 
     fun metrics(

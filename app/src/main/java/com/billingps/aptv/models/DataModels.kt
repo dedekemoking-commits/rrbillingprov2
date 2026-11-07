@@ -3,6 +3,8 @@ package com.billingps.aptv.models
 import java.io.Serializable
 import java.util.Locale
 
+const val ADMIN_FREE_PACKAGE = "Main Gratis (Admin)"
+
 data class TvData(
     val id: String = "",
     val nama: String = "",
@@ -173,8 +175,15 @@ data class ShiftConfig(
         return if (menit < batasHari) waktuWib.toLocalDate().minusDays(1) else waktuWib.toLocalDate()
     }
 
-    fun jenisShift(waktuWib: java.time.ZonedDateTime): String =
-        labelShift(waktuWib.hour * 60 + waktuWib.minute)
+    fun jenisShift(waktuWib: java.time.ZonedDateTime): String {
+        val menit = waktuWib.hour * 60 + waktuWib.minute
+        return when {
+            isPagi(menit) -> "Pagi"
+            isMalam(menit) -> "Malam"
+            menit < pagiMulai -> "Pagi"
+            else -> "Malam"
+        }
+    }
 
     private fun overlaps(aStart: Int, aEnd: Int, bStart: Int, bEnd: Int): Boolean =
         aStart < bEnd && bStart < aEnd
@@ -264,6 +273,20 @@ data class ShiftMetrics(
         else -> "LEBIH"
     }
 }
+
+data class CashDrawerSummary(
+    val status: String = "TUTUP",
+    val shiftId: String = "",
+    val shiftUsername: String = "",
+    val jenisShift: String = "",
+    val startedAt: Long = 0L,
+    val openingCash: Int = 0,
+    val cashExpected: Int = 0,
+    val cashSales: Int = 0,
+    val cashIn: Int = 0,
+    val cashOut: Int = 0,
+    val updatedAt: Long = 0L,
+) : Serializable
 
 data class PrayerConfig(
     val enabled: Boolean = false,

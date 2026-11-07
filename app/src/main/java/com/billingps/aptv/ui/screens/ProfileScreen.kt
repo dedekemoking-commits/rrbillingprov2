@@ -251,88 +251,6 @@ fun ProfileScreen(
                         HorizontalDivider(color = DarkSurfaceV3.copy(alpha = 0.5f), thickness = 0.5.dp)
                         Spacer(Modifier.height(8.dp))
 
-                        // Pengaturan shift global rental
-                        Text("PENGATURAN SHIFT", style = MaterialTheme.typography.labelLarge, color = NeonCyan)
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            "Berlaku global untuk rental ini. Transaksi di luar jam shift dicatat sebagai Luar Shift.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextDim,
-                        )
-                        Spacer(Modifier.height(8.dp))
-
-                        Text("Shift Pagi", style = MaterialTheme.typography.bodySmall, color = TextPrimary, fontWeight = FontWeight.Bold)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            ShiftTimePicker("Mulai", shiftDraft.pagiMulai) {
-                                shiftDraft = shiftDraft.copy(pagiMulai = it); shiftMsg = ""
-                            }
-                            Text("s/d", style = MaterialTheme.typography.bodySmall, color = TextDim)
-                            ShiftTimePicker("Selesai", shiftDraft.pagiSelesai) {
-                                shiftDraft = shiftDraft.copy(pagiSelesai = it); shiftMsg = ""
-                            }
-                        }
-
-                        Spacer(Modifier.height(8.dp))
-                        Text("Shift Malam", style = MaterialTheme.typography.bodySmall, color = TextPrimary, fontWeight = FontWeight.Bold)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            ShiftTimePicker("Mulai", shiftDraft.malamMulai) {
-                                shiftDraft = shiftDraft.copy(malamMulai = it); shiftMsg = ""
-                            }
-                            Text("s/d", style = MaterialTheme.typography.bodySmall, color = TextDim)
-                            ShiftTimePicker("Selesai", shiftDraft.malamSelesai) {
-                                shiftDraft = shiftDraft.copy(malamSelesai = it); shiftMsg = ""
-                            }
-                        }
-
-                        Spacer(Modifier.height(8.dp))
-                        Text("Batas Hari Operasional", style = MaterialTheme.typography.bodySmall, color = TextPrimary, fontWeight = FontWeight.Bold)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            ShiftTimePicker("Batas Hari", shiftDraft.batasHari) {
-                                shiftDraft = shiftDraft.copy(batasHari = it); shiftMsg = ""
-                            }
-                            Text(
-                                "Transaksi sebelum jam ini dihitung tanggal kemarin.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TextDim,
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = {
-                                    val err = shiftDraft.validasi()
-                                    if (err != null) {
-                                        shiftMsg = err; shiftMsgOk = false
-                                    } else {
-                                        val draft = shiftDraft
-                                        scope.launch {
-                                            shiftMsg = "Menyimpan pengaturan shift..."
-                                            shiftMsgOk = true
-                                            val ok = viewModel.updateShiftConfig(draft)
-                                            shiftMsg = if (ok) "Pengaturan shift disimpan"
-                                            else "Tersimpan lokal; sinkron cloud gagal"
-                                            shiftMsgOk = ok
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(10.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = NeonGreen, contentColor = DarkBackground),
-                            ) { Text("Simpan Shift") }
-                            OutlinedButton(
-                                onClick = { shiftDraft = ShiftConfig(); shiftMsg = "" },
-                                shape = RoundedCornerShape(10.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
-                                border = BorderStroke(1.dp, DarkSurfaceV3),
-                            ) { Text("Default") }
-                        }
-                        if (shiftMsg.isNotEmpty()) {
-                            Spacer(Modifier.height(4.dp))
-                            Text(shiftMsg, style = MaterialTheme.typography.bodySmall, color = if (shiftMsgOk) NeonGreen else NeonRed)
-                        }
-
                         Spacer(Modifier.height(10.dp))
                         HorizontalDivider(color = DarkSurfaceV3.copy(alpha = 0.5f), thickness = 0.5.dp)
                         Spacer(Modifier.height(8.dp))
@@ -1003,20 +921,38 @@ private fun ShiftReportCard(state: AppUiState) {
     var reportDate by remember(config) { mutableStateOf(today) }
     val dateFormatter = remember { DateTimeFormatter.ofPattern("dd MMM yyyy", Locale("id", "ID")) }
 
-    val rows = remember(state.transaksiList, config, reportDate) {
+    val isKasir = state.currentRole == "kasir"
+    val activeShift = state.kasirShiftList.firstOrNull {
+        it.aktif && it.username.equals(state.currentUser, ignoreCase = true)
+    }
+    val currentShift = activeShift?.jenisShift?.takeIf { it.isNotBlank() }
+        ?: config.jenisShift(ZonedDateTime.now(TimeUtils.WIB))
+
+    val rows = remember(
+        state.transaksiList,
+        config,
+        reportDate,
+        isKasir,
+        state.currentUser,
+        currentShift,
+    ) {
         state.transaksiList.mapNotNull { trx ->
+            if (isKasir && !trx.kasir.equals(state.currentUser, ignoreCase = true)) {
+                return@mapNotNull null
+            }
             val zoned = TimeUtils.parseInstant(trx.waktu)?.atZone(TimeUtils.WIB)
             val tanggal = trx.tanggalOperasional.ifBlank {
                 zoned?.let { config.tanggalOperasional(it).toString() }.orEmpty()
             }
             if (tanggal != reportDate.toString()) return@mapNotNull null
             val shift = trx.jenisShift.ifBlank {
-                zoned?.let { config.jenisShift(it) } ?: "Luar Shift"
+                zoned?.let { config.jenisShift(it) } ?: currentShift
             }
+            if (isKasir && shift != currentShift) return@mapNotNull null
             trx to shift
         }
     }
-    val summaries = listOf("Pagi", "Malam", "Luar Shift").map { label ->
+    val summaries = (if (isKasir) listOf(currentShift) else listOf("Pagi", "Malam", "Luar Shift")).map { label ->
         val items = rows.filter { it.second == label }.map { it.first }
         ShiftSummary(
             label = label,
@@ -1027,8 +963,6 @@ private fun ShiftReportCard(state: AppUiState) {
     }
     val grandTotal = summaries.sumOf { it.total }
     val grandLunas = summaries.sumOf { it.lunas }
-    val nowMinutes = ZonedDateTime.now(TimeUtils.WIB).let { it.hour * 60 + it.minute }
-    val currentShift = config.labelShift(nowMinutes)
 
     Card(
         shape = RoundedCornerShape(14.dp),
@@ -1053,9 +987,9 @@ private fun ShiftReportCard(state: AppUiState) {
             Spacer(Modifier.height(4.dp))
             Text(
                 if (state.currentRole == "admin") {
-                    "Rekap transaksi per shift. Hanya untuk dilihat; pengaturan shift ada di atas."
+                    "Rekap transaksi per shift. Hanya admin yang dapat melihat semua laporan shift."
                 } else {
-                    "Rekap transaksi per shift. Hanya untuk dilihat; hubungi admin untuk mengubah jadwal."
+                    "Rekap shift $currentShift Anda. Laporan shift lain hanya untuk admin."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = TextDim,

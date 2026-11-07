@@ -31,6 +31,11 @@ import com.billingps.aptv.utils.StorageUtil
 import com.billingps.aptv.utils.TimeUtils
 import com.billingps.aptv.cloud.CloudRepository
 import com.billingps.aptv.cloud.SupabaseRepository
+import com.billingps.aptv.cloud.PendingCashDrawerRequest
+import com.billingps.aptv.cloud.PendingFnbItemRequest
+import com.billingps.aptv.cloud.PendingGroupRequest
+import com.billingps.aptv.cloud.PendingPackageRequest
+import com.billingps.aptv.cloud.PendingStockOpname
 import com.billingps.aptv.tv.TvHubManager
 import com.billingps.aptv.tv.TvHubProtocol
 import com.billingps.aptv.tv.TvConnection
@@ -72,6 +77,7 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 import javax.mail.*
 import javax.mail.internet.InternetAddress
 import javax.mail.internet.MimeMessage
@@ -174,6 +180,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var invoicesListener: ListenerRegistration? = null
     private var notifListener: ListenerRegistration? = null
     private var deviceSessionListener: ListenerRegistration? = null
+    private var stockOpnameListener: ListenerRegistration? = null
+    private val processingStockOpnames = ConcurrentHashMap.newKeySet<String>()
+    private var cashDrawerRequestListener: ListenerRegistration? = null
+    private val processingCashDrawerRequests = ConcurrentHashMap.newKeySet<String>()
+    private var fnbItemRequestListener: ListenerRegistration? = null
+    private val processingFnbItemRequests = ConcurrentHashMap.newKeySet<String>()
+    private var packageRequestListener: ListenerRegistration? = null
+    private val processingPackageRequests = ConcurrentHashMap.newKeySet<String>()
+    private var groupRequestListener: ListenerRegistration? = null
+    private val processingGroupRequests = ConcurrentHashMap.newKeySet<String>()
     private var pendingDeviceUser: UserData? = null
     private var pendingDeviceLoginMethod: String = "password"
     private val connectivityObserver = ConnectivityObserver(application)
@@ -708,6 +724,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
     }
 
+    /**
+     * Pastikan sesi Firebase Auth memakai akun email milik user yang sedang login.
+     * Ini dibutuhkan agar `owner_accounts/{uid}` dan aturan Firestore mengenali owner rental.
+     */
+    private suspend fun ensureFirebaseAuthForUser(user: UserData, password: String) {
+        val email = user.email.trim()
+        if (email.isEmpty()) return
+        val current = firebaseAuth.currentUser
+        if (current != null && !current.isAnonymous && current.email.equals(email, ignoreCase = true)) return
+        if (current != null && !current.isAnonymous) {
+            try { firebaseAuth.signOut() } catch (e: Exception) { Log.w("MainVM", "signOut before re-auth: ${e.message}") }
+        }
+        val result = signInWithFirebase(email, password)
+        if (!result.success) {
+            // Akun lama mungkin belum punya Firebase Auth. Password lokal sudah
+            // diverifikasi sebelum fungsi ini dipanggil, jadi aman untuk dibuat.
+            val created = createFirebaseUser(email, password)
+            if (created.success) {
+                Log.i("MainVM", "Firebase account created for ${user.username}")
+            } else {
+                Log.w(
+                    "MainVM",
+                    "Firebase auth for ${user.username} failed: ${result.message}; create: ${created.message}",
+                )
+            }
+        }
+    }
+
     private suspend fun resetPassword(email: String): Boolean = suspendCancellableCoroutine { cont ->
         firebaseAuth.sendPasswordResetEmail(email)
             .addOnSuccessListener { if (!cont.isCompleted) cont.resume(true) }
@@ -856,6 +900,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             _state.value = _state.value.copy(users = updatedUsers)
                             StorageUtil.saveUsers(updatedUsers)
                         }
+                        ensureFirebaseAuthForUser(fallbackUser, password)
                         val claim = claimDeviceForLogin(fallbackUser, "password")
                         if (!claim.success) return claim
                         StorageUtil.saveCurrentSession(fallbackUser.username, fallbackUser.role)
@@ -889,6 +934,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.value = _state.value.copy(users = updatedUsers)
             StorageUtil.saveUsers(updatedUsers)
         }
+        ensureFirebaseAuthForUser(localUser, password)
         val claim = claimDeviceForLogin(localUser, "password")
         if (!claim.success) return claim
         addActivityLog("Login")
@@ -1058,34 +1104,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── Google Sign-In ───────────────────────────────────────
     fun signInWithGoogle(idToken: String, email: String, displayName: String) {
+        Log.i("MainVM", "signInWithGoogle start: tokenLen=${idToken.length}")
         viewModelScope.launch {
+            if (_state.value.isBusy || _state.value.isLoggedIn) {
+                Log.i("MainVM", "signInWithGoogle diabaikan (busy=${_state.value.isBusy}, loggedIn=${_state.value.isLoggedIn})")
+                return@launch
+            }
             _state.value = _state.value.copy(isBusy = true, statusMessage = "Memproses login Google...")
             try {
                 val credential = GoogleAuthProvider.getCredential(idToken, null)
                 var verifiedEmail = email
-                val firebaseOk = suspendCancellableCoroutine<Boolean> { cont ->
-                    firebaseAuth.signInWithCredential(credential)
-                        .addOnSuccessListener {
-                            verifiedEmail = it.user?.email ?: email
-                            if (!cont.isCompleted) cont.resume(true)
-                        }
-                        .addOnFailureListener { ex ->
-                            Log.i("MainVM", "Firebase Google sign-in: ${ex.message}")
-                            if (ex is FirebaseAuthUserCollisionException) {
-                                if (!cont.isCompleted) cont.resume(true) // email valid, lanjut local
-                            } else {
-                                if (!cont.isCompleted) cont.resume(false)
+                val firebaseOk = withTimeoutOrNull(20_000) {
+                    suspendCancellableCoroutine<Boolean> { cont ->
+                        firebaseAuth.signInWithCredential(credential)
+                            .addOnSuccessListener {
+                                verifiedEmail = it.user?.email ?: email
+                                Log.i("MainVM", "Firebase Google sign-in OK: uid=${it.user?.uid}")
+                                if (!cont.isCompleted) cont.resume(true)
                             }
-                        }
+                            .addOnFailureListener { ex ->
+                                Log.i("MainVM", "Firebase Google sign-in failed: ${ex.javaClass.simpleName}: ${ex.message}")
+                                if (ex is FirebaseAuthUserCollisionException) {
+                                    if (!cont.isCompleted) cont.resume(true) // email valid, lanjut local
+                                } else {
+                                    if (!cont.isCompleted) cont.resume(false)
+                                }
+                            }
+                    }
+                } ?: run {
+                    Log.w("MainVM", "Firebase Google sign-in timeout")
+                    false
                 }
                 if (!firebaseOk) {
-                    _state.value = _state.value.copy(isBusy = false, statusMessage = "Gagal verifikasi Google. Coba lagi.")
+                    _state.value = _state.value.copy(
+                        isBusy = false,
+                        statusMessage = "Gagal verifikasi Google. Periksa koneksi internet lalu coba lagi.",
+                    )
                     return@launch
                 }
                 val users = _state.value.users
                 val existing = users.values.firstOrNull { it.email.equals(verifiedEmail, ignoreCase = true) }
+                Log.i("MainVM", "Google verified: localUsers=${users.size}, existing=${existing?.username}")
                 if (existing != null) {
                     val claim = claimDeviceForLogin(existing, "google")
+                    Log.i("MainVM", "Google existing claim: success=${claim.success}, message=${claim.message}")
                     if (!claim.success) {
                         _state.value = _state.value.copy(isBusy = false)
                         return@launch
@@ -1104,7 +1166,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     restoreLocalDataAfterLogin()
                     restoreLicenseAndTrial(existing.username)
                 } else {
+                    Log.i("MainVM", "Google: no local user, looking up cloud by email")
                     val remoteUsername = withContext(Dispatchers.IO) { cloudRepo.findUsernameByEmail(verifiedEmail) }
+                    Log.i("MainVM", "Google cloud username: $remoteUsername")
                     val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
                     if (remoteUsername != null) {
                         val restoredUser = UserData(
@@ -1112,6 +1176,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             email = verifiedEmail, dibuat = sdf.format(java.util.Date()), emailVerified = true,
                         )
                         val claim = claimDeviceForLogin(restoredUser, "google")
+                        Log.i("MainVM", "Google restored claim: success=${claim.success}, message=${claim.message}")
                         if (!claim.success) {
                             _state.value = _state.value.copy(isBusy = false)
                             return@launch
@@ -1158,6 +1223,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     } else {
                         // User baru — minta isi data rental dulu
+                        Log.i("MainVM", "Google: new user, showing rental registration")
                         _state.value = _state.value.copy(
                             pendingGoogleRegistration = true,
                             pendingGoogleEmail = verifiedEmail,
@@ -1168,6 +1234,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             } catch (e: Exception) {
+                Log.e("MainVM", "signInWithGoogle exception: ${e.javaClass.simpleName}: ${e.message}", e)
                 _state.value = _state.value.copy(
                     isBusy = false,
                     statusMessage = "Google Sign-In gagal: ${e.localizedMessage}",
@@ -1316,15 +1383,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun isDalamShiftSekarang(): Boolean = shiftAktifSekarang() != null
 
-    fun shiftBlockMessage(): String {
-        val config = _state.value.shiftConfig
-        val now = java.time.ZonedDateTime.now(TimeUtils.WIB)
-        if (!config.isDalamShift(now.getHour() * 60 + now.getMinute())) {
-            return "Sesi hanya bisa dimulai pada shift Pagi (${config.pagiLabel()}) " +
-                "atau Malam (${config.malamLabel()})."
-        }
-        return "Shift belum dibuka. Buka shift kasir terlebih dahulu sebelum memulai sesi."
-    }
+    fun shiftBlockMessage(): String =
+        "Shift belum dibuka. Klik Mulai Shift terlebih dahulu sebelum memulai sesi."
 
     fun shiftAktifSekarang(): ShiftKasir? {
         shiftAktif(_state.value.currentUser)?.let { return it }
@@ -1563,6 +1623,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun logout(clearGoogleSignIn: Boolean = false) {
+        if (shiftAktifGlobal() != null) {
+            _state.value = _state.value.copy(
+                statusMessage = "Tutup kasir terlebih dahulu sebelum keluar.",
+            )
+            return
+        }
         val username = _state.value.currentUser
         val sessionId = _state.value.deviceSessionId
         stopDeviceSessionListener()
@@ -2015,6 +2081,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val licenseUser = resolveLicenseUsername(username)
         refreshShiftConfig()
         startLicenseListener(username, licenseUser)
+        val ownerUsername = shiftConfigUsername()
+        startStockOpnameListener(ownerUsername)
+        startCashDrawerRequestListener(ownerUsername)
+        startFnbItemRequestListener(ownerUsername)
+        startPackageRequestListener(ownerUsername)
+        startGroupRequestListener(ownerUsername)
         startSupabaseLicensePolling(username, licenseUser)
         startPromoListener()
         startNotifListener(username)
@@ -2241,8 +2313,506 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         userDocListener = null
         invoicesListener?.remove()
         invoicesListener = null
+        stockOpnameListener?.remove()
+        stockOpnameListener = null
+        cashDrawerRequestListener?.remove()
+        cashDrawerRequestListener = null
+        fnbItemRequestListener?.remove()
+        fnbItemRequestListener = null
+        packageRequestListener?.remove()
+        packageRequestListener = null
+        groupRequestListener?.remove()
+        groupRequestListener = null
         supabaseLicensePollerJob?.cancel()
         supabaseLicensePollerJob = null
+    }
+
+    private fun startStockOpnameListener(username: String) {
+        stockOpnameListener?.remove()
+        stockOpnameListener = cloudRepo.listenPendingStockOpnames(username) { pending ->
+            pending.forEach { processPendingStockOpname(username, it) }
+        }
+    }
+
+    private fun processPendingStockOpname(username: String, opname: PendingStockOpname) {
+        val processingKey = "$username/${opname.id}"
+        if (!processingStockOpnames.add(processingKey)) return
+        viewModelScope.launch {
+            if (!_state.value.isLoggedIn) return@launch
+            try {
+                val makanan = _state.value.stokMakanan.toMutableMap()
+                val minuman = _state.value.stokMinuman.toMutableMap()
+                var changed = false
+                opname.items.forEach { item ->
+                    if (item.quantity <= 0) return@forEach
+                    when (item.category.lowercase(Locale.ROOT)) {
+                        "makanan" -> {
+                            val known = _state.value.menuMakanan.containsKey(item.name) ||
+                                makanan.containsKey(item.name)
+                            if (known) {
+                                val next = (makanan[item.name] ?: 0) + item.quantity
+                                if (makanan[item.name] != next) {
+                                    makanan[item.name] = next
+                                    changed = true
+                                }
+                            }
+                        }
+                        "minuman" -> {
+                            val known = _state.value.menuMinuman.containsKey(item.name) ||
+                                minuman.containsKey(item.name)
+                            if (known) {
+                                val next = (minuman[item.name] ?: 0) + item.quantity
+                                if (minuman[item.name] != next) {
+                                    minuman[item.name] = next
+                                    changed = true
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!_state.value.isLoggedIn) return@launch
+                if (changed) {
+                    withContext(Dispatchers.Main) {
+                        saveStok(makanan, minuman)
+                    }
+                }
+                val current = _state.value
+                val stockSynced = cloudRepo.syncStockToRental(
+                    username = username,
+                    menuMakanan = current.menuMakanan,
+                    menuMinuman = current.menuMinuman,
+                    stokMakanan = makanan,
+                    stokMinuman = minuman,
+                )
+                if (!stockSynced) {
+                    Log.w("MainVM", "Opname ${opname.id}: gagal sinkron stok ke dokumen owner $username")
+                }
+                val applied = cloudRepo.markStockOpnameApplied(
+                    username = username,
+                    opnameId = opname.id,
+                    appliedBy = _state.value.currentUser,
+                )
+                withContext(Dispatchers.Main) {
+                    if (applied) {
+                        addActivityLog("Tambah stok owner: ${opname.items.size} item")
+                        _state.value = _state.value.copy(
+                            statusMessage = "Tambah stok dari owner diterapkan (${opname.items.size} item).",
+                        )
+                        if (changed) syncToCloud()
+                    } else {
+                        Log.w("MainVM", "Opname ${opname.id} gagal ditandai applied")
+                    }
+                    Unit
+                }
+            } catch (e: Exception) {
+                Log.e("MainVM", "processPendingStockOpname ${opname.id}: ${e.message}")
+            } finally {
+                processingStockOpnames.remove(processingKey)
+            }
+        }
+    }
+
+    private fun startCashDrawerRequestListener(rentalUsername: String) {
+        cashDrawerRequestListener?.remove()
+        cashDrawerRequestListener = cloudRepo.listenPendingCashDrawerRequests(rentalUsername) { pending ->
+            pending.forEach { processPendingCashDrawerRequest(rentalUsername, it) }
+        }
+    }
+
+    private fun processPendingCashDrawerRequest(
+        rentalUsername: String,
+        request: PendingCashDrawerRequest,
+    ) {
+        val processingKey = "$rentalUsername/${request.id}"
+        if (!processingCashDrawerRequests.add(processingKey)) return
+        viewModelScope.launch {
+            if (!_state.value.isLoggedIn) return@launch
+            try {
+                val reference = "CASHREQ-${request.id}"
+                val alreadyApplied = _state.value.pergerakanKasList.any {
+                    it.referenceId == reference
+                }
+                if (alreadyApplied) {
+                    cloudRepo.markCashDrawerRequestProcessed(
+                        username = rentalUsername,
+                        requestId = request.id,
+                        applied = true,
+                        appliedBy = _state.value.currentUser,
+                        reason = "Sudah diproses",
+                    )
+                    return@launch
+                }
+
+                val snapshot = _state.value
+                val requester = snapshot.users.values.firstOrNull { user ->
+                    user.email.equals(request.submittedByEmail, ignoreCase = true) &&
+                        (user.role.equals("admin", ignoreCase = true) ||
+                            user.role.equals("owner", ignoreCase = true))
+                }
+                val error = if (requester == null) {
+                    "Akun pemohon bukan admin rental ini"
+                } else {
+                    val result = CashDrawerEngine.adminWithdraw(
+                        shifts = snapshot.kasirShiftList,
+                        transactions = snapshot.transaksiList,
+                        movements = snapshot.pergerakanKasList,
+                        shiftId = null,
+                        rentalUsername = rentalUsername,
+                        adminUsername = requester.username,
+                        role = "admin",
+                        nominal = request.nominal,
+                        nowMillis = System.currentTimeMillis(),
+                        keterangan = request.note.ifBlank { "Penarikan dari RR Owner" },
+                    )
+                    val movement = result.data
+                    if (result.error != null || movement == null) {
+                        result.error ?: "Gagal menarik uang laci"
+                    } else {
+                        if (!_state.value.isLoggedIn) return@launch
+                        val stamped = movement.copy(
+                            referenceId = reference,
+                            keterangan = request.note.ifBlank { "Penarikan dari RR Owner" },
+                        )
+                        val updated = _state.value.pergerakanKasList + stamped
+                        _state.value = _state.value.copy(
+                            pergerakanKasList = updated,
+                            statusMessage = "Penarikan owner ${formatRupiah(stamped.nominal)} diterapkan",
+                        )
+                        StorageUtil.savePergerakanKasList(updated)
+                        addActivityLog(
+                            "Owner ${requester.username} menarik ${formatRupiah(stamped.nominal)} " +
+                                "dari uang laci",
+                        )
+                        syncCashDrawer(rentalUsername)
+                        null
+                    }
+                }
+
+                if (error != null) {
+                    cloudRepo.markCashDrawerRequestProcessed(
+                        username = rentalUsername,
+                        requestId = request.id,
+                        applied = false,
+                        appliedBy = _state.value.currentUser,
+                        reason = error,
+                    )
+                } else {
+                    val movement = _state.value.pergerakanKasList.firstOrNull {
+                        it.referenceId == reference
+                    }
+                    val marked = cloudRepo.markCashDrawerRequestProcessed(
+                        username = rentalUsername,
+                        requestId = request.id,
+                        applied = true,
+                        appliedBy = _state.value.currentUser,
+                        movementId = reference,
+                        saldoSetelah = movement?.saldoSetelah ?: 0,
+                    )
+                    if (!marked) {
+                        Log.w("MainVM", "Cash request ${request.id} gagal ditandai applied")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("MainVM", "processPendingCashDrawerRequest ${request.id}: ${e.message}")
+            } finally {
+                processingCashDrawerRequests.remove(processingKey)
+            }
+        }
+    }
+
+    private fun startFnbItemRequestListener(rentalUsername: String) {
+        fnbItemRequestListener?.remove()
+        fnbItemRequestListener = cloudRepo.listenPendingFnbItemRequests(rentalUsername) { pending ->
+            pending.forEach { processPendingFnbItemRequest(rentalUsername, it) }
+        }
+    }
+
+    private fun processPendingFnbItemRequest(
+        rentalUsername: String,
+        request: PendingFnbItemRequest,
+    ) {
+        val processingKey = "$rentalUsername/${request.id}"
+        if (!processingFnbItemRequests.add(processingKey)) return
+        viewModelScope.launch {
+            if (!_state.value.isLoggedIn) return@launch
+            try {
+                val requester = _state.value.users.values.firstOrNull { user ->
+                    user.email.equals(request.submittedByEmail, ignoreCase = true) &&
+                        (user.role.equals("admin", ignoreCase = true) ||
+                            user.role.equals("owner", ignoreCase = true))
+                }
+                if (requester == null) {
+                    cloudRepo.markFnbItemRequestProcessed(
+                        username = rentalUsername,
+                        requestId = request.id,
+                        applied = false,
+                        appliedBy = _state.value.currentUser,
+                        reason = "Akun pemohon bukan admin rental ini",
+                    )
+                    return@launch
+                }
+
+                val snapshot = _state.value
+                val exists = snapshot.menuMakanan.containsKey(request.name) ||
+                    snapshot.menuMinuman.containsKey(request.name) ||
+                    snapshot.stokMakanan.containsKey(request.name) ||
+                    snapshot.stokMinuman.containsKey(request.name)
+                if (exists) {
+                    cloudRepo.markFnbItemRequestProcessed(
+                        username = rentalUsername,
+                        requestId = request.id,
+                        applied = false,
+                        appliedBy = _state.value.currentUser,
+                        reason = "Item ${request.name} sudah ada",
+                    )
+                    return@launch
+                }
+
+                val makanan = snapshot.menuMakanan.toMutableMap()
+                val minuman = snapshot.menuMinuman.toMutableMap()
+                val stokMakanan = snapshot.stokMakanan.toMutableMap()
+                val stokMinuman = snapshot.stokMinuman.toMutableMap()
+                when (request.category.lowercase(Locale.ROOT)) {
+                    "makanan" -> {
+                        makanan[request.name] = request.price
+                        stokMakanan[request.name] =
+                            (stokMakanan[request.name] ?: 0) + request.initialStock
+                    }
+                    "minuman" -> {
+                        minuman[request.name] = request.price
+                        stokMinuman[request.name] =
+                            (stokMinuman[request.name] ?: 0) + request.initialStock
+                    }
+                    else -> {
+                        cloudRepo.markFnbItemRequestProcessed(
+                            username = rentalUsername,
+                            requestId = request.id,
+                            applied = false,
+                            appliedBy = _state.value.currentUser,
+                            reason = "Kategori item tidak valid",
+                        )
+                        return@launch
+                    }
+                }
+
+                saveStok(stokMakanan, stokMinuman)
+                saveHarga(
+                    paketMain = snapshot.paketMain,
+                    paketDurasi = snapshot.paketDurasi,
+                    menuMakanan = makanan,
+                    menuMinuman = minuman,
+                )
+                addActivityLog(
+                    "Item F&B owner ditambahkan: ${request.name} " +
+                        "(${request.category}, stok ${request.initialStock})",
+                )
+                _state.value = _state.value.copy(
+                    statusMessage = "Item F&B ${request.name} dari owner diterapkan.",
+                )
+
+                val marked = cloudRepo.markFnbItemRequestProcessed(
+                    username = rentalUsername,
+                    requestId = request.id,
+                    applied = true,
+                    appliedBy = _state.value.currentUser,
+                )
+                if (!marked) {
+                    Log.w("MainVM", "F&B request ${request.id} gagal ditandai applied")
+                }
+            } catch (e: Exception) {
+                Log.e("MainVM", "processPendingFnbItemRequest ${request.id}: ${e.message}")
+            } finally {
+                processingFnbItemRequests.remove(processingKey)
+            }
+        }
+    }
+
+    private fun startPackageRequestListener(rentalUsername: String) {
+        packageRequestListener?.remove()
+        packageRequestListener = cloudRepo.listenPendingPackageRequests(rentalUsername) { pending ->
+            pending.forEach { processPendingPackageRequest(rentalUsername, it) }
+        }
+    }
+
+    private fun processPendingPackageRequest(
+        rentalUsername: String,
+        request: PendingPackageRequest,
+    ) {
+        val processingKey = "$rentalUsername/${request.id}"
+        if (!processingPackageRequests.add(processingKey)) return
+        viewModelScope.launch {
+            if (!_state.value.isLoggedIn) return@launch
+            try {
+                val requester = _state.value.users.values.firstOrNull { user ->
+                    user.email.equals(request.submittedByEmail, ignoreCase = true) &&
+                        (user.role.equals("admin", ignoreCase = true) ||
+                            user.role.equals("owner", ignoreCase = true))
+                }
+                if (requester == null) {
+                    cloudRepo.markPackageRequestProcessed(
+                        username = rentalUsername,
+                        requestId = request.id,
+                        applied = false,
+                        appliedBy = _state.value.currentUser,
+                        reason = "Akun pemohon bukan admin rental ini",
+                    )
+                    return@launch
+                }
+
+                val snapshot = _state.value
+                if (snapshot.jenisPsList.none { it.equals(request.groupName, ignoreCase = true) }) {
+                    cloudRepo.markPackageRequestProcessed(
+                        username = rentalUsername,
+                        requestId = request.id,
+                        applied = false,
+                        appliedBy = _state.value.currentUser,
+                        reason = "Grup ${request.groupName} tidak ditemukan",
+                    )
+                    return@launch
+                }
+                val groupName = snapshot.jenisPsList.first {
+                    it.equals(request.groupName, ignoreCase = true)
+                }
+                val existing = snapshot.paketMain[groupName].orEmpty()
+                if (request.action == "add" && existing.containsKey(request.name)) {
+                    cloudRepo.markPackageRequestProcessed(
+                        username = rentalUsername,
+                        requestId = request.id,
+                        applied = false,
+                        appliedBy = _state.value.currentUser,
+                        reason = "Paket ${request.name} sudah ada di grup $groupName",
+                    )
+                    return@launch
+                }
+                if (request.action == "update" && !existing.containsKey(request.name)) {
+                    cloudRepo.markPackageRequestProcessed(
+                        username = rentalUsername,
+                        requestId = request.id,
+                        applied = false,
+                        appliedBy = _state.value.currentUser,
+                        reason = "Paket ${request.name} tidak ditemukan di grup $groupName",
+                    )
+                    return@launch
+                }
+
+                val paketMain = snapshot.paketMain.toMutableMap()
+                paketMain[groupName] = existing.toMutableMap().apply {
+                    this[request.name] = request.price
+                }
+                val paketDurasi = snapshot.paketDurasi.toMutableMap().apply {
+                    this[request.name] = request.durationMinutes
+                }
+                saveHarga(
+                    paketMain = paketMain,
+                    paketDurasi = paketDurasi,
+                    menuMakanan = snapshot.menuMakanan,
+                    menuMinuman = snapshot.menuMinuman,
+                )
+                addActivityLog(
+                    "Paket owner ${request.action}: ${request.name} / $groupName " +
+                        "(${formatRupiah(request.price)}, ${request.durationMinutes} menit)",
+                )
+                _state.value = _state.value.copy(
+                    statusMessage = "Paket ${request.name} dari owner diterapkan.",
+                )
+
+                val marked = cloudRepo.markPackageRequestProcessed(
+                    username = rentalUsername,
+                    requestId = request.id,
+                    applied = true,
+                    appliedBy = _state.value.currentUser,
+                )
+                if (!marked) {
+                    Log.w("MainVM", "Package request ${request.id} gagal ditandai applied")
+                }
+            } catch (e: Exception) {
+                Log.e("MainVM", "processPendingPackageRequest ${request.id}: ${e.message}")
+            } finally {
+                processingPackageRequests.remove(processingKey)
+            }
+        }
+    }
+
+    private fun startGroupRequestListener(rentalUsername: String) {
+        groupRequestListener?.remove()
+        groupRequestListener = cloudRepo.listenPendingGroupRequests(rentalUsername) { pending ->
+            pending.forEach { processPendingGroupRequest(rentalUsername, it) }
+        }
+    }
+
+    private fun processPendingGroupRequest(
+        rentalUsername: String,
+        request: PendingGroupRequest,
+    ) {
+        val processingKey = "$rentalUsername/${request.id}"
+        if (!processingGroupRequests.add(processingKey)) return
+        viewModelScope.launch {
+            if (!_state.value.isLoggedIn) return@launch
+            try {
+                val requester = _state.value.users.values.firstOrNull { user ->
+                    user.email.equals(request.submittedByEmail, ignoreCase = true) &&
+                        (user.role.equals("admin", ignoreCase = true) ||
+                            user.role.equals("owner", ignoreCase = true))
+                }
+                if (requester == null) {
+                    cloudRepo.markGroupRequestProcessed(
+                        username = rentalUsername,
+                        requestId = request.id,
+                        applied = false,
+                        appliedBy = _state.value.currentUser,
+                        reason = "Akun pemohon bukan admin rental ini",
+                    )
+                    return@launch
+                }
+
+                val snapshot = _state.value
+                if (snapshot.jenisPsList.any { it.equals(request.name, ignoreCase = true) }) {
+                    cloudRepo.markGroupRequestProcessed(
+                        username = rentalUsername,
+                        requestId = request.id,
+                        applied = false,
+                        appliedBy = _state.value.currentUser,
+                        reason = "Grup ${request.name} sudah ada",
+                    )
+                    return@launch
+                }
+
+                val groups = snapshot.jenisPsList.toMutableList().apply { add(request.name) }
+                val paketMain = snapshot.paketMain.toMutableMap().apply {
+                    this[request.name] =
+                        defaultPaketMain(listOf(request.name))[request.name].orEmpty()
+                }
+                _state.value = _state.value.copy(
+                    jenisPsList = groups,
+                    paketMain = paketMain,
+                )
+                StorageUtil.saveJenisPsList(groups)
+                saveHarga(
+                    paketMain = paketMain,
+                    paketDurasi = snapshot.paketDurasi,
+                    menuMakanan = snapshot.menuMakanan,
+                    menuMinuman = snapshot.menuMinuman,
+                )
+                addActivityLog("Grup PS owner ditambahkan: ${request.name}")
+                _state.value = _state.value.copy(
+                    statusMessage = "Grup PS ${request.name} dari owner diterapkan.",
+                )
+
+                val marked = cloudRepo.markGroupRequestProcessed(
+                    username = rentalUsername,
+                    requestId = request.id,
+                    applied = true,
+                    appliedBy = _state.value.currentUser,
+                )
+                if (!marked) {
+                    Log.w("MainVM", "Group request ${request.id} gagal ditandai applied")
+                }
+            } catch (e: Exception) {
+                Log.e("MainVM", "processPendingGroupRequest ${request.id}: ${e.message}")
+            } finally {
+                processingGroupRequests.remove(processingKey)
+            }
+        }
     }
 
     private fun startSupabaseLicensePolling(username: String, licenseUser: String) {
@@ -2849,6 +3419,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         // Pull remote transaksi for new user
         viewModelScope.launch {
+            ensureFirebaseAuthForUser(user, password)
             try {
                 val remote = cloudRepo.fetchTransaksiForUser(user.username)
                 if (remote.isNotEmpty()) {
@@ -3200,7 +3771,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateTV(id: String, updates: Map<String, Any>) {
-        val previousTv = _state.value.tvList.firstOrNull { it.id == id }
+        val current = _state.value
+        val previousTv = current.tvList.firstOrNull { it.id == id }
+        val requestedAdminFree = updates["paketAktif"] == ADMIN_FREE_PACKAGE
+        val requestedZeroRateBebas = updates["bebas"] == true &&
+            ((updates["bebasHargaPerJam"] as? Number)?.toInt() ?: 0) <= 0
+        if ((requestedAdminFree || requestedZeroRateBebas) &&
+            !current.currentRole.equals("admin", ignoreCase = true)
+        ) {
+            _state.value = current.copy(statusMessage = "Fitur Main Gratis hanya untuk admin.")
+            return
+        }
+        if (previousTv?.paketAktif == ADMIN_FREE_PACKAGE) {
+            val lockedKeys = setOf(
+                "pesanan", "pesananHarga", "totalPesanan", "bebasPesananTotal",
+                "cashDiterima", "kembalian", "bebas", "timerActive", "timerDurasi",
+                "timerStart", "sisaDetik", "paketAktif", "paketHarga",
+                "bebasHargaPerJam", "bebasMulai",
+            )
+            if (updates.keys.any { it in lockedKeys }) {
+                _state.value = current.copy(statusMessage = "Sesi Main Gratis tidak bisa diubah menjadi sesi berbayar.")
+                return
+            }
+        }
         val startsSession = (updates["timerActive"] == true || updates["bebas"] == true) &&
             previousTv != null && !previousTv.timerActive && !previousTv.bebas
         if (startsSession && !isDalamShiftSekarang()) {
@@ -3513,6 +4106,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return startSessionOnTv(tv)
     }
 
+    fun adminFreeStart(id: String): AuthResult {
+        val s = _state.value
+        if (!s.currentRole.equals("admin", ignoreCase = true)) {
+            return AuthResult(false, "Fitur Main Gratis hanya untuk admin.")
+        }
+        val tv = s.tvList.firstOrNull { it.id == id }
+            ?: return AuthResult(false, "TV tidak ditemukan.")
+        if (tv.timerActive || tv.bebas || tv.paketAktif.isNotBlank() || tv.sesiPaused) {
+            return AuthResult(false, "TV masih memiliki sesi aktif.")
+        }
+        if (!tv.paired || tv.certPem.isBlank() || tv.keyPem.isBlank()) {
+            return AuthResult(false, "TV belum dipairing.")
+        }
+
+        val now = System.currentTimeMillis()
+        val updated = tv.copy(
+            paketAktif = ADMIN_FREE_PACKAGE,
+            paketHarga = 0,
+            timerStart = now,
+            timerDurasi = 0L,
+            timerActive = false,
+            bebas = true,
+            sisaDetik = -1L,
+            totalPesanan = 0,
+            bebasMulai = now,
+            bebasHargaPerJam = 0,
+            bebasPesananTotal = 0,
+            sudahBayar = true,
+            paketSudahBayar = true,
+            fnbSudahBayar = true,
+            trxId = "",
+            pesanan = emptyMap(),
+            pesananHarga = emptyMap(),
+            cancelBatas = 0L,
+            sesiMulai = now,
+            sesiSelesai = 0L,
+            sesiPaused = false,
+            bebasTertundaMs = 0L,
+            cashDiterima = 0,
+            kembalian = 0,
+        )
+        val list = s.tvList.map { if (it.id == id) updated else it }
+        val dismissed = s.habisDismissedIds - id
+        _state.value = s.copy(
+            tvList = list,
+            habisDismissedIds = dismissed,
+            statusMessage = "Sesi Main Gratis admin dimulai di ${tv.nama}.",
+        )
+        StorageUtil.saveTvList(list)
+        StorageUtil.saveHabisDismissedIds(dismissed)
+        autoCutNextAt.remove(id)
+        autoCutRepeat.remove(id)
+        startSessionOnTv(updated)
+        addActivityLog("Mulai Main Gratis (Admin) di ${tv.nama}")
+        refreshTimerService()
+        try { syncToCloud() } catch (e: Exception) {
+            Log.e("MainVM", "syncToCloud after adminFreeStart: ${e.message}")
+        }
+        return AuthResult(true, "Sesi Main Gratis dimulai.")
+    }
+
     fun tvStop(id: String, sleep: Boolean = false): Boolean {
         val tv = _state.value.tvList.firstOrNull { it.id == id } ?: return false
         val wasBebas = tv.bebas
@@ -3592,7 +4246,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         var bebasTx: Transaksi? = null
         var bebasTotal = tv.paketHarga
         val bebasSession = tv.bebas || (
-            tv.sesiPaused && (tv.bebasHargaPerJam > 0 || tv.paketAktif.contains("Bebas", ignoreCase = true))
+            tv.sesiPaused && (
+                tv.bebasHargaPerJam > 0 ||
+                    tv.paketAktif.contains("Bebas", ignoreCase = true) ||
+                    tv.paketAktif == ADMIN_FREE_PACKAGE
+                )
             )
         if (bebasSession && tv.bebasHargaPerJam > 0) {
             val elapsed = when {
@@ -3676,6 +4334,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         cancelAutoSleep(id)
         cancelSessionWake(id)
         TvHubManager.sendStopTimer(tv)
+        if (tv.paketAktif == ADMIN_FREE_PACKAGE) {
+            viewModelScope.launch(Dispatchers.IO) {
+                delay(AUTO_SLEEP_AFTER_END_MS)
+                val current = _state.value.tvList.firstOrNull { it.id == id } ?: return@launch
+                if (current.timerActive || current.bebas) return@launch
+                sleepTv(current, "Sleep after admin free")
+            }
+        }
         addActivityLog("Sesi ${tv.nama} selesai")
         refreshHubConfig()
         refreshTimerService()
@@ -3719,7 +4385,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resumeAllSessions(): Int {
-        if (!isDalamShiftSekarang()) {
+        val shiftOpen = isDalamShiftSekarang()
+        val isAdmin = _state.value.currentRole.equals("admin", ignoreCase = true)
+        if (!shiftOpen && !isAdmin) {
             _state.value = _state.value.copy(statusMessage = shiftBlockMessage())
             return 0
         }
@@ -3727,7 +4395,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         var changed = 0
         val list = _state.value.tvList.map { tv ->
             if (!tv.sesiPaused) tv
-            else if (tv.bebasHargaPerJam > 0 || tv.paketAktif.contains("Bebas", ignoreCase = true)) {
+            else if (!shiftOpen && tv.paketAktif != ADMIN_FREE_PACKAGE) tv
+            else if (tv.bebasHargaPerJam > 0 ||
+                tv.paketAktif.contains("Bebas", ignoreCase = true) ||
+                tv.paketAktif == ADMIN_FREE_PACKAGE
+            ) {
                 changed++
                 tv.copy(
                     bebas = true,
@@ -3757,12 +4429,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun resumeSession(id: String): Boolean {
         val tv = _state.value.tvList.firstOrNull { it.id == id } ?: return false
         if (!tv.sesiPaused) return false
-        if (!isDalamShiftSekarang()) {
+        val isAdminFree = tv.paketAktif == ADMIN_FREE_PACKAGE &&
+            _state.value.currentRole.equals("admin", ignoreCase = true)
+        if (!isDalamShiftSekarang() && !isAdminFree) {
             _state.value = _state.value.copy(statusMessage = shiftBlockMessage())
             return false
         }
         val now = System.currentTimeMillis()
-        val resumed = if (tv.bebasHargaPerJam > 0 || tv.paketAktif.contains("Bebas", ignoreCase = true)) {
+        val resumed = if (isAdminFree ||
+            tv.bebasHargaPerJam > 0 ||
+            tv.paketAktif.contains("Bebas", ignoreCase = true)
+        ) {
             tv.copy(
                 bebas = true,
                 bebasMulai = (now - tv.bebasTertundaMs).coerceAtLeast(1L),
@@ -4735,6 +5412,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         StorageUtil.saveHarga(paketMain, paketDurasi, menuMakanan, menuMinuman)
         StorageUtil.saveJenisPsList(_state.value.jenisPsList)
+        syncToCloud()
     }
 
     fun saveStok(makanan: Map<String, Int>, minuman: Map<String, Int>) {
@@ -5433,11 +6111,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return admin?.let { it.username to it.email }
     }
 
-    private fun syncCashDrawer() {
+    private fun syncCashDrawer(rentalUsername: String = shiftConfigUsername()) {
         viewModelScope.launch {
             val snapshot = _state.value
+            val rental = rentalUsername.trim().ifBlank { snapshot.currentUser }
+            val summary = CashDrawerEngine.summary(
+                shifts = snapshot.kasirShiftList,
+                transactions = snapshot.transaksiList,
+                movements = snapshot.pergerakanKasList,
+                rentalUsername = rental,
+                nowMillis = System.currentTimeMillis(),
+            )
+            try {
+                withContext(Dispatchers.IO) {
+                    cloudRepo.syncCashDrawerSummary(rental, summary)
+                }
+            } catch (t: Throwable) {
+                Log.i("MainVM", "cash drawer Firestore summary exception: ${t.message}")
+            }
             supabaseOwnerIdentity() ?: return@launch
-            val rental = shiftConfigUsername()
             try {
                 withContext(Dispatchers.IO) {
                     val shiftsOk = supabaseRepo.syncShifts(rental, snapshot.kasirShiftList)
@@ -5455,9 +6147,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _state.value = _state.value.copy(cloudStatus = "syncing", statusMessage = "Syncing to cloud...")
             val snapshot = _state.value
-            val firestoreOk = try { withContext(Dispatchers.IO) { cloudRepo.syncAll(snapshot, snapshot.currentUser, snapshot.appVersionName) } } catch (t: Throwable) { Log.i("MainVM", "syncToCloud exception: ${t.message}"); false }
-            val owner = supabaseOwnerIdentity()
             val rental = shiftConfigUsername()
+            val firestoreOk = try { withContext(Dispatchers.IO) { cloudRepo.syncAll(snapshot, rental, snapshot.appVersionName) } } catch (t: Throwable) { Log.i("MainVM", "syncToCloud exception: ${t.message}"); false }
+            val owner = supabaseOwnerIdentity()
+            val cashSummaryOk = try {
+                val summary = CashDrawerEngine.summary(
+                    shifts = snapshot.kasirShiftList,
+                    transactions = snapshot.transaksiList,
+                    movements = snapshot.pergerakanKasList,
+                    rentalUsername = rental,
+                    nowMillis = System.currentTimeMillis(),
+                )
+                withContext(Dispatchers.IO) { cloudRepo.syncCashDrawerSummary(rental, summary) }
+            } catch (t: Throwable) {
+                Log.i("MainVM", "cash summary sync exception: ${t.message}")
+                false
+            }
+            val stockOwnerOk = try {
+                if (rental.isNotBlank() && !rental.equals(snapshot.currentUser, ignoreCase = true)) {
+                    withContext(Dispatchers.IO) {
+                        cloudRepo.syncStockToRental(
+                            username = rental,
+                            menuMakanan = snapshot.menuMakanan,
+                            menuMinuman = snapshot.menuMinuman,
+                            stokMakanan = snapshot.stokMakanan,
+                            stokMinuman = snapshot.stokMinuman,
+                        )
+                    }
+                } else {
+                    true
+                }
+            } catch (t: Throwable) {
+                Log.i("MainVM", "stock owner sync exception: ${t.message}")
+                false
+            }
             val supabaseOk = if (owner != null) {
                 try {
                     withContext(Dispatchers.IO) {
@@ -5474,9 +6197,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 Log.i("MainVM", "supabase sync skipped: no owner email")
                 true
             }
-            val ok = firestoreOk && supabaseOk
+            val ok = firestoreOk && cashSummaryOk && stockOwnerOk && supabaseOk
             val now = if (ok) System.currentTimeMillis() else _state.value.cloudLastSync
-            Log.i("MainVM", "syncToCloud result firestore=$firestoreOk supabase=$supabaseOk ok=$ok")
+            Log.i(
+                "MainVM",
+                "syncToCloud result firestore=$firestoreOk cashSummary=$cashSummaryOk " +
+                    "stockOwner=$stockOwnerOk supabase=$supabaseOk ok=$ok",
+            )
             _state.value = _state.value.copy(
                 cloudStatus = if (ok) "connected" else "error",
                 cloudLastSync = now,

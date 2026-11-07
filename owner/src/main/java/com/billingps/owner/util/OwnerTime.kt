@@ -16,7 +16,7 @@ object OwnerTime {
     private const val SIX_HOURS_45_MIN = 6L * 60L * 60L * 1000L + 45L * 60L * 1000L
     private const val SEVEN_HOURS_15_MIN = 7L * 60L * 60L * 1000L + 15L * 60L * 1000L
     private const val SEVEN_HOURS = 7L * 60L * 60L * 1000L
-    private const val ONLINE_STALE_MS = 90_000L
+    private const val ONLINE_STALE_MS = 120_000L
 
     private val display = DateTimeFormatter
         .ofPattern("dd MMM HH:mm", Locale("id", "ID"))

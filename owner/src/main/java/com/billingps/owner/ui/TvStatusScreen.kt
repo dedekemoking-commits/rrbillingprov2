@@ -58,11 +58,12 @@ import com.billingps.owner.util.OwnerTime
 @Composable
 fun TvStatusScreen(
     state: OwnerUiState,
+    localTimer: Map<String, Long>,
     onRefresh: () -> Unit,
 ) {
     val today = filteredTransactions(state.transactions, ReportPeriod.TODAY, "")
     val todaySummary = summarize(today)
-    val onlineCount = state.tvs.count { OwnerTime.isOnline(state.clientStatus[it.id]) }
+    val onlineCount = state.tvs.count { OwnerTime.isOnline(effectiveClient(state, it)) }
     val activeCount = state.tvs.count { it.aktif }
 
     LazyColumn(
@@ -84,7 +85,7 @@ fun TvStatusScreen(
                     value = "$onlineCount/${state.tvs.size}",
                     accent = OwnerGreen,
                     icon = Icons.Default.Wifi,
-                    sub = "heartbeat client",
+                    sub = if (state.hubConnected) "hub kasir" else "heartbeat client",
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -124,7 +125,8 @@ fun TvStatusScreen(
             items(state.tvs, key = { it.id.ifBlank { it.nama } }) { tv ->
                 TvCard(
                     tv = tv,
-                    client = state.clientStatus[tv.id],
+                    client = effectiveClient(state, tv),
+                    remainingSeconds = localTimer[tv.id] ?: tv.sisaDetik,
                 )
             }
         }
@@ -134,7 +136,14 @@ fun TvStatusScreen(
                     append("Sinkron Firestore: ")
                     append(OwnerTime.formatDateTime(state.lastSync))
                     if (state.appVersion.isNotBlank()) {
-                        append("  •  app kasir v${state.appVersion}")
+                        append("  |  app kasir v${state.appVersion}")
+                    }
+                    append("  |  Hub kasir: ")
+                    if (state.hubConnected) {
+                        append(state.hubRental.ifBlank { "LAN" })
+                        if (state.hubHost.isNotBlank()) append(" (${state.hubHost})")
+                    } else {
+                        append("tidak terdeteksi")
                     }
                 },
                 style = MaterialTheme.typography.bodySmall,
@@ -146,7 +155,7 @@ fun TvStatusScreen(
 }
 
 @Composable
-private fun TvCard(tv: OwnerTv, client: ClientStatus?) {
+private fun TvCard(tv: OwnerTv, client: ClientStatus?, remainingSeconds: Long) {
     val online = OwnerTime.isOnline(client)
     var expanded by remember(tv.id) { mutableStateOf(false) }
     val accent = when {
@@ -212,7 +221,7 @@ private fun TvCard(tv: OwnerTv, client: ClientStatus?) {
 
             if (tv.aktif) {
                 if (tv.timerDurasi > 0L) {
-                    val progress = (tv.sisaDetik.toFloat() / tv.timerDurasi.toFloat())
+                    val progress = (remainingSeconds.toFloat() / tv.timerDurasi.toFloat())
                         .coerceIn(0f, 1f)
                     LinearProgressIndicator(
                         progress = progress,
@@ -227,7 +236,7 @@ private fun TvCard(tv: OwnerTv, client: ClientStatus?) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     MiniStat(
                         label = "Sisa",
-                        value = OwnerTime.formatDuration(tv.sisaDetik),
+                        value = OwnerTime.formatDuration(remainingSeconds),
                         color = accent,
                         modifier = Modifier.weight(1f),
                     )
@@ -334,8 +343,11 @@ private fun TvCard(tv: OwnerTv, client: ClientStatus?) {
                 Text(
                     buildString {
                         append("Client ")
-                        append(client?.version?.takeIf { it.isNotBlank() }?.let { "v$it" } ?: "belum terhubung")
-                        append("  •  ")
+                        append(
+                            client?.version?.takeIf { it.isNotBlank() }?.let { "v$it" }
+                                ?: if (online) "terhubung" else "belum terhubung",
+                        )
+                        append("  |  ")
                         append(OwnerTime.lastSeenText(client))
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -356,6 +368,13 @@ private fun TvCard(tv: OwnerTv, client: ClientStatus?) {
         }
     }
 }
+
+private fun effectiveClient(state: OwnerUiState, tv: OwnerTv): ClientStatus? =
+    if (state.hubConnected) {
+        state.hubStatus[tv.id] ?: ClientStatus(online = false)
+    } else {
+        state.clientStatus[tv.id]
+    }
 
 @Composable
 private fun ClientBadge(online: Boolean, client: ClientStatus?) {

@@ -21,10 +21,13 @@ import androidx.compose.ui.unit.sp
 import com.billingps.aptv.utils.ClientApkManager
 import com.billingps.aptv.utils.ApkServer
 import com.billingps.aptv.ui.theme.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 enum class InstallStep {
+    DOWNLOADING,
     CHECK_ADB,
     INSTALL_OPTIONS,
     INSTALLING,
@@ -41,11 +44,13 @@ fun ClientApkInstallerDialog(
     val scope = rememberCoroutineScope()
     val manager = remember { ClientApkManager(ctx) }
 
-    var currentStep by remember { mutableStateOf(InstallStep.CHECK_ADB) }
+    var currentStep by remember { mutableStateOf(InstallStep.DOWNLOADING) }
     var statusMessage by remember { mutableStateOf("Memulai...") }
     var isBusy by remember { mutableStateOf(false) }
     var logLines by remember { mutableStateOf(listOf("Memulai instalasi client APK...")) }
     var apkExtractedPath by remember { mutableStateOf("") }
+    var downloadPercent by remember { mutableStateOf(0) }
+    var downloadLabel by remember { mutableStateOf("") }
     var fallbackUrl by remember { mutableStateOf("") }
     var apkCopiedToDownloads by remember { mutableStateOf(false) }
     var pairingPort by remember { mutableStateOf("") }
@@ -57,6 +62,15 @@ fun ClientApkInstallerDialog(
 
     fun addLog(msg: String) {
         logLines = logLines + msg
+    }
+
+    fun activeApkFile(): File? {
+        val path = apkExtractedPath
+        if (path.isNotBlank()) {
+            val existing = File(path)
+            if (existing.exists() && existing.length() > 0L) return existing
+        }
+        return manager.extractClientApk()
     }
 
     fun startPairingInstall() {
@@ -78,10 +92,7 @@ fun ClientApkInstallerDialog(
             pairingBusy = true
             pairingStatus = ""
             currentStep = InstallStep.INSTALLING
-            val apk = apkExtractedPath
-                .takeIf { it.isNotBlank() && File(it).exists() }
-                ?.let { File(it) }
-                ?: manager.extractClientApk()
+            val apk = withContext(Dispatchers.IO) { activeApkFile() }
             if (apk == null) {
                 pairingBusy = false
                 currentStep = InstallStep.INSTALL_OPTIONS
@@ -140,20 +151,48 @@ fun ClientApkInstallerDialog(
     }
 
     LaunchedEffect(Unit) {
-        val apkFile = manager.extractClientApk()
-        if (apkFile == null) {
-            addLog("Gagal mengekstrak APK client")
-            statusMessage = "Gagal mengekstrak APK"
+        currentStep = InstallStep.DOWNLOADING
+        statusMessage = ""
+        addLog("Mengambil APK client terbaru dari GitHub...")
+
+        var apkFile: File?
+        try {
+            val download = manager.downloadLatestClientApk { downloaded, total ->
+                if (total > 0) {
+                    val percent = ((downloaded * 100) / total).toInt().coerceIn(0, 100)
+                    downloadPercent = percent
+                    downloadLabel = "Mengunduh $percent% (${downloaded / 1024} KB / ${total / 1024} KB)"
+                } else {
+                    downloadLabel = "Mengunduh ${downloaded / 1024} KB..."
+                }
+            }
+            apkFile = download.file
+            apkExtractedPath = download.file.absolutePath
+            downloadPercent = 100
+            downloadLabel = "v${download.versionName} (${download.releaseTag})"
+            addLog("APK terbaru v${download.versionName} siap dari ${download.releaseTag}")
+            statusMessage = ""
+        } catch (e: Exception) {
+            addLog("Gagal download APK terbaru: ${e.message}")
+            addLog("Menggunakan APK client bawaan...")
+            statusMessage = "Gagal download APK terbaru. Memakai APK bawaan."
+            apkFile = withContext(Dispatchers.IO) { manager.extractClientApk() }
+            if (apkFile != null) apkExtractedPath = apkFile.absolutePath
+        }
+
+        val readyApk = apkFile
+        if (readyApk == null) {
+            addLog("Gagal menyiapkan APK client")
+            statusMessage = "Gagal menyiapkan APK"
             currentStep = InstallStep.INSTALL_OPTIONS
             return@LaunchedEffect
         }
-        apkExtractedPath = apkFile.absolutePath
-        addLog("APK client berhasil diekstrak (${apkFile.length() / 1024} KB)")
 
-        // Try direct ADB first (works for Android 10- or custom firmware)
+        addLog("APK client siap (${readyApk.length() / 1024} KB)")
+        currentStep = InstallStep.CHECK_ADB
         addLog("Mencoba ADB direct ke $tvIp:5555...")
         isBusy = true
-        val directResult = manager.tryDirectInstall(tvIp, 5555, apkFile.absolutePath)
+        val directResult = manager.tryDirectInstall(tvIp, 5555, readyApk.absolutePath)
         isBusy = false
 
         if (directResult.success) {
@@ -163,13 +202,11 @@ fun ClientApkInstallerDialog(
             return@LaunchedEffect
         }
 
-        // ADB direct failed - show install options
         addLog("ADB direct: ${directResult.message}")
         addLog("Menampilkan opsi instalasi manual...")
         currentStep = InstallStep.INSTALL_OPTIONS
 
-        // Start HTTP server as one of the options
-        ApkServer.start(ctx, apkFile)
+        ApkServer.start(ctx, readyApk)
         val ip = ApkServer.getLocalIpAddress(ctx) ?: "localhost"
         fallbackUrl = "http://$ip:${ApkServer.port}/tv-client.apk"
         addLog("HTTP server siap di $fallbackUrl")
@@ -180,7 +217,7 @@ fun ClientApkInstallerDialog(
         containerColor = DarkSurface,
         title = {
             Text(
-                "INSTALL CLIENT APK",
+                "INSTALL / UPDATE CLIENT APK",
                 color = NeonGreen,
                 fontWeight = FontWeight.Bold,
             )
@@ -192,6 +229,32 @@ fun ClientApkInstallerDialog(
                     .verticalScroll(rememberScrollState())
             ) {
                 when (currentStep) {
+                    InstallStep.DOWNLOADING -> {
+                        Text("Menyiapkan APK client TV terbaru...", color = TextPrimary)
+                        Spacer(Modifier.height(12.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = NeonGreen,
+                                strokeWidth = 2.dp,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                downloadLabel.ifBlank { "Mengunduh dari GitHub..." },
+                                color = NeonYellow,
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        LinearProgressIndicator(
+                            progress = { downloadPercent.coerceIn(0, 100) / 100f },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(10.dp),
+                            color = NeonGreen,
+                            trackColor = DarkSurfaceV3,
+                        )
+                    }
+
                     InstallStep.CHECK_ADB -> {
                         Text("Memeriksa koneksi ADB ke $tvNama ($tvIp)...", color = TextPrimary)
                         Spacer(Modifier.height(12.dp))
@@ -347,10 +410,13 @@ fun ClientApkInstallerDialog(
                                 TextButton(
                                     onClick = {
                                         scope.launch {
-                                            val apkFile = manager.extractClientApk()
+                                            val apkFile = withContext(Dispatchers.IO) { activeApkFile() }
                                             if (apkFile != null) {
-                                                val dest = File(ctx.getExternalFilesDir("Downloads") ?: ctx.cacheDir, "tv-client.apk")
-                                                apkFile.copyTo(dest, overwrite = true)
+                                                val dest = withContext(Dispatchers.IO) {
+                                                    val file = File(ctx.getExternalFilesDir("Downloads") ?: ctx.cacheDir, "tv-client.apk")
+                                                    apkFile.copyTo(file, overwrite = true)
+                                                    file
+                                                }
                                                 apkCopiedToDownloads = true
                                                 addLog("APK siap di ${dest.absolutePath}")
                                             }

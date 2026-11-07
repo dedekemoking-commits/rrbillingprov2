@@ -232,8 +232,22 @@ class RRBridge(
                 }
 
                 "auth.logout" -> {
+                    val activeShift = mainViewModel.shiftAktifGlobal()
+                    if (activeShift != null) {
+                        sendResult(
+                            id,
+                            false,
+                            error = "Tutup kasir terlebih dahulu sebelum keluar.",
+                            data = shiftStateJson(),
+                        )
+                        return
+                    }
                     mainViewModel.logout(payload.optBoolean("clearGoogleSignIn", false))
                     sendResult(id, true)
+                }
+
+                "kasirshift.state" -> {
+                    sendResult(id, true, shiftStateJson())
                 }
 
                 "tv.add" -> {
@@ -339,6 +353,10 @@ class RRBridge(
                 }
 
                 "tv.start" -> sendResult(id, mainViewModel.tvStart(payload.optString("id")))
+                "tv.adminFreeStart" -> {
+                    val result = mainViewModel.adminFreeStart(payload.optString("id"))
+                    sendResult(id, result.success, error = if (result.success) null else result.message)
+                }
                 "tv.pauseAll" -> {
                     val changed = mainViewModel.pauseAllSessions()
                     sendResult(id, true, JSONObject().put("changed", changed))
@@ -847,6 +865,7 @@ class RRBridge(
                         jsonToIntMap(payload.optJSONObject("makanan")),
                         jsonToIntMap(payload.optJSONObject("minuman")),
                     )
+                    mainViewModel.syncToCloud()
                     sendResult(id, true)
                 }
 
@@ -1343,11 +1362,23 @@ class RRBridge(
         val lastClosed = mainViewModel.lastClosedShiftGlobal()
         val active = state.kasirShiftList.filter { it.aktif }
         val visible = if (state.currentRole == "admin") state.kasirShiftList else {
-            state.kasirShiftList.filter { it.username.equals(state.currentUser, ignoreCase = true) }
+            val activeKind = mine?.jenisShift
+                ?: state.shiftConfig.jenisShift(java.time.ZonedDateTime.now(TimeUtils.WIB))
+            state.kasirShiftList.filter {
+                it.username.equals(state.currentUser, ignoreCase = true) &&
+                    it.jenisShift == activeKind
+            }
         }
         val metrics = mine?.let {
             val current = mainViewModel.hitungShiftMetrics(it, 0)
             current.copy(uangFisik = current.kasSeharusnya, selisih = 0)
+        }
+        val activeMetrics = JSONArray()
+        active.forEach {
+            val current = mainViewModel.hitungShiftMetrics(it, 0)
+            activeMetrics.put(
+                shiftMetricsJson(current.copy(uangFisik = current.kasSeharusnya, selisih = 0))
+            )
         }
         return JSONObject()
             .put("mine", mine?.let { shiftKasirJson(it) } ?: JSONObject.NULL)
@@ -1355,6 +1386,7 @@ class RRBridge(
             .put("lastClosed", lastClosed?.let { shiftKasirJson(it) } ?: JSONObject.NULL)
             .put("carryKasAwal", lastClosed?.kasAkhir ?: 0)
             .put("active", shiftListJson(active))
+            .put("activeMetrics", activeMetrics)
             .put("list", shiftListJson(visible.takeLast(100)))
             .put("metrics", metrics?.let { shiftMetricsJson(it) } ?: JSONObject.NULL)
             .put("canManage", state.currentRole == "admin")

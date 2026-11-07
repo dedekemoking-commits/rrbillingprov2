@@ -14,6 +14,15 @@ service cloud.firestore {
       );
     }
 
+    // Validasi pemilik rental dari dokumen indeks _user_<username>.
+    // Path harus memakai satu segmen utuh, bukan "_user_$(username)".
+    function isRentalOwner(username) {
+      let userId = '_user_' + username;
+      return get(/databases/$(database)/documents/billingps_users/$(userId)).data.email.lower()
+        == request.auth.token.email.lower()
+        && get(/databases/$(database)/documents/billingps_users/$(userId)).data.role in ["admin", "owner"];
+    }
+
     // Licenses collection
     match /licenses/{docId} {
       // Anyone authenticated can read licenses (for activation lookup)
@@ -58,6 +67,97 @@ service cloud.firestore {
         allow read, write: if isAuth();
       }
 
+      // stockOpnames subcollection — opname stok F&B dari RR Owner
+      match /stockOpnames/{opnameId} {
+        allow read: if isAuth();
+        allow create: if isAuth()
+          && request.resource.data.status == "pending"
+          && request.resource.data.rentalUsername == username
+          && request.resource.data.submittedByUid == request.auth.uid
+          && request.resource.data.submittedByEmail == request.auth.token.email
+          && request.resource.data.items is list
+          && isRentalOwner(username);
+        // Aplikasi billing menandai opname sebagai applied setelah stok lokal diperbarui
+        allow update: if isAuth();
+        allow delete: if false;
+      }
+
+      // cashDrawerRequests subcollection — permintaan tarik uang laci dari RR Owner
+      match /cashDrawerRequests/{requestId} {
+        allow read: if isAuth();
+        allow create: if isAuth()
+          && request.resource.data.status == "pending"
+          && request.resource.data.rentalUsername == username
+          && request.resource.data.submittedByUid == request.auth.uid
+          && request.resource.data.submittedByEmail == request.auth.token.email
+          && request.resource.data.nominal is int
+          && request.resource.data.nominal > 0
+          && isRentalOwner(username);
+        // Aplikasi billing menandai request sebagai applied/rejected setelah diproses
+        allow update: if isAuth();
+        allow delete: if false;
+      }
+
+      // fnbItemRequests subcollection - item F&B baru dari RR Owner
+      match /fnbItemRequests/{requestId} {
+        allow read: if isAuth();
+        allow create: if isAuth()
+          && request.resource.data.status == "pending"
+          && request.resource.data.rentalUsername == username
+          && request.resource.data.submittedByUid == request.auth.uid
+          && request.resource.data.submittedByEmail == request.auth.token.email
+          && request.resource.data.category in ["makanan", "minuman"]
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.price is int
+          && request.resource.data.price >= 0
+          && request.resource.data.initialStock is int
+          && request.resource.data.initialStock >= 0
+          && isRentalOwner(username);
+        // Aplikasi billing menandai request applied/rejected setelah diproses
+        allow update: if isAuth();
+        allow delete: if false;
+      }
+
+      // packageRequests subcollection - tambah/edit paket sesi dari RR Owner
+      match /packageRequests/{requestId} {
+        allow read: if isAuth();
+        allow create: if isAuth()
+          && request.resource.data.status == "pending"
+          && request.resource.data.rentalUsername == username
+          && request.resource.data.submittedByUid == request.auth.uid
+          && request.resource.data.submittedByEmail == request.auth.token.email
+          && request.resource.data.action in ["add", "update"]
+          && request.resource.data.groupName is string
+          && request.resource.data.groupName.size() > 0
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.price is int
+          && request.resource.data.price >= 0
+          && request.resource.data.durationMinutes is int
+          && request.resource.data.durationMinutes >= 0
+          && isRentalOwner(username);
+        // Aplikasi billing menandai request applied/rejected setelah diproses
+        allow update: if isAuth();
+        allow delete: if false;
+      }
+
+      // groupRequests subcollection - grup PS baru dari RR Owner
+      match /groupRequests/{requestId} {
+        allow read: if isAuth();
+        allow create: if isAuth()
+          && request.resource.data.status == "pending"
+          && request.resource.data.rentalUsername == username
+          && request.resource.data.submittedByUid == request.auth.uid
+          && request.resource.data.submittedByEmail == request.auth.token.email
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && isRentalOwner(username);
+        // Aplikasi billing menandai request applied/rejected setelah diproses
+        allow update: if isAuth();
+        allow delete: if false;
+      }
+
       // tvLogs subcollection — TV logcat reports uploaded by the billing app
       match /tvLogs/{tvId} {
         allow read, write: if isAuth();
@@ -74,6 +174,16 @@ service cloud.firestore {
       // Restrict to device owner when UID is known
       allow read: if isAuth();
       allow write: if isAuth();
+    }
+
+    // Owner account mapping: Firebase Auth UID -> rental username.
+    // Only the signed-in owner can read/write their own mapping.
+    match /owner_accounts/{uid} {
+      allow read: if isAuth() && request.auth.uid == uid;
+      allow write: if isAuth()
+        && request.auth.uid == uid
+        && request.resource.data.email.lower() == request.auth.token.email.lower()
+        && request.resource.data.rentalUsername is string;
     }
 
     // Global settings

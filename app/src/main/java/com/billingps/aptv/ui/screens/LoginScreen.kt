@@ -32,6 +32,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import android.app.Activity
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import com.google.android.gms.auth.api.signin.GoogleSignIn
@@ -74,19 +75,33 @@ fun LoginScreen(
     val googleSignInLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
-            try {
-                val account = task.getResult(ApiException::class.java)
-                val idToken = account.idToken
-                val email = account.email ?: ""
-                val displayName = account.displayName ?: email.substringBefore("@")
-                if (idToken != null) {
-                    viewModel.signInWithGoogle(idToken, email, displayName)
-                }
-            } catch (e: ApiException) {
-                errMsg = "Google Sign-In gagal: ${e.localizedMessage}"
+        val data = result.data
+        Log.i("GoogleAuth", "resultCode=${result.resultCode} hasData=${data != null} extras=${data?.extras?.keySet()}")
+        if (result.resultCode != Activity.RESULT_OK || data == null) {
+            val apiException = data?.let {
+                GoogleSignIn.getSignedInAccountFromIntent(it).exception as? ApiException
             }
+            val statusCode = apiException?.statusCode ?: -1
+            val message = apiException?.statusMessage ?: "dibatalkan atau tanpa data (resultCode=${result.resultCode})"
+            Log.w("GoogleAuth", "Google Sign-In gagal: code=$statusCode, message=$message", apiException)
+            errMsg = "Google Sign-In gagal ($statusCode): $message"
+            return@rememberLauncherForActivityResult
+        }
+        val task = GoogleSignIn.getSignedInAccountFromIntent(data)
+        try {
+            val account = task.getResult(ApiException::class.java)
+            val idToken = account.idToken
+            val email = account.email ?: ""
+            val displayName = account.displayName ?: email.substringBefore("@")
+            Log.i("GoogleAuth", "Akun Google siap, hasIdToken=${idToken != null}")
+            if (idToken != null) {
+                viewModel.signInWithGoogle(idToken, email, displayName)
+            } else {
+                errMsg = "Google tidak mengembalikan ID token"
+            }
+        } catch (e: ApiException) {
+            Log.e("GoogleAuth", "Google Sign-In gagal: code=${e.statusCode}, message=${e.statusMessage}", e)
+            errMsg = "Google Sign-In gagal (${e.statusCode}): ${e.statusMessage ?: e.localizedMessage}"
         }
     }
     var selectedKasir by remember { mutableStateOf("") }
@@ -265,6 +280,17 @@ fun LoginScreen(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text("Masuk dengan Google", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    }
+
+                    if (state.statusMessage.contains("Google", ignoreCase = true)) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            state.statusMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (state.isBusy) NeonCyan else NeonRed,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
 
                     Spacer(Modifier.height(8.dp))

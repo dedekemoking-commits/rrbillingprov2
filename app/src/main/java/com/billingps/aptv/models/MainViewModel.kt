@@ -2553,6 +2553,78 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 val snapshot = _state.value
+                val category = request.category.lowercase(Locale.ROOT)
+                if (category != "makanan" && category != "minuman") {
+                    cloudRepo.markFnbItemRequestProcessed(
+                        username = rentalUsername,
+                        requestId = request.id,
+                        applied = false,
+                        appliedBy = _state.value.currentUser,
+                        reason = "Kategori item tidak valid",
+                    )
+                    return@launch
+                }
+
+                if (request.action == "update") {
+                    val itemExists = when (category) {
+                        "makanan" -> snapshot.menuMakanan.containsKey(request.name) ||
+                            snapshot.stokMakanan.containsKey(request.name)
+                        else -> snapshot.menuMinuman.containsKey(request.name) ||
+                            snapshot.stokMinuman.containsKey(request.name)
+                    }
+                    if (!itemExists) {
+                        cloudRepo.markFnbItemRequestProcessed(
+                            username = rentalUsername,
+                            requestId = request.id,
+                            applied = false,
+                            appliedBy = _state.value.currentUser,
+                            reason = "Item ${request.name} tidak ditemukan",
+                        )
+                        return@launch
+                    }
+
+                    val makanan = snapshot.menuMakanan.toMutableMap()
+                    val minuman = snapshot.menuMinuman.toMutableMap()
+                    when (category) {
+                        "makanan" -> makanan[request.name] = request.price
+                        else -> minuman[request.name] = request.price
+                    }
+                    saveHarga(
+                        paketMain = snapshot.paketMain,
+                        paketDurasi = snapshot.paketDurasi,
+                        menuMakanan = makanan,
+                        menuMinuman = minuman,
+                    )
+                    addActivityLog(
+                        "Harga F&B owner diperbarui: ${request.name} " +
+                            "(${formatRupiah(request.price)})",
+                    )
+                    _state.value = _state.value.copy(
+                        statusMessage = "Harga F&B ${request.name} dari owner diterapkan.",
+                    )
+                    val marked = cloudRepo.markFnbItemRequestProcessed(
+                        username = rentalUsername,
+                        requestId = request.id,
+                        applied = true,
+                        appliedBy = _state.value.currentUser,
+                    )
+                    if (!marked) {
+                        Log.w("MainVM", "F&B price request ${request.id} gagal ditandai applied")
+                    }
+                    return@launch
+                }
+
+                if (request.action != "add") {
+                    cloudRepo.markFnbItemRequestProcessed(
+                        username = rentalUsername,
+                        requestId = request.id,
+                        applied = false,
+                        appliedBy = _state.value.currentUser,
+                        reason = "Aksi item F&B tidak valid",
+                    )
+                    return@launch
+                }
+
                 val exists = snapshot.menuMakanan.containsKey(request.name) ||
                     snapshot.menuMinuman.containsKey(request.name) ||
                     snapshot.stokMakanan.containsKey(request.name) ||
@@ -2572,26 +2644,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val minuman = snapshot.menuMinuman.toMutableMap()
                 val stokMakanan = snapshot.stokMakanan.toMutableMap()
                 val stokMinuman = snapshot.stokMinuman.toMutableMap()
-                when (request.category.lowercase(Locale.ROOT)) {
+                when (category) {
                     "makanan" -> {
                         makanan[request.name] = request.price
                         stokMakanan[request.name] =
                             (stokMakanan[request.name] ?: 0) + request.initialStock
                     }
-                    "minuman" -> {
+                    else -> {
                         minuman[request.name] = request.price
                         stokMinuman[request.name] =
                             (stokMinuman[request.name] ?: 0) + request.initialStock
-                    }
-                    else -> {
-                        cloudRepo.markFnbItemRequestProcessed(
-                            username = rentalUsername,
-                            requestId = request.id,
-                            applied = false,
-                            appliedBy = _state.value.currentUser,
-                            reason = "Kategori item tidak valid",
-                        )
-                        return@launch
                     }
                 }
 

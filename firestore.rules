@@ -98,7 +98,7 @@ service cloud.firestore {
         allow delete: if false;
       }
 
-      // fnbItemRequests subcollection - item F&B baru dari RR Owner
+      // fnbItemRequests subcollection - item F&B baru/edit harga dari RR Owner
       match /fnbItemRequests/{requestId} {
         allow read: if isAuth();
         allow create: if isAuth()
@@ -106,6 +106,10 @@ service cloud.firestore {
           && request.resource.data.rentalUsername == username
           && request.resource.data.submittedByUid == request.auth.uid
           && request.resource.data.submittedByEmail == request.auth.token.email
+          && (
+            !request.resource.data.keys().hasAny(["action"])
+              || request.resource.data.action in ["add", "update"]
+          )
           && request.resource.data.category in ["makanan", "minuman"]
           && request.resource.data.name is string
           && request.resource.data.name.size() > 0

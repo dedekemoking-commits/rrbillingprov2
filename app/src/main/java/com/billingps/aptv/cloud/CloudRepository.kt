@@ -39,6 +39,7 @@ data class PendingCashDrawerRequest(
 
 data class PendingFnbItemRequest(
     val id: String,
+    val action: String,
     val category: String,
     val name: String,
     val price: Int,
@@ -378,6 +379,8 @@ class CloudRepository(private val app: Application) {
                 }
                 if (snap == null) return@addSnapshotListener
                 val requests = snap.documents.mapNotNull { doc ->
+                    val action = doc.getString("action").orEmpty().lowercase().ifBlank { "add" }
+                    if (action != "add" && action != "update") return@mapNotNull null
                     val category = doc.getString("category").orEmpty().lowercase()
                     if (category != "makanan" && category != "minuman") return@mapNotNull null
                     val name = doc.getString("name").orEmpty().trim()
@@ -387,6 +390,7 @@ class CloudRepository(private val app: Application) {
                     if (price < 0 || initialStock < 0) return@mapNotNull null
                     PendingFnbItemRequest(
                         id = doc.id,
+                        action = action,
                         category = category,
                         name = name,
                         price = price,

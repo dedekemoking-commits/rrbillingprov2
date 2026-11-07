@@ -290,7 +290,12 @@ class OwnerRepository {
         if (category != "makanan" && category != "minuman") {
             return OwnerAuthResult(false, "Kategori item tidak valid.")
         }
-        if (input.price < 0 || input.initialStock < 0) {
+        val action = input.action.trim().lowercase()
+        if (action != "add" && action != "update") {
+            return OwnerAuthResult(false, "Aksi item F&B tidak valid.")
+        }
+        val initialStock = if (action == "update") 0 else input.initialStock
+        if (input.price < 0 || initialStock < 0) {
             return OwnerAuthResult(false, "Harga dan stok awal tidak boleh negatif.")
         }
         val submitterEmail = currentEmail().ifBlank { email.trim() }
@@ -299,18 +304,27 @@ class OwnerRepository {
             "rentalUsername" to rentalUsername,
             "submittedByEmail" to submitterEmail,
             "submittedByUid" to currentUid(),
+            "action" to action,
             "category" to category,
             "name" to name,
             "price" to input.price,
-            "initialStock" to input.initialStock,
+            "initialStock" to initialStock,
             "createdAt" to System.currentTimeMillis(),
         )
         return submitOwnerRequest(
             rentalUsername = rentalUsername,
             collection = "fnbItemRequests",
             payload = payload,
-            successMessage = "Item F&B terkirim. Menunggu diproses aplikasi billing.",
-            failureMessage = "Gagal mengirim item F&B.",
+            successMessage = if (action == "update") {
+                "Perubahan harga F&B terkirim. Menunggu diproses aplikasi billing."
+            } else {
+                "Item F&B terkirim. Menunggu diproses aplikasi billing."
+            },
+            failureMessage = if (action == "update") {
+                "Gagal mengirim perubahan harga F&B."
+            } else {
+                "Gagal mengirim item F&B."
+            },
             logTag = "F&B item",
         )
     }

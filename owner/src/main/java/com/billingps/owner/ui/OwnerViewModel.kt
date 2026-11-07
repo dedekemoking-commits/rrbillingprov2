@@ -564,18 +564,42 @@ class OwnerViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(error = "Nama item wajib diisi.") }
             return
         }
-        if (input.price < 0 || input.initialStock < 0) {
+        val category = input.category.trim().lowercase()
+        if (category != "makanan" && category != "minuman") {
+            _state.update { it.copy(error = "Kategori item tidak valid.") }
+            return
+        }
+        val action = input.action.trim().lowercase()
+        if (action != "add" && action != "update") {
+            _state.update { it.copy(error = "Aksi item F&B tidak valid.") }
+            return
+        }
+        if (input.price < 0 || (action == "add" && input.initialStock < 0)) {
             _state.update { it.copy(error = "Harga dan stok awal tidak boleh negatif.") }
             return
         }
         val current = _state.value
-        val exists = current.menuMakanan.containsKey(name) ||
-            current.menuMinuman.containsKey(name) ||
-            current.stokMakanan.containsKey(name) ||
+        val foodExists = current.menuMakanan.containsKey(name) ||
+            current.stokMakanan.containsKey(name)
+        val drinkExists = current.menuMinuman.containsKey(name) ||
             current.stokMinuman.containsKey(name)
-        if (exists) {
-            _state.update { it.copy(error = "Item \"$name\" sudah ada.") }
-            return
+        if (action == "add") {
+            if (foodExists || drinkExists) {
+                _state.update { it.copy(error = "Item \"$name\" sudah ada.") }
+                return
+            }
+        } else {
+            val existsInCategory = when (category) {
+                "makanan" -> foodExists
+                "minuman" -> drinkExists
+                else -> false
+            }
+            if (!existsInCategory) {
+                _state.update {
+                    it.copy(error = "Item \"$name\" tidak ditemukan di kategori $category.")
+                }
+                return
+            }
         }
         _state.update {
             it.copy(
@@ -585,7 +609,16 @@ class OwnerViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         viewModelScope.launch {
-            val result = repo.submitFnbItem(rental, email, input.copy(name = name))
+            val result = repo.submitFnbItem(
+                rental,
+                email,
+                input.copy(
+                    action = action,
+                    category = category,
+                    name = name,
+                    initialStock = if (action == "update") 0 else input.initialStock,
+                ),
+            )
             _state.update {
                 it.copy(
                     isSubmittingFnbItem = false,

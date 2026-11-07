@@ -130,6 +130,7 @@ data class FnbItemInput(
     val name: String,
     val price: Int,
     val initialStock: Int,
+    val action: String = "add",
 )
 
 data class PackageInput(

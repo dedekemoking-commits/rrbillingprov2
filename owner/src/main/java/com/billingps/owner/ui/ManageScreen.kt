@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -41,6 +42,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import com.billingps.owner.data.FnbItemInput
 import com.billingps.owner.data.GroupInput
 import com.billingps.owner.data.PackageInput
+import kotlinx.coroutines.launch
 
 @Composable
 fun ManageScreen(
@@ -79,6 +82,9 @@ fun ManageScreen(
     var itemName by remember(state.username) { mutableStateOf("") }
     var itemPrice by remember(state.username) { mutableStateOf("") }
     var itemStock by remember(state.username) { mutableStateOf("") }
+    var fnbAction by remember(state.username) { mutableStateOf("add") }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
 
     var selectedGroup by remember(state.username) { mutableStateOf("") }
     var packageAction by remember(state.username) { mutableStateOf("add") }
@@ -94,6 +100,7 @@ fun ManageScreen(
     }
     LaunchedEffect(state.fnbItemNotice) {
         if (state.fnbItemNotice != null) {
+            fnbAction = "add"
             itemName = ""
             itemPrice = ""
             itemStock = ""
@@ -147,7 +154,24 @@ fun ManageScreen(
         }
     }
 
+    fun resetFnbForm() {
+        fnbAction = "add"
+        itemName = ""
+        itemPrice = ""
+        itemStock = ""
+    }
+
+    fun selectFnbItem(name: String, itemCategory: String, price: Int) {
+        fnbAction = "update"
+        category = itemCategory
+        itemName = name
+        itemPrice = price.toString()
+        itemStock = ""
+        scope.launch { listState.animateScrollToItem(1) }
+    }
+
     LazyColumn(
+        state = listState,
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -179,7 +203,7 @@ fun ManageScreen(
 
         item {
             FormCard(
-                title = "Tambah Item F&B",
+                title = if (fnbAction == "update") "Edit Harga F&B" else "Tambah Item F&B",
                 icon = Icons.Default.Restaurant,
                 accent = OwnerCyan,
             ) {
@@ -187,6 +211,7 @@ fun ManageScreen(
                     FilterChip(
                         selected = category == "makanan",
                         onClick = { category = "makanan" },
+                        enabled = fnbAction == "add",
                         label = { Text("Makanan") },
                         colors = filterColors(),
                     )
@@ -194,6 +219,7 @@ fun ManageScreen(
                     FilterChip(
                         selected = category == "minuman",
                         onClick = { category = "minuman" },
+                        enabled = fnbAction == "add",
                         label = { Text("Minuman") },
                         colors = filterColors(),
                     )
@@ -204,6 +230,7 @@ fun ManageScreen(
                     onValueChange = { itemName = it },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("Nama item") },
+                    enabled = fnbAction == "add",
                     singleLine = true,
                 )
                 Spacer(Modifier.height(8.dp))
@@ -216,13 +243,23 @@ fun ManageScreen(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
                     )
-                    OutlinedTextField(
-                        value = itemStock,
-                        onValueChange = { itemStock = it.filter { ch -> ch.isDigit() }.take(6) },
-                        modifier = Modifier.weight(1f),
-                        label = { Text("Stok awal") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine = true,
+                    if (fnbAction == "add") {
+                        OutlinedTextField(
+                            value = itemStock,
+                            onValueChange = { itemStock = it.filter { ch -> ch.isDigit() }.take(6) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("Stok awal") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                        )
+                    }
+                }
+                if (fnbAction == "update") {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Hanya harga yang diubah. Stok tetap seperti di aplikasi billing.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = OwnerMuted,
                     )
                 }
                 Spacer(Modifier.height(10.dp))
@@ -230,6 +267,7 @@ fun ManageScreen(
                     onClick = {
                         onSubmitFnbItem(
                             FnbItemInput(
+                                action = fnbAction,
                                 category = category,
                                 name = itemName.trim(),
                                 price = itemPrice.toIntOrNull() ?: 0,
@@ -238,7 +276,9 @@ fun ManageScreen(
                         )
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = itemName.isNotBlank() && !state.isSubmittingFnbItem,
+                    enabled = itemName.isNotBlank() &&
+                        itemPrice.isNotBlank() &&
+                        !state.isSubmittingFnbItem,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = OwnerCyan,
                         contentColor = OwnerBg,
@@ -252,7 +292,23 @@ fun ManageScreen(
                         )
                         Spacer(Modifier.width(8.dp))
                     }
-                    Text("Kirim Item F&B", fontWeight = FontWeight.Bold)
+                    Text(
+                        if (fnbAction == "update") {
+                            "Kirim Perubahan Harga"
+                        } else {
+                            "Kirim Item F&B"
+                        },
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                if (fnbAction == "update") {
+                    TextButton(
+                        onClick = { resetFnbForm() },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !state.isSubmittingFnbItem,
+                    ) {
+                        Text("Batal Edit", color = OwnerMuted)
+                    }
                 }
             }
         }
@@ -278,6 +334,7 @@ fun ManageScreen(
                     category = "Makanan",
                     price = state.menuMakanan[name] ?: 0,
                     stock = stock,
+                    onEdit = { selectFnbItem(name, "makanan", state.menuMakanan[name] ?: 0) },
                 )
             }
         }
@@ -289,6 +346,7 @@ fun ManageScreen(
                     category = "Minuman",
                     price = state.menuMinuman[name] ?: 0,
                     stock = stock,
+                    onEdit = { selectFnbItem(name, "minuman", state.menuMinuman[name] ?: 0) },
                 )
             }
         }
@@ -648,6 +706,7 @@ private fun FnbItemRow(
     category: String,
     price: Int,
     stock: Int,
+    onEdit: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -681,6 +740,10 @@ private fun FnbItemRow(
                 fontWeight = FontWeight.Bold,
                 color = if (stock <= 0) OwnerAmber else OwnerGreen,
             )
+            Spacer(Modifier.width(6.dp))
+            TextButton(onClick = onEdit) {
+                Text("Edit", color = OwnerCyan, style = MaterialTheme.typography.labelMedium)
+            }
         }
     }
 }
